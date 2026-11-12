@@ -58,6 +58,7 @@ public final class Screen {
     public internal(set) var rowCount: Int
     public internal(set) var rows: [Row]
     public internal(set) var scrollback: Scrollback
+    public internal(set) var scrolledOff = 0
 
     init(columns: Int, rows: Int, scrollback: Int) {
         self.columns = columns
@@ -73,7 +74,7 @@ public final class Screen {
         guard n > 0 else { return }
         for _ in 0..<n {
             let gone = rows.remove(at: top)
-            if toScrollback { scrollback.push(gone) }
+            if toScrollback { scrollback.push(gone); scrolledOff += 1 }
             rows.insert(blankRow(fill), at: bottom)
         }
     }

@@ -156,6 +156,11 @@ public final class Terminal: ParserHandler {
 
     public func hyperlink(id: UInt16) -> String? { hyperlinks[id] }
 
+    public func clearScrollback() {
+        primary.scrollback.removeAll()
+        touchAll()
+    }
+
     public func takeDirtyRows() -> [Int] {
         var out: [Int] = []
         for y in 0..<dirty.count where dirty[y] { out.append(y); dirty[y] = false }
