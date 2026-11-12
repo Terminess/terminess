@@ -41,6 +41,7 @@ public struct TerminalModes: Sendable {
     public var synchronizedOutput = false
     public var graphemeClustering = true
     public var inBandResize = false
+    public var colorSchemeReports = false
 
     public init() {}
 }
@@ -91,6 +92,7 @@ public final class Terminal: ParserHandler {
     public internal(set) var title = ""
     public internal(set) var workingDirectory: String?
     public var palette = Palette()
+    public internal(set) var colorScheme: ColorScheme = .dark
 
     public internal(set) var scrollTop = 0
     public internal(set) var scrollBottom: Int
@@ -117,7 +119,12 @@ public final class Terminal: ParserHandler {
     var tabStops: [Bool]
     var lastPrinted: Unicode.Scalar?
     var titleStack: [String] = []
-    var kittyStack: [Int] = []
+    var kittyStackPrimary: [Int] = []
+    var kittyStackAlternate: [Int] = []
+    var kittyStack: [Int] {
+        get { isAlternate ? kittyStackAlternate : kittyStackPrimary }
+        set { if isAlternate { kittyStackAlternate = newValue } else { kittyStackPrimary = newValue } }
+    }
     var hyperlinks: [UInt16: String] = [:]
     var hyperlinkIDs: [String: UInt16] = [:]
     var nextHyperlink: UInt16 = 1
@@ -155,6 +162,18 @@ public final class Terminal: ParserHandler {
 
 
     public func hyperlink(id: UInt16) -> String? { hyperlinks[id] }
+
+    public func setColorScheme(_ scheme: ColorScheme, palette newPalette: Palette? = nil) {
+        let changed = scheme != colorScheme
+        colorScheme = scheme
+        palette = newPalette ?? Palette.forScheme(scheme)
+        touchAll()
+        if changed && modes.colorSchemeReports { reportColorScheme() }
+    }
+
+    func reportColorScheme() {
+        respond("\u{1B}[?997;\(colorScheme == .dark ? 1 : 2)n")
+    }
 
     public func clearScrollback() {
         primary.scrollback.removeAll()
@@ -205,21 +224,42 @@ public final class Terminal: ParserHandler {
             for b in bytes { print(Unicode.Scalar(b)) }
             return
         }
-        for b in bytes {
-            if cursor.pendingWrap && modes.autowrap { wrapLine() }
-            let x = cursor.x, y = cursor.y
-            var row = screen.rows[y]
-            if row.cells[x].isWide || row.cells[x].isWideTail { fixWideOverwrite(&row, at: x) }
-            row.cells[x] = Cell(scalar: UInt32(b), attrs: cursor.attrs)
-            if !row.clusters.isEmpty { row.clusters[x] = nil }
-            screen.rows[y] = row
-            touch(y)
-            if x + 1 >= columns {
-                cursor.pendingWrap = modes.autowrap
-            } else {
-                cursor.x = x + 1
+        let s = screen
+        let attrs = cursor.attrs
+        let autowrap = modes.autowrap
+        var i = 0
+        let n = bytes.count
+        let cols = columns
+        while i < n {
+            if cursor.pendingWrap && autowrap { wrapLine() }
+            let y = cursor.y
+            let first = cursor.x
+            var x = first
+            var hitEdge = false
+            var erasedLeft = false
+            s.rows[y].cells.withUnsafeMutableBufferPointer { buf in
+                while i < n {
+                    let f = buf[x].attrs.flags
+                    if f.contains(.wide) {
+                        if x + 1 < cols { buf[x + 1] = Cell(attrs: buf[x + 1].attrs.erased) }
+                    } else if f.contains(.wideTail), x > 0 {
+                        buf[x - 1] = Cell(attrs: buf[x - 1].attrs.erased)
+                        if x == first { erasedLeft = true }
+                    }
+                    buf[x] = Cell(scalar: UInt32(bytes[i]), attrs: attrs)
+                    i += 1
+                    if x + 1 >= cols { hitEdge = true; break }
+                    x += 1
+                }
             }
+            if !s.rows[y].clusters.isEmpty {
+                for c in (erasedLeft ? first - 1 : first)...x { s.rows[y].clusters[c] = nil }
+            }
+            if hitEdge { cursor.pendingWrap = autowrap }
+            cursor.x = x
+            dirty[y] = true
         }
+        version &+= 1
         if let last = bytes.last { lastPrinted = Unicode.Scalar(last) }
     }
 
@@ -238,10 +278,8 @@ public final class Terminal: ParserHandler {
 
         if w == 2 && cursor.x == columns - 1 {
             if modes.autowrap {
-                var row = screen.rows[cursor.y]
-                fixWideOverwrite(&row, at: cursor.x)
-                row.cells[cursor.x] = Cell(attrs: cursor.attrs.erased)
-                screen.rows[cursor.y] = row
+                fixWideOverwrite(&screen.rows[cursor.y], at: cursor.x)
+                screen.rows[cursor.y].cells[cursor.x] = Cell(attrs: cursor.attrs.erased)
                 wrapLine()
             } else {
                 return
@@ -251,20 +289,19 @@ public final class Terminal: ParserHandler {
         if modes.insert { insertBlankCells(w) }
 
         let x = cursor.x, y = cursor.y
-        var row = screen.rows[y]
-        fixWideOverwrite(&row, at: x)
-        if w == 2 { fixWideOverwrite(&row, at: x + 1) }
+        let scr = screen
+        fixWideOverwrite(&scr.rows[y], at: x)
+        if w == 2 { fixWideOverwrite(&scr.rows[y], at: x + 1) }
         var attrs = cursor.attrs
         if w == 2 { attrs.flags.insert(.wide) }
-        row.cells[x] = Cell(scalar: s.value, attrs: attrs)
-        row.clusters[x] = nil
+        scr.rows[y].cells[x] = Cell(scalar: s.value, attrs: attrs)
+        if !scr.rows[y].clusters.isEmpty { scr.rows[y].clusters[x] = nil }
         if w == 2 {
             var tail = cursor.attrs
             tail.flags.insert(.wideTail)
-            row.cells[x + 1] = Cell(scalar: 0, attrs: tail)
-            row.clusters[x + 1] = nil
+            scr.rows[y].cells[x + 1] = Cell(scalar: 0, attrs: tail)
+            if !scr.rows[y].clusters.isEmpty { scr.rows[y].clusters[x + 1] = nil }
         }
-        screen.rows[y] = row
         touch(y)
         lastPrinted = s
 
@@ -297,6 +334,8 @@ public final class Terminal: ParserHandler {
         let regional = CharWidth.isRegionalIndicator(s)
         let modifier = CharWidth.isEmojiModifier(s)
         guard let (px, py) = previousCellPosition() else { return false }
+        let prev = screen.rows[py].cells[px]
+        guard regional || modifier || prev.attrs.flags.contains(.cluster) else { return false }
         let row = screen.rows[py]
         let text = row.text(at: px)
         if text.unicodeScalars.last?.value == 0x200D {
@@ -507,7 +546,8 @@ public final class Terminal: ParserHandler {
         scrollBottom = rows - 1
         tabStops = Terminal.defaultTabStops(columns)
         titleStack = []
-        kittyStack = []
+        kittyStackPrimary = []
+        kittyStackAlternate = []
         lastPrinted = nil
         parser.reset()
         touchAll()

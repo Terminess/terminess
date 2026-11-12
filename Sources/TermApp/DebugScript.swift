@@ -17,15 +17,34 @@ enum DebugScript {
                 }
             }
         }
-        if let path = env["TERMAPP_SNAPSHOT"] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + last + 1.0) { [weak controller] in
+        if let extra = env["TERMAPP_EXTRA_TAB"], let delegate = NSApp.delegate as? AppDelegate {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak controller] in
                 MainActor.assumeIsolated {
-                    guard let view = controller?.terminalView else { return }
-                    view.displayIfNeeded()
+                    delegate.open(tabbedWith: controller?.window, command: extra)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        MainActor.assumeIsolated { controller?.focus() }
+                    }
+                }
+            }
+        }
+        if let path = env["TERMAPP_SNAPSHOT"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + last + 1.0) {
+                MainActor.assumeIsolated {
+                    let c = (NSApp.keyWindow?.windowController as? TerminalWindowController) ?? controller
+                    let view = c.terminalView
                     if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                         view.cacheDisplay(in: view.bounds, to: rep)
                         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
                     }
+                    let m = SidebarModel.shared
+                    m.refreshTabs()
+                    print("sidebar visible=\(m.visible)")
+                    for t in m.tabs { print("  open: \(t.isKey ? "*" : " ") \(t.title) | \(t.command) | \(t.directory)") }
+                    for j in m.jobs { print("  job: \(j.id) \(j.state) \(j.target) \(j.brief)") }
+                    for r in m.runs { print("  run: \(r.mode) \(r.from)->\(r.to) \(r.status) \(r.brief)") }
+                    print("  sessions: \(m.sessions.count)  note: \(m.sessionsNote ?? "-")")
+                    for s in m.sessions.prefix(4) { print("    \(s.tool) \(s.repo) \(s.title)") }
+                    fflush(stdout)
                 }
             }
         }

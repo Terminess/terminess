@@ -126,6 +126,23 @@ final class Tracer: ParserHandler {
     func dcsUnhook() {}
 }
 
+if let i = CommandLine.arguments.firstIndex(of: "--bench"), i + 1 < CommandLine.arguments.count {
+    let data = FileManager.default.contents(atPath: CommandLine.arguments[i + 1]) ?? Data()
+    let bytes = [UInt8](data)
+    let t = Terminal(columns: 120, rows: 40, scrollback: 10_000)
+    let start = DispatchTime.now()
+    var offset = 0
+    while offset < bytes.count {
+        let end = min(offset + 65_536, bytes.count)
+        bytes[offset..<end].withUnsafeBufferPointer { t.feed($0) }
+        offset = end
+    }
+    let secs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e9
+    let mb = Double(bytes.count) / 1_048_576
+    Swift.print(String(format: "%.1f MB in %.3f s = %.0f MB/s", mb, secs, mb / secs))
+    exit(0)
+}
+
 let opts = parseOptions()
 guard !opts.command.isEmpty else {
     FileHandle.standardError.write("usage: termprobe [options] -- program [args...]\n".data(using: .utf8)!)

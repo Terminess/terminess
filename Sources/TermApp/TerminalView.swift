@@ -24,7 +24,6 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var scrollOffset = 0
     private var scrollRemainder: CGFloat = 0
     private var lastScrolledOff = 0
-    private var focused = true
     private var syncStarted: Date?
     private var lastCursor: (x: Int, y: Int) = (0, 0)
     private var colorCache: [UInt32: CGColor] = [:]
@@ -118,13 +117,34 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     }
 
 
+    private var flushScheduled = false
+    private var lastFlush = Date.distantPast
+
     func terminalDidUpdate() {
+        guard !flushScheduled else { return }
+        let since = Date().timeIntervalSince(lastFlush)
+        let frame = 1.0 / 120
+        if since >= frame {
+            flushUpdates()
+        } else {
+            flushScheduled = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + (frame - since)) { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.flushScheduled = false
+                    self?.flushUpdates()
+                }
+            }
+        }
+    }
+
+    private func flushUpdates() {
+        lastFlush = Date()
         guard let t = terminal else { return }
         if t.modes.synchronizedOutput {
             if syncStarted == nil {
                 syncStarted = Date()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                    MainActor.assumeIsolated { self?.terminalDidUpdate() }
+                    MainActor.assumeIsolated { self?.flushUpdates() }
                 }
             }
             if let s = syncStarted, Date().timeIntervalSince(s) < 0.2 { return }
@@ -158,8 +178,17 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         NSRect(x: 0, y: padding + CGFloat(y) * cellSize.height - 1, width: bounds.width, height: cellSize.height + 2)
     }
 
+    override func becomeFirstResponder() -> Bool {
+        updateCursorDisplay()
+        return true
+    }
+
+    override func resignFirstResponder() -> Bool {
+        updateCursorDisplay()
+        return true
+    }
+
     func focusChanged(_ isFocused: Bool) {
-        focused = isFocused
         if let t = terminal { session?.send(InputEncoder.focus(isFocused, modes: t.modes)) }
         updateCursorDisplay()
     }
@@ -250,11 +279,11 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         var x = 0
         while x < cols {
             let cell = row.cells[x]
-            let bg = selected(x) ? RGB(0x3A, 0x5F, 0x8F) : colors(for: cell.attrs, p, reverseScreen: reverse).bg
+            let bg = selected(x) ? p.selection : colors(for: cell.attrs, p, reverseScreen: reverse).bg
             var end = x + 1
             while end < cols {
                 let next = row.cells[end]
-                let nbg = selected(end) ? RGB(0x3A, 0x5F, 0x8F) : colors(for: next.attrs, p, reverseScreen: reverse).bg
+                let nbg = selected(end) ? p.selection : colors(for: next.attrs, p, reverseScreen: reverse).bg
                 if nbg != bg { break }
                 end += 1
             }
@@ -401,7 +430,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
             return
         }
 
-        if !focused {
+        let isFocused = window?.isKeyWindow == true && window?.firstResponder === self
+        if !isFocused {
             ctx.setStrokeColor(color)
             ctx.setLineWidth(1)
             ctx.stroke(rect.insetBy(dx: 0.5, dy: 0.5))
@@ -438,6 +468,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
             return
         }
 
+        if t.kittyKeyboardFlags != 0, sendKitty(event, event.isARepeat ? .repeat : .press) { return }
+
         let flags = event.modifierFlags
         let leftOption = flags.contains(.option) && flags.rawValue & 0x20 != 0
         var mods: KeyModifiers = []
@@ -462,6 +494,47 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
             }
         }
         interpretKeyEvents([event])
+    }
+
+    override func keyUp(with event: NSEvent) {
+        guard let t = terminal, t.kittyKeyboardFlags & KittyFlags.eventTypes.rawValue != 0, markedText.isEmpty else { return }
+        _ = sendKitty(event, .release)
+    }
+
+    private func sendKitty(_ event: NSEvent, _ type: KeyEventType) -> Bool {
+        guard let t = terminal else { return false }
+        let f = event.modifierFlags
+        let leftOption = f.contains(.option) && f.rawValue & 0x20 != 0
+        var m: KittyModifiers = []
+        if f.contains(.shift) { m.insert(.shift) }
+        if f.contains(.control) { m.insert(.control) }
+        if leftOption { m.insert(.alt) }
+        if f.contains(.command) { m.insert(.super) }
+        if f.contains(.capsLock) { m.insert(.capsLock) }
+        let flags = t.kittyKeyboardFlags
+        let allKeys = flags & KittyFlags.allKeysAsCodes.rawValue != 0
+
+        let key: Key
+        var text: String?
+        var shifted: String?
+        if let special = specialKey(event) {
+            key = special
+            if f.contains(.option) { m.insert(.alt) }
+        } else {
+            let base = event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers ?? ""
+            guard !base.isEmpty else { return false }
+            let significant = m.subtracting([.shift, .capsLock])
+            if significant.isEmpty && !allKeys { return false }
+            key = base == " " ? .space : .character(base)
+            text = event.characters
+            shifted = event.characters(byApplyingModifiers: .shift)
+        }
+        if type == .press { scrollToBottom() }
+        if let bytes = InputEncoder.kitty(key, modifiers: m, event: type, text: text, shiftedKey: shifted,
+                                          flags: flags, modes: t.modes) {
+            session?.send(bytes)
+        }
+        return true
     }
 
     private func specialKey(_ e: NSEvent) -> Key? {

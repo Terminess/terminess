@@ -383,3 +383,24 @@ func replies(_ t: Terminal, _ input: String) -> String {
         #expect(CharWidth.of("─") == 1)
     }
 }
+
+@Suite struct ColorSchemeTests {
+    @Test func queryAndNotify() {
+        let t = term()
+        #expect(replies(t, "\(ESC)[?996n") == "\(ESC)[?997;1n")
+        t.setColorScheme(.light)
+        #expect(replies(t, "\(ESC)[?996n") == "\(ESC)[?997;2n")
+        #expect(replies(t, "\(ESC)[?2031h\(ESC)[?2031$p") == "\(ESC)[?997;2n\(ESC)[?2031;1$y")
+        var out: [UInt8] = []
+        t.onResponse = { out += $0 }
+        t.setColorScheme(.dark)
+        #expect(String(decoding: out, as: UTF8.self) == "\(ESC)[?997;1n")
+        #expect(t.palette.background == Palette.dark.background)
+    }
+
+    @Test func backgroundQueryFollowsScheme() {
+        let t = term()
+        t.setColorScheme(.light)
+        #expect(replies(t, "\(ESC)]11;?\u{07}") == "\(ESC)]11;rgb:fbfb/fbfb/fafa\(ESC)\\")
+    }
+}

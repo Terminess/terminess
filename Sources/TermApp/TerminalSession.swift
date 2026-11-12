@@ -20,6 +20,7 @@ final class TerminalSession {
     init(columns: Int, rows: Int) {
         terminal = Terminal(columns: columns, rows: rows, scrollback: 10_000)
         terminal.softwareName = "terminal"
+        terminal.supportsKittyKeyboard = true
         events.session = self
         terminal.delegate = events
     }

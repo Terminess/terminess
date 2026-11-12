@@ -11,7 +11,9 @@ let package = Package(
         .executable(name: "TermApp", targets: ["TermApp"]),
     ],
     targets: [
-        .target(name: "TermCore"),
+        .target(name: "TermCore", swiftSettings: [
+            .unsafeFlags(["-enforce-exclusivity=unchecked"], .when(configuration: .release)),
+        ]),
         .target(name: "CPTY"),
         .target(name: "TermPTY", dependencies: ["CPTY"]),
         .executableTarget(name: "termprobe", dependencies: ["TermCore", "TermPTY"]),

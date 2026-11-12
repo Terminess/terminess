@@ -143,6 +143,22 @@ public final class PTYProcess: @unchecked Sendable {
         kill(-pid, SIGHUP)
     }
 
+    public var foregroundDirectory: String? {
+        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let pid = cpty_foreground_pid(fd, self.pid)
+        guard cpty_process_cwd(pid, &buf, Int32(buf.count)) == 0 else { return nil }
+        return String(cString: buf)
+    }
+
+    public var foregroundCommand: String? {
+        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let pid = cpty_foreground_pid(fd, self.pid)
+        guard cpty_process_path(pid, &buf, Int32(buf.count)) == 0 else { return nil }
+        let path = String(cString: buf)
+        if path.contains("/claude/versions/") { return "claude" }
+        return path.lastPathComponent
+    }
+
     public var isRunning: Bool {
         lock.lock(); defer { lock.unlock() }
         return !exited

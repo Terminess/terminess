@@ -9,6 +9,8 @@
 #include <termios.h>
 #include <unistd.h>
 #include <util.h>
+#include <libproc.h>
+#include <sys/proc_info.h>
 
 int cpty_spawn(const char *path, char *const argv[], char *const envp[], const char *cwd,
                unsigned short rows, unsigned short cols,
@@ -54,4 +56,21 @@ int cpty_resize(int master, unsigned short rows, unsigned short cols,
     ws.ws_xpixel = pixel_width;
     ws.ws_ypixel = pixel_height;
     return ioctl(master, TIOCSWINSZ, &ws);
+}
+
+pid_t cpty_foreground_pid(int master, pid_t fallback) {
+    pid_t pg = tcgetpgrp(master);
+    return pg > 0 ? pg : fallback;
+}
+
+int cpty_process_cwd(pid_t pid, char *buf, int len) {
+    struct proc_vnodepathinfo info;
+    int r = proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, sizeof info);
+    if (r != (int)sizeof info) return -1;
+    strlcpy(buf, info.pvi_cdir.vip_path, (size_t)len);
+    return 0;
+}
+
+int cpty_process_path(pid_t pid, char *buf, int len) {
+    return proc_pidpath(pid, buf, (uint32_t)len) > 0 ? 0 : -1;
 }

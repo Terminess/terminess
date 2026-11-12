@@ -1,74 +1,74 @@
 extension Terminal {
     public func csiDispatch(_ p: CSIParams, _ i: Intermediates, final: UInt8) {
-        let f = Character(Unicode.Scalar(final))
+        let f = final
         switch (i.prefix, i.first) {
         case (0, 0): csiPlain(p, f)
         case (UInt8(ascii: "?"), 0): csiPrivate(p, f)
         case (UInt8(ascii: ">"), 0): csiGreater(p, f)
-        case (UInt8(ascii: "<"), 0): if f == "u" { kittyPop(p.get(0, 1)) }
-        case (UInt8(ascii: "="), 0): if f == "u" { kittySet(p.raw(0, 0), mode: p.get(1, 1)) }
-        case (0, UInt8(ascii: " ")): if f == "q" { setCursorStyle(p.raw(0, 0)) }
-        case (0, UInt8(ascii: "!")): if f == "p" { softReset() }
-        case (0, UInt8(ascii: "$")): if f == "p" { reportMode(p.raw(0, 0), isPrivate: false) }
-        case (UInt8(ascii: "?"), UInt8(ascii: "$")): if f == "p" { reportMode(p.raw(0, 0), isPrivate: true) }
+        case (UInt8(ascii: "<"), 0): if f == UInt8(ascii: "u") { kittyPop(p.get(0, 1)) }
+        case (UInt8(ascii: "="), 0): if f == UInt8(ascii: "u") { kittySet(p.raw(0, 0), mode: p.get(1, 1)) }
+        case (0, UInt8(ascii: " ")): if f == UInt8(ascii: "q") { setCursorStyle(p.raw(0, 0)) }
+        case (0, UInt8(ascii: "!")): if f == UInt8(ascii: "p") { softReset() }
+        case (0, UInt8(ascii: "$")): if f == UInt8(ascii: "p") { reportMode(p.raw(0, 0), isPrivate: false) }
+        case (UInt8(ascii: "?"), UInt8(ascii: "$")): if f == UInt8(ascii: "p") { reportMode(p.raw(0, 0), isPrivate: true) }
         default: break
         }
     }
 
-    private func csiPlain(_ p: CSIParams, _ f: Character) {
+    private func csiPlain(_ p: CSIParams, _ f: UInt8) {
         switch f {
-        case "@": insertBlankCells(p.get(0, 1))
-        case "A": moveCursor(dy: -p.get(0, 1))
-        case "B", "e": moveCursor(dy: p.get(0, 1))
-        case "C", "a": moveCursor(dx: p.get(0, 1))
-        case "D": moveCursor(dx: -p.get(0, 1))
-        case "E": moveCursor(dy: p.get(0, 1)); carriageReturn()
-        case "F": moveCursor(dy: -p.get(0, 1)); carriageReturn()
-        case "G", "`": setCursorColumn(p.get(0, 1) - 1)
-        case "H", "f": setCursorPosition(row: p.get(0, 1) - 1, column: p.get(1, 1) - 1)
-        case "I": tab(forward: p.get(0, 1))
-        case "J": eraseInDisplay(p.raw(0, 0))
-        case "K": eraseInLine(p.raw(0, 0))
-        case "L": insertLines(p.get(0, 1))
-        case "M": deleteLines(p.get(0, 1))
-        case "P": deleteCells(p.get(0, 1))
-        case "S": scrollUp(p.get(0, 1))
-        case "T": if p.count <= 1 { scrollDown(p.get(0, 1)) }
-        case "X": eraseCells(p.get(0, 1))
-        case "Z": tab(backward: p.get(0, 1))
-        case "b": repeatLast(p.get(0, 1))
-        case "c": if p.raw(0, 0) == 0 { respond("\u{1B}[?62;22c") }
-        case "d": setCursorRow(p.get(0, 1) - 1)
-        case "g": clearTabStops(p.raw(0, 0))
-        case "h": setANSIModes(p, on: true)
-        case "l": setANSIModes(p, on: false)
-        case "m": selectGraphicRendition(p)
-        case "n": deviceStatus(p.raw(0, 0), isPrivate: false)
-        case "r": setScrollRegion(top: p.get(0, 1) - 1, bottom: p.get(1, rows) - 1)
-        case "s": saveCursor()
-        case "t": windowOperation(p)
-        case "u": restoreCursor()
+        case UInt8(ascii: "@"): insertBlankCells(p.get(0, 1))
+        case UInt8(ascii: "A"): moveCursor(dy: -p.get(0, 1))
+        case UInt8(ascii: "B"), UInt8(ascii: "e"): moveCursor(dy: p.get(0, 1))
+        case UInt8(ascii: "C"), UInt8(ascii: "a"): moveCursor(dx: p.get(0, 1))
+        case UInt8(ascii: "D"): moveCursor(dx: -p.get(0, 1))
+        case UInt8(ascii: "E"): moveCursor(dy: p.get(0, 1)); carriageReturn()
+        case UInt8(ascii: "F"): moveCursor(dy: -p.get(0, 1)); carriageReturn()
+        case UInt8(ascii: "G"), UInt8(ascii: "`"): setCursorColumn(p.get(0, 1) - 1)
+        case UInt8(ascii: "H"), UInt8(ascii: "f"): setCursorPosition(row: p.get(0, 1) - 1, column: p.get(1, 1) - 1)
+        case UInt8(ascii: "I"): tab(forward: p.get(0, 1))
+        case UInt8(ascii: "J"): eraseInDisplay(p.raw(0, 0))
+        case UInt8(ascii: "K"): eraseInLine(p.raw(0, 0))
+        case UInt8(ascii: "L"): insertLines(p.get(0, 1))
+        case UInt8(ascii: "M"): deleteLines(p.get(0, 1))
+        case UInt8(ascii: "P"): deleteCells(p.get(0, 1))
+        case UInt8(ascii: "S"): scrollUp(p.get(0, 1))
+        case UInt8(ascii: "T"): if p.count <= 1 { scrollDown(p.get(0, 1)) }
+        case UInt8(ascii: "X"): eraseCells(p.get(0, 1))
+        case UInt8(ascii: "Z"): tab(backward: p.get(0, 1))
+        case UInt8(ascii: "b"): repeatLast(p.get(0, 1))
+        case UInt8(ascii: "c"): if p.raw(0, 0) == 0 { respond("\u{1B}[?62;22c") }
+        case UInt8(ascii: "d"): setCursorRow(p.get(0, 1) - 1)
+        case UInt8(ascii: "g"): clearTabStops(p.raw(0, 0))
+        case UInt8(ascii: "h"): setANSIModes(p, on: true)
+        case UInt8(ascii: "l"): setANSIModes(p, on: false)
+        case UInt8(ascii: "m"): selectGraphicRendition(p)
+        case UInt8(ascii: "n"): deviceStatus(p.raw(0, 0), isPrivate: false)
+        case UInt8(ascii: "r"): setScrollRegion(top: p.get(0, 1) - 1, bottom: p.get(1, rows) - 1)
+        case UInt8(ascii: "s"): saveCursor()
+        case UInt8(ascii: "t"): windowOperation(p)
+        case UInt8(ascii: "u"): restoreCursor()
         default: break
         }
     }
 
-    private func csiPrivate(_ p: CSIParams, _ f: Character) {
+    private func csiPrivate(_ p: CSIParams, _ f: UInt8) {
         switch f {
-        case "h": setDECModes(p, on: true)
-        case "l": setDECModes(p, on: false)
-        case "J": eraseInDisplay(p.raw(0, 0))
-        case "K": eraseInLine(p.raw(0, 0))
-        case "n": deviceStatus(p.raw(0, 0), isPrivate: true)
-        case "u": if supportsKittyKeyboard { respond("\u{1B}[?\(kittyKeyboardFlags)u") }
+        case UInt8(ascii: "h"): setDECModes(p, on: true)
+        case UInt8(ascii: "l"): setDECModes(p, on: false)
+        case UInt8(ascii: "J"): eraseInDisplay(p.raw(0, 0))
+        case UInt8(ascii: "K"): eraseInLine(p.raw(0, 0))
+        case UInt8(ascii: "n"): deviceStatus(p.raw(0, 0), isPrivate: true)
+        case UInt8(ascii: "u"): if supportsKittyKeyboard { respond("\u{1B}[?\(kittyKeyboardFlags)u") }
         default: break
         }
     }
 
-    private func csiGreater(_ p: CSIParams, _ f: Character) {
+    private func csiGreater(_ p: CSIParams, _ f: UInt8) {
         switch f {
-        case "c": if p.raw(0, 0) == 0 { respond("\u{1B}[>1;10;0c") }
-        case "q": if p.raw(0, 0) == 0 { respond("\u{1B}P>|\(softwareName) \(softwareVersion)\u{1B}\\") }
-        case "u": if supportsKittyKeyboard { kittyPush(p.raw(0, 0)) }
+        case UInt8(ascii: "c"): if p.raw(0, 0) == 0 { respond("\u{1B}[>1;10;0c") }
+        case UInt8(ascii: "q"): if p.raw(0, 0) == 0 { respond("\u{1B}P>|\(softwareName) \(softwareVersion)\u{1B}\\") }
+        case UInt8(ascii: "u"): if supportsKittyKeyboard { kittyPush(p.raw(0, 0)) }
         default: break
         }
     }
@@ -111,11 +111,10 @@ extension Terminal {
     func clearCells(row y: Int, _ range: Range<Int>) {
         let lo = max(range.lowerBound, 0), hi = min(range.upperBound, columns)
         guard lo < hi else { return }
-        var row = screen.rows[y]
-        if row.cells[lo].isWideTail { fixWideOverwrite(&row, at: lo) }
-        if hi < columns && row.cells[hi].isWideTail { fixWideOverwrite(&row, at: hi) }
-        row.clear(lo..<hi, with: eraseFill)
-        screen.rows[y] = row
+        let scr = screen
+        if scr.rows[y].cells[lo].isWideTail { fixWideOverwrite(&scr.rows[y], at: lo) }
+        if hi < columns && scr.rows[y].cells[hi].isWideTail { fixWideOverwrite(&scr.rows[y], at: hi) }
+        scr.rows[y].clear(lo..<hi, with: eraseFill)
         touch(y)
     }
 
@@ -289,6 +288,9 @@ extension Terminal {
         case 1007: modes.alternateScroll = on
         case 2004: modes.bracketedPaste = on
         case 2026: modes.synchronizedOutput = on; version &+= 1
+        case 2031:
+            modes.colorSchemeReports = on
+            if on { reportColorScheme() }
         case 2048:
             modes.inBandResize = on
             if on { reportSize() }
@@ -301,6 +303,7 @@ extension Terminal {
             if alt && clear { alternate.clearAll(fill: eraseFill); touchAll() }
             return
         }
+        if !alt { kittyStackAlternate = [] }
         isAlternate = alt
         if alt && clear { alternate.clearAll(fill: eraseFill) }
         touchAll()
@@ -331,6 +334,7 @@ extension Terminal {
             case 2004: state = b(modes.bracketedPaste)
             case 2026: state = b(modes.synchronizedOutput)
             case 2027: state = 3
+            case 2031: state = b(modes.colorSchemeReports)
             case 2048: state = b(modes.inBandResize)
             default: state = 0
             }
@@ -349,6 +353,8 @@ extension Terminal {
     func deviceStatus(_ code: Int, isPrivate: Bool) {
         switch code {
         case 5: respond("\u{1B}[0n")
+        case 996 where isPrivate:
+            reportColorScheme()
         case 6:
             let row = cursor.y - (modes.originMode ? scrollTop : 0) + 1
             let col = cursor.x + 1

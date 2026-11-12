@@ -11,4 +11,10 @@ int cpty_spawn(const char *path, char *const argv[], char *const envp[], const c
 int cpty_resize(int master, unsigned short rows, unsigned short cols,
                 unsigned short pixel_width, unsigned short pixel_height);
 
+pid_t cpty_foreground_pid(int master, pid_t fallback);
+
+int cpty_process_cwd(pid_t pid, char *buf, int len);
+
+int cpty_process_path(pid_t pid, char *buf, int len);
+
 #endif

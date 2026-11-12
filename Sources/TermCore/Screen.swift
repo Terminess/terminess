@@ -15,14 +15,17 @@ public struct Scrollback: Sendable {
         set { storage[(head + i) % storage.count] = newValue }
     }
 
-    mutating func push(_ row: Row) {
-        guard capacity > 0 else { return }
+    @discardableResult
+    mutating func push(_ row: Row) -> Row? {
+        guard capacity > 0 else { return row }
         if storage.count < capacity {
             storage.append(row)
-        } else {
-            storage[head] = row
-            head = (head + 1) % capacity
+            return nil
         }
+        let evicted = storage[head]
+        storage[head] = row
+        head = (head + 1) % capacity
+        return evicted
     }
 
     mutating func popNewest() -> Row? {
@@ -69,13 +72,27 @@ public final class Screen {
 
     func blankRow(_ fill: Cell = .blank) -> Row { Row(columns: columns, fill: fill) }
 
+    private func recycled(_ spare: Row?, _ fill: Cell) -> Row {
+        guard var r = spare, r.cells.count == columns else { return blankRow(fill) }
+        r.cells.withUnsafeMutableBufferPointer { $0.update(repeating: fill) }
+        if !r.clusters.isEmpty { r.clusters.removeAll() }
+        r.wrapped = false
+        return r
+    }
+
     func scrollUp(top: Int, bottom: Int, count n: Int, fill: Cell, toScrollback: Bool) {
         let n = min(n, bottom - top + 1)
         guard n > 0 else { return }
         for _ in 0..<n {
             let gone = rows.remove(at: top)
-            if toScrollback { scrollback.push(gone); scrolledOff += 1 }
-            rows.insert(blankRow(fill), at: bottom)
+            var spare: Row?
+            if toScrollback {
+                spare = scrollback.push(gone)
+                scrolledOff += 1
+            } else {
+                spare = gone
+            }
+            rows.insert(recycled(spare, fill), at: bottom)
         }
     }
 
