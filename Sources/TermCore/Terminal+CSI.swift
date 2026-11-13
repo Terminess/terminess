@@ -385,7 +385,8 @@ extension Terminal {
 
     func setCursorStyle(_ n: Int) {
         switch n {
-        case 0, 1: cursorShape = .block; modes.cursorBlink = true
+        case 0: cursorShape = defaultCursorShape; modes.cursorBlink = defaultCursorBlink
+        case 1: cursorShape = .block; modes.cursorBlink = true
         case 2: cursorShape = .block; modes.cursorBlink = false
         case 3: cursorShape = .underline; modes.cursorBlink = true
         case 4: cursorShape = .underline; modes.cursorBlink = false

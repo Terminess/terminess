@@ -49,6 +49,7 @@ struct SessionItem: Identifiable, Equatable, Decodable {
 @MainActor
 protocol SidebarActions: AnyObject {
     func focusTab(_ id: ObjectIdentifier)
+    func renameTab(_ id: ObjectIdentifier)
     func resume(_ session: SessionItem)
     func startPair(mode: String, target: String)
     func jobAction(_ job: PairJob, _ action: String)

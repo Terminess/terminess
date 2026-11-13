@@ -1,98 +1,175 @@
 import SwiftUI
 
+enum SidebarID: Hashable {
+    case tab(ObjectIdentifier)
+    case job(String)
+    case run(String)
+    case session(String)
+}
+
 struct SidebarView: View {
     @ObservedObject var model: SidebarModel
+    @State private var selection: SidebarID?
+    @AppStorage("sidebar.openExpanded") private var openExpanded = true
+    @AppStorage("sidebar.pairExpanded") private var pairExpanded = true
+    @AppStorage("sidebar.sessionsExpanded") private var sessionsExpanded = true
 
     var body: some View {
         VStack(spacing: 0) {
-            TextField("Search sessions", text: $model.search)
-                .textFieldStyle(.roundedBorder)
+            SearchField(text: $model.search)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-            List {
-                Section("Open") {
-                    ForEach(model.tabs) { tab in
-                        TabRow(tab: tab)
-                            .contentShape(Rectangle())
-                            .onTapGesture { model.actions?.focusTab(tab.id) }
-                    }
+                .padding(.top, 6)
+                .padding(.bottom, 4)
+
+            List(selection: $selection) {
+                if model.search.isEmpty {
+                    openSection
+                    pairSection
                 }
-                Section {
-                    if model.jobs.isEmpty && model.runs.isEmpty {
-                        Text(SidebarModel.pairTool == nil ? "Install ~/.local/bin/pair to pair agents." : "Nothing yet. Use + to start.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    ForEach(model.jobs) { job in
-                        JobRow(job: job)
-                            .contentShape(Rectangle())
-                            .onTapGesture(count: 2) { model.actions?.jobAction(job, "wait") }
-                            .contextMenu {
-                                Button("Show Result") { model.actions?.jobAction(job, "wait") }
-                                Button("Show Diff") { model.actions?.jobAction(job, "diff") }
-                                Divider()
-                                Button("Apply Changes") { model.actions?.jobAction(job, "apply") }
-                                    .disabled(!(job.state == "done" || job.state == "failed"))
-                                Button("Discard") { model.actions?.jobAction(job, "discard") }
-                                    .disabled(job.state == "applied" || job.state == "discarded")
-                            }
-                    }
-                    ForEach(model.runs) { run in
-                        RunRow(run: run)
-                            .contentShape(Rectangle())
-                            .onTapGesture(count: 2) { model.actions?.showRun(run) }
-                            .contextMenu { Button("Show Result") { model.actions?.showRun(run) } }
-                    }
-                } header: {
-                    HStack {
-                        Text("Pair")
-                        Spacer()
-                        Menu {
-                            ForEach(["codex", "claude"], id: \.self) { agent in
-                                Section(agent == "codex" ? "Codex" : "Claude") {
-                                    Button("Ask…") { model.actions?.startPair(mode: "ask", target: agent) }
-                                    Button("Review Changes…") { model.actions?.startPair(mode: "review", target: agent) }
-                                    Button("Hand Off…") { model.actions?.startPair(mode: "handoff", target: agent) }
-                                    Button("Parallel Job…") { model.actions?.startPair(mode: "parallel", target: agent) }
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        .fixedSize()
-                        .disabled(SidebarModel.pairTool == nil)
-                        .help("Start a pair run in the current tab's folder")
-                    }
-                }
-                Section("Sessions") {
-                    if let note = model.sessionsNote {
-                        Text(note).font(.caption).foregroundStyle(.secondary)
-                    }
-                    ForEach(model.filteredSessions.prefix(150)) { s in
-                        SessionRow(session: s)
-                            .contentShape(Rectangle())
-                            .onTapGesture(count: 2) { model.actions?.resume(s) }
-                            .contextMenu {
-                                Button("Resume in New Tab") { model.actions?.resume(s) }
-                                Button("Copy Session ID") {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(s.id, forType: .string)
-                                }
-                                Button("Show Folder in Finder") {
-                                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: s.cwd)
-                                }
-                            }
-                    }
+                sessionSections
+                if let note = model.sessionsNote, model.search.isEmpty {
+                    Text(note).font(.callout).foregroundStyle(.tertiary)
                 }
             }
             .listStyle(.sidebar)
+            .contextMenu(forSelectionType: SidebarID.self) { ids in
+                if let id = ids.first { menu(for: id) }
+            } primaryAction: { ids in
+                if let id = ids.first { open(id) }
+            }
+            .onChange(of: selection) { _, new in
+                if case .tab(let tab)? = new { model.actions?.focusTab(tab) }
+            }
         }
         .frame(minWidth: 220)
     }
+
+
+    private var openSection: some View {
+        Section("Open", isExpanded: $openExpanded) {
+            ForEach(model.tabs) { tab in
+                let agent = Agent.detect(tab.command)
+                Row(symbol: agent != nil ? "sparkle" : "terminal",
+                    tint: agent.map { Color(nsColor: $0.tint) } ?? .secondary,
+                    title: tab.title, subtitle: tab.directory)
+                    .tag(SidebarID.tab(tab.id))
+            }
+        }
+    }
+
+    private var pairSection: some View {
+        Section(isExpanded: $pairExpanded) {
+            if model.jobs.isEmpty && model.runs.isEmpty {
+                Text("No pair runs today")
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
+            }
+            ForEach(model.jobs) { job in
+                Row(symbol: jobSymbol(job.state), tint: jobTint(job.state),
+                    title: job.brief, subtitle: agent(job.target) + " · parallel · " + job.state)
+                    .tag(SidebarID.job(job.id))
+            }
+            ForEach(model.runs) { run in
+                let ok = run.status == "ok"
+                Row(symbol: ok ? "checkmark.circle" : "exclamationmark.circle", tint: ok ? .secondary : .red,
+                    title: run.brief, subtitle: agent(run.to) + " · " + run.mode + " · " + run.repo)
+                    .tag(SidebarID.run(run.id))
+            }
+        } header: {
+            HStack {
+                Text("Pair")
+                Spacer()
+                PairMenu(model: model)
+            }
+        }
+    }
+
+    private var sessionSections: some View {
+        ForEach(groupedSessions, id: \.title) { group in
+            Section(group.title, isExpanded: model.search.isEmpty ? $sessionsExpanded : .constant(true)) {
+                ForEach(group.items) { s in
+                    Row(symbol: "bubble.left", tint: toolTint(s.tool), title: s.title, subtitle: s.repo)
+                        .tag(SidebarID.session(s.id))
+                }
+            }
+        }
+    }
+
+
+    private struct Group { let title: String; let items: [SessionItem] }
+
+    private var groupedSessions: [Group] {
+        let items = model.filteredSessions.filter { $0.pair == nil && $0.title != "(no messages)" }.prefix(150)
+        if !model.search.isEmpty { return [Group(title: "Sessions", items: Array(items))] }
+        let cal = Calendar.current
+        let now = Date()
+        var buckets: [(String, [SessionItem])] = [("Today", []), ("Yesterday", []), ("Previous 7 Days", []),
+                                                    ("Previous 30 Days", []), ("Older", [])]
+        for s in items {
+            let d = Date(timeIntervalSince1970: s.mtime)
+            let i: Int
+            if cal.isDateInToday(d) { i = 0 }
+            else if cal.isDateInYesterday(d) { i = 1 }
+            else if now.timeIntervalSince(d) < 7 * 86_400 { i = 2 }
+            else if now.timeIntervalSince(d) < 30 * 86_400 { i = 3 }
+            else { i = 4 }
+            buckets[i].1.append(s)
+        }
+        return buckets.filter { !$0.1.isEmpty }.map { Group(title: $0.0, items: $0.1) }
+    }
+
+
+    private func open(_ id: SidebarID) {
+        switch id {
+        case .tab(let t): model.actions?.focusTab(t)
+        case .job(let j): if let job = model.jobs.first(where: { $0.id == j }) { model.actions?.jobAction(job, "wait") }
+        case .run(let r): if let run = model.runs.first(where: { $0.id == r }) { model.actions?.showRun(run) }
+        case .session(let s): if let item = model.sessions.first(where: { $0.id == s }) { model.actions?.resume(item) }
+        }
+    }
+
+    @ViewBuilder
+    private func menu(for id: SidebarID) -> some View {
+        switch id {
+        case .tab(let t):
+            Button("Show Tab") { model.actions?.focusTab(t) }
+            Button("Rename…") { model.actions?.renameTab(t) }
+        case .job(let j):
+            if let job = model.jobs.first(where: { $0.id == j }) {
+                Button("Show Result") { model.actions?.jobAction(job, "wait") }
+                Button("Show Diff") { model.actions?.jobAction(job, "diff") }
+                Divider()
+                Button("Apply Changes") { model.actions?.jobAction(job, "apply") }
+                    .disabled(!(job.state == "done" || job.state == "failed"))
+                Button("Discard") { model.actions?.jobAction(job, "discard") }
+                    .disabled(job.state == "applied" || job.state == "discarded")
+            }
+        case .run(let r):
+            if let run = model.runs.first(where: { $0.id == r }) {
+                Button("Show Result") { model.actions?.showRun(run) }
+            }
+        case .session(let s):
+            if let item = model.sessions.first(where: { $0.id == s }) {
+                Button("Resume in New Tab") { model.actions?.resume(item) }
+                Divider()
+                Button("Copy Session ID") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(item.id, forType: .string)
+                }
+                Button("Show Folder in Finder") {
+                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: item.cwd)
+                }
+            }
+        }
+    }
 }
 
-private func toolColor(_ tool: String) -> Color {
+
+private func agent(_ tool: String) -> String {
+    tool == "claude" ? "Claude" : tool == "codex" ? "Codex" : tool
+}
+
+private func toolTint(_ tool: String) -> Color {
     switch tool {
     case "claude": return Color(red: 0.85, green: 0.47, blue: 0.34)
     case "codex": return Color(red: 0.36, green: 0.62, blue: 0.95)
@@ -100,103 +177,97 @@ private func toolColor(_ tool: String) -> Color {
     }
 }
 
-private func relative(_ t: Double) -> String {
-    let f = RelativeDateTimeFormatter()
-    f.unitsStyle = .abbreviated
-    return f.localizedString(for: Date(timeIntervalSince1970: t), relativeTo: Date())
-}
-
-private struct ToolBadge: View {
-    let tool: String
-    var body: some View {
-        Text(tool)
-            .font(.system(size: 9, weight: .semibold, design: .monospaced))
-            .foregroundStyle(toolColor(tool))
-            .padding(.horizontal, 4).padding(.vertical, 1)
-            .overlay(RoundedRectangle(cornerRadius: 3).stroke(toolColor(tool).opacity(0.5), lineWidth: 0.5))
+private func jobSymbol(_ state: String) -> String {
+    switch state {
+    case "running": return "circle.dotted"
+    case "done": return "checkmark.circle"
+    case "failed", "died": return "exclamationmark.circle"
+    case "applied": return "checkmark.circle.fill"
+    default: return "xmark.circle"
     }
 }
 
-private struct TabRow: View {
-    let tab: OpenTab
+private func jobTint(_ state: String) -> Color {
+    switch state {
+    case "running": return .orange
+    case "done", "applied": return .green
+    case "failed", "died": return .red
+    default: return .secondary
+    }
+}
+
+private struct Row: View {
+    let symbol: String
+    let tint: Color
+    let title: String
+    let subtitle: String
+
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: tab.command == "claude" || tab.command == "codex" ? "sparkles" : "terminal")
-                .foregroundStyle(toolColor(tab.command))
-                .frame(width: 14)
+        HStack(spacing: 8) {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(tint)
+                .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
-                Text(tab.title).lineLimit(1).fontWeight(tab.isKey ? .semibold : .regular)
-                Text(tab.directory).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                Text(title)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
+        .padding(.vertical, 2)
+        .help(title)
     }
 }
 
-private struct JobRow: View {
-    let job: PairJob
-    var color: Color {
-        switch job.state {
-        case "running": return .orange
-        case "done": return .green
-        case "failed", "died": return .red
-        default: return .secondary
-        }
-    }
+private struct SearchField: View {
+    @Binding var text: String
+
     var body: some View {
-        HStack(alignment: .top, spacing: 6) {
-            Circle().fill(color).frame(width: 7, height: 7).padding(.top, 5)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 4) {
-                    ToolBadge(tool: job.target)
-                    Text("parallel · \(job.state)").font(.caption).foregroundStyle(.secondary)
+        HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            TextField("Search", text: $text)
+                .textFieldStyle(.plain)
+            if !text.isEmpty {
+                Button { text = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
                 }
-                Text(job.brief).lineLimit(2).font(.callout)
-                Text(job.repo).font(.caption2).foregroundStyle(.secondary)
+                .buttonStyle(.plain)
             }
         }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 7).fill(.quaternary.opacity(0.6)))
     }
 }
 
-private struct RunRow: View {
-    let run: PairRun
-    var body: some View {
-        HStack(alignment: .top, spacing: 6) {
-            Image(systemName: run.status == "ok" ? "checkmark.circle" : "exclamationmark.triangle")
-                .foregroundStyle(run.status == "ok" ? Color.secondary : Color.red)
-                .frame(width: 14)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 4) {
-                    ToolBadge(tool: run.to)
-                    Text("\(run.mode) from \(run.from)").font(.caption).foregroundStyle(.secondary)
-                }
-                Text(run.brief).lineLimit(2).font(.callout)
-                Text(run.repo).font(.caption2).foregroundStyle(.secondary)
-            }
-        }
-    }
-}
+private struct PairMenu: View {
+    @ObservedObject var model: SidebarModel
 
-private struct SessionRow: View {
-    let session: SessionItem
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
-                ToolBadge(tool: session.tool)
-                Text(session.repo).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                Spacer(minLength: 2)
-                Text(relative(session.mtime)).font(.caption2).foregroundStyle(.tertiary)
-            }
-            if let p = session.pair {
-                Text("↳ \(p.mode) from \(p.from): \(p.brief)").lineLimit(2).font(.callout).foregroundStyle(.secondary)
-            } else {
-                HStack(spacing: 4) {
-                    Text(session.title).lineLimit(2).font(.callout)
-                    if !session.linked.isEmpty {
-                        Text("⇄ " + session.linked.joined(separator: " ")).font(.caption2).foregroundStyle(.secondary)
-                    }
+        Menu {
+            ForEach(["codex", "claude"], id: \.self) { tool in
+                Section(agent(tool)) {
+                    Button("Ask…") { model.actions?.startPair(mode: "ask", target: tool) }
+                    Button("Review Changes…") { model.actions?.startPair(mode: "review", target: tool) }
+                    Button("Hand Off…") { model.actions?.startPair(mode: "handoff", target: tool) }
+                    Button("Run in Parallel…") { model.actions?.startPair(mode: "parallel", target: tool) }
                 }
             }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 11, weight: .semibold))
         }
-        .padding(.vertical, 1)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(SidebarModel.pairTool == nil)
+        .help("Ask, review, hand off or run in parallel, in this tab's folder")
     }
 }

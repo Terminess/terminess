@@ -89,6 +89,12 @@ public final class Terminal: ParserHandler {
     public internal(set) var cursor = Cursor()
     public internal(set) var modes = TerminalModes()
     public internal(set) var cursorShape: CursorShape = .block
+    public var defaultCursorShape: CursorShape = .block {
+        didSet { cursorShape = defaultCursorShape; version &+= 1 }
+    }
+    public var defaultCursorBlink = false {
+        didSet { modes.cursorBlink = defaultCursorBlink; version &+= 1 }
+    }
     public internal(set) var title = ""
     public internal(set) var workingDirectory: String?
     public var palette = Palette()
@@ -541,7 +547,8 @@ public final class Terminal: ParserHandler {
         savedPrimaryCursor = Cursor()
         savedAlternateCursor = Cursor()
         modes = TerminalModes()
-        cursorShape = .block
+        modes.cursorBlink = defaultCursorBlink
+        cursorShape = defaultCursorShape
         scrollTop = 0
         scrollBottom = rows - 1
         tabStops = Terminal.defaultTabStops(columns)

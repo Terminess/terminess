@@ -17,8 +17,17 @@ public final class PTYProcess: @unchecked Sendable {
     private var exitSource: DispatchSourceProcess?
     private var exited = false
 
+    public static let agentSessionVariables: Set<String> = [
+        "CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT",
+        "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_EXECPATH",
+        "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED",
+    ]
+
     public static func defaultEnvironment(program: String = "terminal", version: String = "0.1") -> [String: String] {
         var env = ProcessEnv.current
+        for key in agentSessionVariables { env[key] = nil }
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         env["TERM_PROGRAM"] = program

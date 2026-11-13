@@ -18,7 +18,7 @@ final class TerminalSession {
     }
 
     init(columns: Int, rows: Int) {
-        terminal = Terminal(columns: columns, rows: rows, scrollback: 10_000)
+        terminal = Terminal(columns: columns, rows: rows, scrollback: Settings.shared.scrollback)
         terminal.softwareName = "terminal"
         terminal.supportsKittyKeyboard = true
         events.session = self

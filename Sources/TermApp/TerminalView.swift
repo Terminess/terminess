@@ -10,12 +10,14 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     var terminal: Terminal? { session?.terminal }
 
 
-    static let defaultFontSize: CGFloat = 13
-    private var fontSize: CGFloat = TerminalView.defaultFontSize
+    private var zoom: CGFloat = 0
+    private var fontSize: CGFloat { max(6, CGFloat(Settings.shared.fontSize) + zoom) }
     private var regular: CTFont!
     private var bold: CTFont!
     private var italic: CTFont!
     private var boldItalic: CTFont!
+    private var fakeBold = false
+    private var fakeItalic = false
     private var ascent: CGFloat = 0
     private(set) var cellSize = NSSize(width: 8, height: 16)
     let padding: CGFloat = 6
@@ -47,6 +49,28 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     override init(frame: NSRect) {
         super.init(frame: frame)
         loadFonts()
+        NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged),
+                                               name: .terminalSettingsChanged, object: nil)
+        blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.blinkTick() }
+        }
+    }
+
+
+    private var blinkTimer: Timer?
+    private var cursorOn = true
+
+    private func blinkTick() {
+        guard let t = terminal, t.modes.cursorBlink, window?.isKeyWindow == true else {
+            if !cursorOn { cursorOn = true; updateCursorDisplay() }
+            return
+        }
+        cursorOn.toggle()
+        updateCursorDisplay()
+    }
+
+    private func wakeCursor() {
+        cursorOn = true
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -61,12 +85,22 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func loadFonts() {
-        let base = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-        let heavy = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold)
+        let size = fontSize
+        let base = Settings.shared.font(size: size)
+        let fm = NSFontManager.shared
+        let heavy = fm.convert(base, toHaveTrait: .boldFontMask)
+        fakeBold = heavy.fontName == base.fontName
         regular = base as CTFont
-        bold = heavy as CTFont
-        italic = CTFontCreateCopyWithSymbolicTraits(regular, fontSize, nil, .traitItalic, .traitItalic) ?? regular
-        boldItalic = CTFontCreateCopyWithSymbolicTraits(bold, fontSize, nil, .traitItalic, .traitItalic) ?? bold
+        bold = (fakeBold ? base : heavy) as CTFont
+        func italicFace(_ f: CTFont) -> CTFont? {
+            guard let real = CTFontCreateCopyWithSymbolicTraits(f, size, nil, .traitItalic, .traitItalic),
+                  (CTFontCopyPostScriptName(real) as String) != (CTFontCopyPostScriptName(f) as String) else { return nil }
+            return real
+        }
+        let realItalic = italicFace(regular)
+        fakeItalic = realItalic == nil
+        italic = realItalic ?? regular
+        boldItalic = italicFace(bold) ?? bold
 
         var glyph = CGGlyph(0)
         var ch: UniChar = 0x4D
@@ -74,8 +108,23 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         var advance = CGSize.zero
         CTFontGetAdvancesForGlyphs(regular, .horizontal, &glyph, &advance, 1)
         ascent = CTFontGetAscent(regular)
-        let height = ceil(ascent + CTFontGetDescent(regular) + CTFontGetLeading(regular))
-        cellSize = NSSize(width: advance.width, height: max(height, ceil(fontSize * 1.2)))
+        let natural = ceil(ascent + CTFontGetDescent(regular) + CTFontGetLeading(regular))
+        let height = ceil(max(natural, ceil(size * 1.2)) * CGFloat(Settings.shared.lineSpacing))
+        cellSize = NSSize(width: advance.width, height: height)
+    }
+
+    @objc private func settingsChanged() {
+        loadFonts()
+        applyCursorDefaults()
+        colorCache.removeAll()
+        updateGridSize()
+        needsDisplay = true
+    }
+
+    func applyCursorDefaults() {
+        guard let t = terminal else { return }
+        t.defaultCursorShape = Settings.shared.engineCursorShape
+        t.defaultCursorBlink = Settings.shared.cursorBlink
     }
 
     func contentSize(columns: Int, rows: Int) -> NSSize {
@@ -247,6 +296,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.setShouldSmoothFonts(!Settings.shared.thinStrokes)
         let p = terminal?.palette ?? Palette()
         ctx.setFillColor(cgColor(p.background))
         ctx.fill(dirtyRect)
@@ -339,11 +389,15 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         guard !text.isEmpty else { return }
         let fg = colorOverride ?? colors(for: a, p, reverseScreen: reverse).fg
         let color = cgColor(fg, alpha: a.flags.contains(.faint) ? 0.55 : 1)
-        let attributes: [NSAttributedString.Key: Any] = [
+        var attributes: [NSAttributedString.Key: Any] = [
             NSAttributedString.Key(kCTFontAttributeName as String): font(for: a),
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): color,
             NSAttributedString.Key(kCTLigatureAttributeName as String): 0,
         ]
+        if fakeBold && a.flags.contains(.bold) {
+            attributes[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] = -7.0
+            attributes[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] = color
+        }
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
         var px = padding + CGFloat(x) * cellSize.width
         if span > 0 {
@@ -352,7 +406,15 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
             if width < room { px += (room - width) / 2 }
         }
         ctx.textPosition = CGPoint(x: px, y: baseline)
-        CTLineDraw(line, ctx)
+        if fakeItalic && a.flags.contains(.italic) {
+            let saved = ctx.textMatrix
+            ctx.textMatrix = CGAffineTransform(a: 1, b: 0, c: 0.2, d: -1, tx: 0, ty: 0)
+            ctx.textPosition = CGPoint(x: px, y: baseline)
+            CTLineDraw(line, ctx)
+            ctx.textMatrix = saved
+        } else {
+            CTLineDraw(line, ctx)
+        }
     }
 
     private func drawDecorations(from x0: Int, to x1: Int, top: CGFloat, baseline: CGFloat, attrs a: Attributes,
@@ -411,6 +473,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     private func drawCursor(_ t: Terminal, _ p: Palette, _ ctx: CGContext) {
         guard t.modes.cursorVisible || !markedText.isEmpty, scrollOffset == 0 else { return }
+        if !cursorOn && markedText.isEmpty { return }
         let x = t.cursor.x, y = t.cursor.y
         let row = t.screen.rows[y]
         let wide = x < row.count && row.cells[x].isWide
@@ -462,6 +525,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     override func keyDown(with event: NSEvent) {
         guard let t = terminal else { return }
         NSCursor.setHiddenUntilMouseMoves(true)
+        wakeCursor()
 
         if !markedText.isEmpty {
             interpretKeyEvents([event])
@@ -471,7 +535,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         if t.kittyKeyboardFlags != 0, sendKitty(event, event.isARepeat ? .repeat : .press) { return }
 
         let flags = event.modifierFlags
-        let leftOption = flags.contains(.option) && flags.rawValue & 0x20 != 0
+        let leftOption = optionIsMeta(flags)
         var mods: KeyModifiers = []
         if flags.contains(.shift) { mods.insert(.shift) }
         if flags.contains(.control) { mods.insert(.control) }
@@ -504,7 +568,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private func sendKitty(_ event: NSEvent, _ type: KeyEventType) -> Bool {
         guard let t = terminal else { return false }
         let f = event.modifierFlags
-        let leftOption = f.contains(.option) && f.rawValue & 0x20 != 0
+        let leftOption = optionIsMeta(f)
         var m: KittyModifiers = []
         if f.contains(.shift) { m.insert(.shift) }
         if f.contains(.control) { m.insert(.control) }
@@ -535,6 +599,15 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
             session?.send(bytes)
         }
         return true
+    }
+
+    private func optionIsMeta(_ f: NSEvent.ModifierFlags) -> Bool {
+        guard f.contains(.option) else { return false }
+        switch Settings.shared.optionKey {
+        case "both": return true
+        case "none": return false
+        default: return f.rawValue & 0x20 != 0
+        }
     }
 
     private func specialKey(_ e: NSEvent) -> Key? {
@@ -652,16 +725,21 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     }
 
 
-    @objc func increaseFontSize(_ sender: Any?) { setFontSize(min(fontSize + 1, 40)) }
-    @objc func decreaseFontSize(_ sender: Any?) { setFontSize(max(fontSize - 1, 8)) }
-    @objc func resetFontSize(_ sender: Any?) { setFontSize(TerminalView.defaultFontSize) }
+    @objc func increaseFontSize(_ sender: Any?) { setZoom(min(zoom + 1, 24)) }
+    @objc func decreaseFontSize(_ sender: Any?) { setZoom(max(zoom - 1, -6)) }
+    @objc func resetFontSize(_ sender: Any?) { setZoom(0) }
 
-    private func setFontSize(_ size: CGFloat) {
-        guard size != fontSize, let window, let t = terminal else { return }
+    private func setZoom(_ z: CGFloat) {
+        guard z != zoom else { return }
+        let before = fontSize
+        zoom = z
+        setFontSize(fontSize, from: before)
+    }
+
+    private func setFontSize(_ size: CGFloat, from before: CGFloat) {
+        guard size != before, let window, let t = terminal else { return }
         let cols = t.columns, rows = t.rows
-        fontSize = size
         loadFonts()
-        window.contentResizeIncrements = cellSize
         var frame = window.frame
         let content = contentSize(columns: cols, rows: rows)
         let old = window.contentRect(forFrameRect: frame)

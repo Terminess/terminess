@@ -1,5 +1,6 @@
 import AppKit
 
+import SwiftUI
 import TermCore
 
 enum AppearanceSetting: Int {
@@ -19,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             default: return AppearanceSetting(rawValue: UserDefaults.standard.integer(forKey: "appearance")) ?? .system
             }
         }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: "appearance"); applyAppearance() }
+        set { Settings.shared.appearance = newValue.rawValue }
     }
 
     var colorScheme: TermCore.ColorScheme {
@@ -31,18 +32,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
-    func applyAppearance() {
-        let scheme = colorScheme
-        let forced: NSAppearance? = switch appearanceSetting {
-        case .system: nil
-        case .light: NSAppearance(named: .aqua)
-        case .dark: NSAppearance(named: .darkAqua)
+    var activeTheme: Theme {
+        let settings = Settings.shared
+        let darkAppearance: Bool
+        switch appearanceSetting {
+        case .light: darkAppearance = false
+        case .dark: darkAppearance = true
+        case .system: darkAppearance = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         }
-        for c in controllers { c.apply(scheme: scheme, appearance: forced) }
+        return darkAppearance ? settings.theme(named: settings.darkTheme, fallbackDark: true)
+                              : settings.theme(named: settings.lightTheme, fallbackDark: false)
+    }
+
+    private var forcedAppearance: NSAppearance? {
+        switch appearanceSetting {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+
+    func applyAppearance() {
+        let theme = activeTheme
+        for c in controllers {
+            c.apply(scheme: theme.isDark ? .dark : .light, palette: theme.palette, appearance: forcedAppearance)
+        }
     }
 
     @objc func setAppearance(_ sender: NSMenuItem) {
-        appearanceSetting = AppearanceSetting(rawValue: sender.tag) ?? .system
+        Settings.shared.appearance = sender.tag
+    }
+
+    private var settingsWindow: NSWindow?
+
+    @objc func showSettings(_ sender: Any?) {
+        if settingsWindow == nil {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
+            w.title = "Settings"
+            w.styleMask = [.titled, .closable]
+            w.isReleasedWhenClosed = false
+            w.center()
+            settingsWindow = w
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -55,6 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = buildMenu()
         NSWindow.allowsAutomaticWindowTabbing = true
+        NotificationCenter.default.addObserver(forName: .terminalSettingsChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyAppearance() }
+        }
         appearanceObservation = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.applyAppearance() } }
         }
@@ -83,15 +118,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @discardableResult
     func open(tabbedWith host: NSWindow?, directory: String? = nil, command: String? = nil) -> TerminalWindowController {
-        let cwd = directory ?? (host?.windowController as? TerminalWindowController)?.currentDirectory
+        let inherit = Settings.shared.newTabsInCurrentFolder
+        let cwd = directory ?? (inherit ? (host?.windowController as? TerminalWindowController)?.currentDirectory : nil)
+            ?? Settings.shared.startDirectory
         let controller = TerminalWindowController(workingDirectory: cwd, command: command)
         controller.onClose = { [weak self, weak controller] in
             self?.controllers.removeAll { $0 === controller }
             SidebarModel.shared.refreshTabs()
         }
         controllers.append(controller)
-        controller.apply(scheme: colorScheme, appearance: appearanceSetting == .system ? nil
-                         : NSAppearance(named: appearanceSetting == .light ? .aqua : .darkAqua))
+        let theme = activeTheme
+        controller.apply(scheme: theme.isDark ? .dark : .light, palette: theme.palette, appearance: forcedAppearance)
         if let host, let window = controller.window {
             host.addTabbedWindow(window, ordered: .above)
             window.makeKeyAndOrderFront(nil)
@@ -112,14 +149,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private func openTabs() -> [OpenTab] {
         let home = SidebarModel.home
         return controllers.map { c in
+            c.refreshTitle()
             let dir = c.currentDirectory ?? ""
             let shown = dir.hasPrefix(home) ? "~" + dir.dropFirst(home.count) : dir
-            let command = c.session.process?.foregroundCommand ?? ""
-            let title = c.window?.title ?? ""
-            return OpenTab(id: ObjectIdentifier(c),
-                           title: title.isEmpty || title == "terminal" ? (command.isEmpty ? "shell" : command) : title,
-                           command: command, directory: shown, isKey: c.window?.isKeyWindow == true)
+            return OpenTab(id: ObjectIdentifier(c), title: c.customTitle ?? c.agent?.name ?? c.displayTitle,
+                           command: c.session.process?.foregroundCommand ?? "",
+                           directory: shown, isKey: c.window?.isKeyWindow == true)
         }
+    }
+
+    @objc func renameCurrentTab(_ sender: Any?) {
+        if let c = keyController { rename(c) }
+    }
+
+    func renameTab(_ id: ObjectIdentifier) {
+        if let c = controllers.first(where: { ObjectIdentifier($0) == id }) { rename(c) }
+    }
+
+    private func rename(_ c: TerminalWindowController) {
+        let alert = NSAlert()
+        alert.messageText = "Rename Tab"
+        alert.informativeText = "Leave empty to go back to the automatic name."
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.stringValue = c.customTitle ?? c.displayTitle
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        c.customTitle = name.isEmpty ? nil : name
+        SidebarModel.shared.refreshTabs()
     }
 
     func focusTab(_ id: ObjectIdentifier) {
@@ -203,6 +263,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -213,6 +275,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let shell = NSMenu(title: "Shell")
         shell.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "n")
         shell.addItem(withTitle: "New Tab", action: #selector(newWindowForTab(_:)), keyEquivalent: "t")
+        shell.addItem(.separator())
+        let rename = NSMenuItem(title: "Rename Tab…", action: #selector(renameCurrentTab(_:)), keyEquivalent: "r")
+        rename.keyEquivalentModifierMask = [.command, .shift]
+        shell.addItem(rename)
         shell.addItem(.separator())
         shell.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         shellItem.submenu = shell
