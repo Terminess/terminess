@@ -78,8 +78,16 @@ public struct Cell: Hashable, Sendable {
     public var isWideTail: Bool { attrs.flags.contains(.wideTail) }
 }
 
+public struct RowMark: OptionSet, Sendable {
+    public let rawValue: UInt8
+    public init(rawValue: UInt8) { self.rawValue = rawValue }
+    public static let prompt = RowMark(rawValue: 1)
+    public static let output = RowMark(rawValue: 2)
+}
+
 public struct Row: Sendable {
     public var cells: [Cell]
+    public var mark: RowMark = []
     public var wrapped = false
     public var clusters: [Int: String] = [:]
 

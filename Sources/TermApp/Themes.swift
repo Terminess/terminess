@@ -56,6 +56,15 @@ struct Theme: Codable, Equatable, Identifiable {
         make("Default Light", bg: "#fbfbfa", fg: "#1e1e22", sel: "#b3d4fc", [
             "#1e1e22", "#c4252b", "#1f8a3b", "#9a6a00", "#1f5fcc", "#a02fb3", "#10808f", "#8a8a90",
             "#5e5e66", "#e0353b", "#2ea44f", "#b58500", "#2f7ae5", "#bf46d1", "#1a9bad", "#b0b0b6"]),
+        make("Charcoal", bg: "#1f2023", fg: "#d6d6d3", cursor: "#c9c9c4", sel: "#3d4250", [
+            "#2a2b2f", "#d9666b", "#8fbf7f", "#d4b26a", "#6f9fd8", "#b48ad6", "#68b6c2", "#c8c8c4",
+            "#5b5d63", "#e57f84", "#a5d394", "#e3c584", "#8bb5e6", "#c8a2e3", "#82c9d4", "#ececea"]),
+        make("Paper", bg: "#f7f4ec", fg: "#2b2a27", cursor: "#3a3934", sel: "#e3dcc8", [
+            "#2b2a27", "#b3362e", "#3d7a2e", "#8c6400", "#2f5f9e", "#8e3f9b", "#21767a", "#9b968a",
+            "#6d6a62", "#cf4a40", "#4e923c", "#a77b0a", "#3f74b8", "#a654b3", "#2c8d92", "#c9c3b4"]),
+        make("Production", bg: "#2a1215", fg: "#f2dede", cursor: "#ff6b6b", sel: "#5c2a2f", [
+            "#3a1d20", "#ff6b6b", "#8fcf7f", "#e6c06a", "#7fa8e6", "#d68fd6", "#6fc7cf", "#e8d6d6",
+            "#6a4448", "#ff8a8a", "#a8e096", "#f0d084", "#9bbcf0", "#e3a8e3", "#8ad8de", "#fff0f0"]),
         make("Solarized Dark", bg: "#002b36", fg: "#839496", cursor: "#93a1a1", sel: "#073642", [
             "#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5",
             "#002b36", "#cb4b16", "#586e75", "#657b83", "#839496", "#6c71c4", "#93a1a1", "#fdf6e3"]),

@@ -30,6 +30,8 @@ extension Terminal {
         scrollTop = 0
         scrollBottom = newRows - 1
         tabStops = Terminal.defaultTabStops(newCols)
+        imagePlacements.removeAll()
+        imageBytes = 0
         dirty = Array(repeating: true, count: newRows)
         version &+= 1
         if modes.inBandResize { reportSize() }
@@ -57,6 +59,7 @@ extension Terminal {
     private struct LogicalLine {
         var cells: [Cell] = []
         var clusters: [Int: String] = [:]
+        var mark: RowMark = []
     }
 
     private func reflowPrimary(newCols: Int, newRows: Int, cursorX: Int, cursorY: Int,
@@ -92,6 +95,7 @@ extension Terminal {
                 cursorOffset = current.cells.count + cursorX + (pendingWrap ? 1 : 0)
             }
             let base = current.cells.count
+            current.mark.formUnion(row.mark)
             for (x, text) in row.clusters where x < cells.count { current.clusters[base + x] = text }
             current.cells.append(contentsOf: cells)
             if !row.wrapped {
@@ -108,6 +112,7 @@ extension Terminal {
         var newPending = false
         for (li, line) in lines.enumerated() {
             var row = Row(columns: newCols)
+            row.mark = line.mark
             var x = 0
             var placedCursor = false
             var i = 0

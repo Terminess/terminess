@@ -25,6 +25,16 @@ final class Settings: ObservableObject {
     @Published var customThemes: [Theme] { didSet { saveThemes() } }
     @Published var thinStrokes: Bool { didSet { save("thinStrokes", thinStrokes) } }
     @Published var startFolder: String { didSet { save("startFolder", startFolder) } }
+    @Published var shellIntegration: Bool { didSet { save("shellIntegration", shellIntegration) } }
+    @Published var restoreSession: Bool { didSet { save("restoreSession", restoreSession) } }
+    @Published var quickTerminalKey: String { didSet { save("quickTerminalKey", quickTerminalKey) } }
+    @Published var naturalTextEditing: Bool { didSet { save("naturalTextEditing", naturalTextEditing) } }
+    @Published var keyBindings: [KeyBinding] {
+        didSet {
+            if let data = try? JSONEncoder().encode(keyBindings) { d.set(data, forKey: "keyBindings") }
+            NotificationCenter.default.post(name: .terminalSettingsChanged, object: nil)
+        }
+    }
 
     private init() {
         if d.object(forKey: "fontName") == nil {
@@ -45,6 +55,15 @@ final class Settings: ObservableObject {
         darkTheme = d.string(forKey: "darkTheme") ?? "Default Dark"
         thinStrokes = d.object(forKey: "thinStrokes") as? Bool ?? true
         startFolder = d.string(forKey: "startFolder") ?? ""
+        shellIntegration = d.object(forKey: "shellIntegration") as? Bool ?? true
+        restoreSession = d.object(forKey: "restoreSession") as? Bool ?? true
+        quickTerminalKey = d.string(forKey: "quickTerminalKey") ?? "ctrl-grave"
+        naturalTextEditing = d.object(forKey: "naturalTextEditing") as? Bool ?? true
+        if let data = d.data(forKey: "keyBindings"), let b = try? JSONDecoder().decode([KeyBinding].self, from: data) {
+            keyBindings = b
+        } else {
+            keyBindings = []
+        }
         if let data = d.data(forKey: "customThemes"), let themes = try? JSONDecoder().decode([Theme].self, from: data) {
             customThemes = themes
         } else {

@@ -5,6 +5,7 @@ struct SettingsView: View {
     @ObservedObject var settings = Settings.shared
     @State private var editing: Theme?
     @State private var editingForDark = true
+    @State private var addingBinding = false
     private let fonts = Settings.monospacedFonts()
 
     var body: some View {
@@ -80,6 +81,34 @@ struct SettingsView: View {
                 }
                 Text("Meta sends Escape before the key, which shells and editors use for word movement and shortcuts.")
                     .font(.caption).foregroundStyle(.secondary)
+                Toggle("Natural text editing", isOn: $settings.naturalTextEditing)
+                Text("Option-arrows move by word, Command-arrows go to the line start and end, Option-Delete deletes a word, Command-Delete deletes the line.")
+                    .font(.caption).foregroundStyle(.secondary)
+                ForEach(settings.keyBindings) { b in
+                    HStack {
+                        Text(b.label).monospaced().frame(width: 80, alignment: .leading)
+                        Text(b.text).monospaced().foregroundStyle(.secondary).lineLimit(1)
+                        Spacer()
+                        Button { settings.keyBindings.removeAll { $0.id == b.id } } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                Button("Add Key Binding…") { addingBinding = true }
+                Text("Sends text or an escape sequence (\\e for Escape, \\r, \\n, \\t, \\xHH). Menu shortcuts can be changed in System Settings, Keyboard, Keyboard Shortcuts, App Shortcuts.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Quick Terminal") {
+                Picker("Hotkey", selection: $settings.quickTerminalKey) {
+                    Text("Off").tag("off")
+                    ForEach(QuickTerminal.choices, id: \.0) { choice in
+                        Text(choice.1).tag(choice.0)
+                    }
+                }
+                Text("Drops a terminal down from the top of the screen over any app. Press the hotkey again to hide it.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Windows, Tabs and Scrollback") {
@@ -94,7 +123,11 @@ struct SettingsView: View {
                         Button("Reset") { settings.startFolder = "" }
                     }
                 }
+                Toggle("Reopen windows and tabs on launch", isOn: $settings.restoreSession)
                 Toggle("New tabs open in the current tab's folder", isOn: $settings.newTabsInCurrentFolder)
+                Toggle("Shell integration (zsh)", isOn: $settings.shellIntegration)
+                Text("Marks prompts and commands so you can jump between prompts, copy the last output, and be notified when long commands finish. Your dotfiles are not changed. Applies to new tabs.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Picker("Scrollback", selection: $settings.scrollback) {
                     Text("1,000 lines").tag(1_000)
                     Text("10,000 lines").tag(10_000)
@@ -107,6 +140,12 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 500)
         .fixedSize(horizontal: false, vertical: true)
+        .sheet(isPresented: $addingBinding) {
+            BindingRecorder { b in
+                settings.keyBindings.append(b)
+                addingBinding = false
+            } onCancel: { addingBinding = false }
+        }
         .sheet(item: $editing) { theme in
             ThemeEditor(theme: theme) { saved in
                 settings.saveCustom(saved)
@@ -265,5 +304,62 @@ private struct ThemeEditor: View {
     private func ansiBinding(_ i: Int) -> Binding<Color> {
         Binding(get: { Color(nsColor: Theme.color(theme.ansi[i])) },
                 set: { theme.ansi[i] = Theme.hex(NSColor($0)) })
+    }
+}
+
+private struct BindingRecorder: View {
+    let onSave: (KeyBinding) -> Void
+    let onCancel: () -> Void
+    @State private var key: String?
+    @State private var modifiers = 0
+    @State private var text = ""
+    @State private var monitor: Any?
+    @State private var recording = false
+
+    var body: some View {
+        Form {
+            HStack {
+                Text("Shortcut")
+                Spacer()
+                Button(recording ? "Press keys…" : (key.map { KeyBinding(key: $0, modifiers: modifiers, text: "").label } ?? "Record")) {
+                    startRecording()
+                }
+            }
+            TextField("Send", text: $text, prompt: Text("e.g. \\eb"))
+                .monospaced()
+            HStack {
+                Spacer()
+                Button("Cancel") { stop(); onCancel() }.keyboardShortcut(.cancelAction)
+                Button("Add") {
+                    stop()
+                    if let key { onSave(KeyBinding(key: key, modifiers: modifiers, text: text)) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(key == nil || text.isEmpty)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 380)
+        .onDisappear { stop() }
+    }
+
+    private func startRecording() {
+        stop()
+        recording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            if let d = KeyBinding.describe(e) {
+                key = d.key
+                modifiers = d.modifiers
+                MainActor.assumeIsolated { stop() }
+                return nil
+            }
+            return e
+        }
+    }
+
+    private func stop() {
+        recording = false
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
     }
 }

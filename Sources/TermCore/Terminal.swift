@@ -134,6 +134,9 @@ public final class Terminal: ParserHandler {
     var hyperlinks: [UInt16: String] = [:]
     var hyperlinkIDs: [String: UInt16] = [:]
     var nextHyperlink: UInt16 = 1
+    var imagePlacements: [ImagePlacement] = []
+    var imageCounter = 0
+    var imageBytes = 0
     var dcsBuffer: [UInt8] = []
     var dcsKind: DCSKind = .ignore
 
@@ -183,6 +186,7 @@ public final class Terminal: ParserHandler {
 
     public func clearScrollback() {
         primary.scrollback.removeAll()
+        pruneImages()
         touchAll()
     }
 
@@ -458,6 +462,7 @@ public final class Terminal: ParserHandler {
         let toScrollback = !isAlternate && scrollTop == 0
         screen.scrollUp(top: scrollTop, bottom: scrollBottom, count: n,
                         fill: Cell(attrs: cursor.attrs.erased), toScrollback: toScrollback)
+        if !imagePlacements.isEmpty { pruneImages() }
         touchAll()
     }
 
@@ -553,6 +558,8 @@ public final class Terminal: ParserHandler {
         scrollBottom = rows - 1
         tabStops = Terminal.defaultTabStops(columns)
         titleStack = []
+        imagePlacements = []
+        imageBytes = 0
         kittyStackPrimary = []
         kittyStackAlternate = []
         lastPrinted = nil

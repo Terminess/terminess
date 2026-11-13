@@ -49,9 +49,10 @@ struct SidebarView: View {
         Section("Open", isExpanded: $openExpanded) {
             ForEach(model.tabs) { tab in
                 let agent = Agent.detect(tab.command)
-                Row(symbol: agent != nil ? "sparkle" : "terminal",
-                    tint: agent.map { Color(nsColor: $0.tint) } ?? .secondary,
-                    title: tab.title, subtitle: tab.directory)
+                Row(symbol: tab.attention ? "circle.fill" : (agent != nil ? "sparkle" : "terminal"),
+                    tint: tab.attention ? .orange : (agent.map { Color(nsColor: $0.tint) } ?? .secondary),
+                    title: tab.title,
+                    subtitle: tab.panes > 1 ? "\(tab.directory) · \(tab.panes) panes" : tab.directory)
                     .tag(SidebarID.tab(tab.id))
             }
         }
@@ -121,7 +122,7 @@ struct SidebarView: View {
 
     private func open(_ id: SidebarID) {
         switch id {
-        case .tab(let t): model.actions?.focusTab(t)
+        case .tab(let t): model.actions?.renameTab(t)
         case .job(let j): if let job = model.jobs.first(where: { $0.id == j }) { model.actions?.jobAction(job, "wait") }
         case .run(let r): if let run = model.runs.first(where: { $0.id == r }) { model.actions?.showRun(run) }
         case .session(let s): if let item = model.sessions.first(where: { $0.id == s }) { model.actions?.resume(item) }
@@ -134,6 +135,13 @@ struct SidebarView: View {
         case .tab(let t):
             Button("Show Tab") { model.actions?.focusTab(t) }
             Button("Rename…") { model.actions?.renameTab(t) }
+            Menu("Theme") {
+                Button("Same as App") { model.actions?.setTheme(nil, forTab: t) }
+                Divider()
+                ForEach(Settings.shared.allThemes) { theme in
+                    Button(theme.name) { model.actions?.setTheme(theme.name, forTab: t) }
+                }
+            }
         case .job(let j):
             if let job = model.jobs.first(where: { $0.id == j }) {
                 Button("Show Result") { model.actions?.jobAction(job, "wait") }

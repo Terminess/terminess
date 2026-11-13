@@ -135,8 +135,10 @@ extension Terminal {
             clearCells(row: cursor.y, 0..<(cursor.x + 1))
         case 2:
             for y in 0..<rows { clearRow(y) }
+            pruneImages(clearingVisible: true)
         case 3:
             screen.scrollback.removeAll()
+            pruneImages()
             touchAll()
         default: break
         }
@@ -303,7 +305,10 @@ extension Terminal {
             if alt && clear { alternate.clearAll(fill: eraseFill); touchAll() }
             return
         }
-        if !alt { kittyStackAlternate = [] }
+        if !alt {
+            kittyStackAlternate = []
+            imagePlacements.removeAll { $0.onAlternate }
+        }
         isAlternate = alt
         if alt && clear { alternate.clearAll(fill: eraseFill) }
         touchAll()

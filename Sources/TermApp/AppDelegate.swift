@@ -8,7 +8,7 @@ enum AppearanceSetting: Int {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, SidebarActions {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate, SidebarActions {
     private(set) var controllers: [TerminalWindowController] = []
     private var appearanceObservation: NSKeyValueObservation?
 
@@ -52,11 +52,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
+    func theme(for c: TerminalWindowController) -> Theme {
+        if let name = c.themeOverride, let t = Settings.shared.allThemes.first(where: { $0.name == name }) { return t }
+        return activeTheme
+    }
+
     func applyAppearance() {
         let theme = activeTheme
         for c in controllers {
-            c.apply(scheme: theme.isDark ? .dark : .light, palette: theme.palette, appearance: forcedAppearance)
+            let t = self.theme(for: c)
+            c.apply(scheme: t.isDark ? .dark : .light, palette: t.palette, appearance: forcedAppearance)
         }
+        QuickTerminal.shared.applyTheme(theme)
     }
 
     @objc func setAppearance(_ sender: NSMenuItem) {
@@ -88,21 +95,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApp.mainMenu = buildMenu()
         NSWindow.allowsAutomaticWindowTabbing = true
         NotificationCenter.default.addObserver(forName: .terminalSettingsChanged, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.applyAppearance() }
+            MainActor.assumeIsolated {
+                self?.applyAppearance()
+                if Settings.shared.quickTerminalKey != self?.lastQuickKey {
+                    self?.lastQuickKey = Settings.shared.quickTerminalKey
+                    QuickTerminal.shared.configure()
+                }
+            }
         }
         appearanceObservation = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.applyAppearance() } }
         }
+        installTabDoubleClick()
+        AttentionCenter.shared.setUp()
+        ShellIntegration.install()
+        QuickTerminal.shared.configure()
         let sidebar = SidebarModel.shared
         sidebar.actions = self
         sidebar.tabProvider = { [weak self] in self?.openTabs() ?? [] }
         sidebar.start()
-        newWindow(nil)
+        let env = ProcessInfo.processInfo.environment
+        let testing = env["TERMAPP_SCRIPT"] != nil && env["TERMAPP_ALLOW_RESTORE"] == nil
+        if testing || !restoreSession() { newWindow(nil) }
         if let first = controllers.first { DebugScript.run(on: first) }
+        if !testing {
+            sessionTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
+                MainActor.assumeIsolated { (NSApp.delegate as? AppDelegate)?.saveSession() }
+            }
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    private var sessionTimer: Timer?
+    private var lastQuickKey = Settings.shared.quickTerminalKey
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if ProcessInfo.processInfo.environment["TERMAPP_SCRIPT"] == nil { saveSession() }
+        return .terminateNow
+    }
+
+    func saveSession() { SessionStore.save(controllers) }
+
+    private func restoreSession() -> Bool {
+        let windows = SessionStore.load()
+        guard !windows.isEmpty else { return false }
+        for saved in windows {
+            var host: NSWindow?
+            var opened: [TerminalWindowController] = []
+            for tab in saved.tabs {
+                let c = open(tabbedWith: host, layout: tab.layout)
+                c.customTitle = tab.title
+                c.themeOverride = tab.theme
+                if host == nil, saved.frame.count == 4 {
+                    c.window?.setFrame(NSRect(x: saved.frame[0], y: saved.frame[1], width: saved.frame[2], height: saved.frame[3]),
+                                       display: true)
+                }
+                host = host ?? c.window
+                opened.append(c)
+            }
+            if saved.selected < opened.count { opened[saved.selected].focus() }
+        }
+        return !controllers.isEmpty
+    }
 
     @objc func newWindow(_ sender: Any?) {
         open(tabbedWith: nil)
@@ -117,17 +173,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @discardableResult
-    func open(tabbedWith host: NSWindow?, directory: String? = nil, command: String? = nil) -> TerminalWindowController {
+    func open(tabbedWith host: NSWindow?, directory: String? = nil, command: String? = nil,
+              layout: PaneLayout? = nil) -> TerminalWindowController {
         let inherit = Settings.shared.newTabsInCurrentFolder
         let cwd = directory ?? (inherit ? (host?.windowController as? TerminalWindowController)?.currentDirectory : nil)
             ?? Settings.shared.startDirectory
-        let controller = TerminalWindowController(workingDirectory: cwd, command: command)
+        let controller = TerminalWindowController(workingDirectory: cwd, command: command, layout: layout)
         controller.onClose = { [weak self, weak controller] in
             self?.controllers.removeAll { $0 === controller }
             SidebarModel.shared.refreshTabs()
         }
         controllers.append(controller)
-        let theme = activeTheme
+        let theme = self.theme(for: controller)
         controller.apply(scheme: theme.isDark ? .dark : .light, palette: theme.palette, appearance: forcedAppearance)
         if let host, let window = controller.window {
             host.addTabbedWindow(window, ordered: .above)
@@ -139,6 +196,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         return controller
     }
 
+
+    @objc func toggleQuickTerminal(_ sender: Any?) { QuickTerminal.shared.toggle() }
+
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu.title == "Tab Theme" else { return }
+        menu.removeAllItems()
+        let current = keyController?.themeOverride
+        let follow = NSMenuItem(title: "Same as App", action: #selector(setTabTheme(_:)), keyEquivalent: "")
+        follow.target = self
+        follow.state = current == nil ? .on : .off
+        menu.addItem(follow)
+        menu.addItem(.separator())
+        for t in Settings.shared.allThemes {
+            let item = NSMenuItem(title: t.name, action: #selector(setTabTheme(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = t.name
+            item.state = current == t.name ? .on : .off
+            menu.addItem(item)
+        }
+    }
+
+    @objc func setTabTheme(_ sender: NSMenuItem) {
+        keyController?.themeOverride = sender.representedObject as? String
+    }
+
+    func setTheme(_ name: String?, forTab id: ObjectIdentifier) {
+        controllers.first { ObjectIdentifier($0) == id }?.themeOverride = name
+    }
 
     @objc func toggleSidebar(_ sender: Any?) {
         let model = SidebarModel.shared
@@ -154,7 +240,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             let shown = dir.hasPrefix(home) ? "~" + dir.dropFirst(home.count) : dir
             return OpenTab(id: ObjectIdentifier(c), title: c.customTitle ?? c.agent?.name ?? c.displayTitle,
                            command: c.session.process?.foregroundCommand ?? "",
-                           directory: shown, isKey: c.window?.isKeyWindow == true)
+                           directory: shown, isKey: c.window?.isKeyWindow == true,
+                           attention: AttentionCenter.shared.needsAttention(c),
+                           panes: c.panes.count)
+        }
+    }
+
+    private func installTabDoubleClick() {
+        NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard event.clickCount == 2, let window = event.window,
+                  let frame = window.contentView?.superview else { return event }
+            var view = frame.hitTest(frame.convert(event.locationInWindow, from: nil))
+            while let v = view {
+                let name = NSStringFromClass(type(of: v))
+                if name.contains("TabButton") || name.contains("TabBarItem") {
+                    MainActor.assumeIsolated { self?.renameCurrentTab(nil) }
+                    return nil
+                }
+                view = v.superview
+            }
+            return event
         }
     }
 
@@ -275,12 +380,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let shell = NSMenu(title: "Shell")
         shell.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "n")
         shell.addItem(withTitle: "New Tab", action: #selector(newWindowForTab(_:)), keyEquivalent: "t")
+        shell.addItem(withTitle: "Show Quick Terminal", action: #selector(toggleQuickTerminal(_:)), keyEquivalent: "")
         shell.addItem(.separator())
+        let tabTheme = NSMenuItem(title: "Tab Theme", action: nil, keyEquivalent: "")
+        let tabThemeMenu = NSMenu(title: "Tab Theme")
+        tabThemeMenu.delegate = self
+        tabTheme.submenu = tabThemeMenu
+        shell.addItem(tabTheme)
         let rename = NSMenuItem(title: "Rename Tab…", action: #selector(renameCurrentTab(_:)), keyEquivalent: "r")
         rename.keyEquivalentModifierMask = [.command, .shift]
         shell.addItem(rename)
         shell.addItem(.separator())
-        shell.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        shell.addItem(withTitle: "Split Right", action: #selector(TerminalWindowController.splitRight(_:)), keyEquivalent: "d")
+        let splitDown = NSMenuItem(title: "Split Down", action: #selector(TerminalWindowController.splitDown(_:)), keyEquivalent: "d")
+        splitDown.keyEquivalentModifierMask = [.command, .shift]
+        shell.addItem(splitDown)
+        let arrows: [(String, Selector, Int)] = [
+            ("Select Pane Left", #selector(TerminalWindowController.focusLeft(_:)), NSLeftArrowFunctionKey),
+            ("Select Pane Right", #selector(TerminalWindowController.focusRight(_:)), NSRightArrowFunctionKey),
+            ("Select Pane Above", #selector(TerminalWindowController.focusUp(_:)), NSUpArrowFunctionKey),
+            ("Select Pane Below", #selector(TerminalWindowController.focusDown(_:)), NSDownArrowFunctionKey),
+        ]
+        for (title, sel, key) in arrows {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: String(Character(UnicodeScalar(key)!)))
+            item.keyEquivalentModifierMask = [.command, .option]
+            shell.addItem(item)
+        }
+        shell.addItem(.separator())
+        shell.addItem(withTitle: "Close", action: #selector(TerminalWindowController.closePaneOrTab(_:)), keyEquivalent: "w")
         shellItem.submenu = shell
         main.addItem(shellItem)
 
@@ -289,6 +416,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Find…", action: #selector(TerminalView.showFind(_:)), keyEquivalent: "f")
+        edit.addItem(withTitle: "Find Next", action: #selector(TerminalView.findNext(_:)), keyEquivalent: "g")
+        let findPrev = NSMenuItem(title: "Find Previous", action: #selector(TerminalView.findPrevious(_:)), keyEquivalent: "g")
+        findPrev.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(findPrev)
+        let copyOutput = NSMenuItem(title: "Copy Last Command's Output", action: #selector(TerminalView.copyLastOutput(_:)), keyEquivalent: "c")
+        copyOutput.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(copyOutput)
         edit.addItem(.separator())
         edit.addItem(withTitle: "Clear Scrollback", action: #selector(TerminalView.clearScrollback(_:)), keyEquivalent: "k")
         editItem.submenu = edit
@@ -299,6 +435,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         view.addItem(withTitle: "Bigger", action: #selector(TerminalView.increaseFontSize(_:)), keyEquivalent: "+")
         view.addItem(withTitle: "Smaller", action: #selector(TerminalView.decreaseFontSize(_:)), keyEquivalent: "-")
         view.addItem(withTitle: "Actual Size", action: #selector(TerminalView.resetFontSize(_:)), keyEquivalent: "0")
+        view.addItem(.separator())
+        view.addItem(withTitle: "Previous Prompt", action: #selector(TerminalView.previousPrompt(_:)),
+                     keyEquivalent: String(Character(UnicodeScalar(NSUpArrowFunctionKey)!)))
+        view.addItem(withTitle: "Next Prompt", action: #selector(TerminalView.nextPrompt(_:)),
+                     keyEquivalent: String(Character(UnicodeScalar(NSDownArrowFunctionKey)!)))
         view.addItem(.separator())
         let sidebarItem = NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleSidebar(_:)), keyEquivalent: "s")
         sidebarItem.keyEquivalentModifierMask = [.control, .command]

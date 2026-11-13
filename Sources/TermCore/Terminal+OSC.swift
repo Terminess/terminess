@@ -30,8 +30,14 @@ extension Terminal {
         case 133:
             let fields = rest.split(separator: ";").map(String.init)
             if let kind = fields.first?.first {
+                switch kind {
+                case "A": screen.rows[cursor.y].mark.insert(.prompt)
+                case "C": screen.rows[cursor.y].mark.insert(.output)
+                default: break
+                }
                 delegate?.terminal(self, semanticMark: kind, params: Array(fields.dropFirst()))
             }
+        case 1337: inlineImage(rest)
         case 777:
             let fields = rest.split(separator: ";", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
             if fields.first == "notify" {

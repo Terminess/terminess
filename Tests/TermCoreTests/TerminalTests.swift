@@ -404,3 +404,78 @@ func replies(_ t: Terminal, _ input: String) -> String {
         #expect(replies(t, "\(ESC)]11;?\u{07}") == "\(ESC)]11;rgb:fbfb/fbfb/fafa\(ESC)\\")
     }
 }
+
+@Suite struct SearchTests {
+    @Test func plainAndCaseInsensitive() {
+        let t = term(20, 3, "hello World\r\nworld again")
+        let m = t.search("world")
+        #expect(m.count == 2)
+        #expect(m[0] == SearchMatch(startLine: 0, startColumn: 6, endLine: 0, endColumn: 10))
+        #expect(t.search("world", caseSensitive: true).count == 1)
+    }
+
+    @Test func acrossSoftWrap() {
+        let t = term(5, 4, "abcdefghij")
+        let m = t.search("defg")
+        #expect(m == [SearchMatch(startLine: 0, startColumn: 3, endLine: 1, endColumn: 1)])
+    }
+
+    @Test func regexAndScrollback() {
+        let t = term(10, 2, "id=42\r\nx\r\nid=7\r\ny")
+        let m = t.search("id=[0-9]+", regex: true)
+        #expect(m.count == 2)
+        #expect(m[0].startLine == 0 && m[1].startLine == 2)
+        #expect(t.search("(", regex: true).isEmpty)
+    }
+}
+
+@Suite struct ShellIntegrationTests {
+    let A = "\u{1B}]133;A\u{07}", C = "\u{1B}]133;C\u{07}", D = "\u{1B}]133;D;0\u{07}"
+
+    @Test func promptMarksAndLastOutput() {
+        let t = term(20, 10, "\(A)$ ls\r\n\(C)one\r\ntwo\r\n\(D)\(A)$ ")
+        #expect(t.promptLines() == [0, 3])
+        #expect(t.lastCommandOutput() == "one\ntwo")
+    }
+
+    @Test func commandWithNoOutput() {
+        let t = term(20, 10, "\(A)$ echo hi\r\n\(C)hi\r\n\(D)\(A)$ cd x\r\n\(C)\(D)\(A)$ ")
+        #expect(t.lastCommandOutput() == "")
+    }
+
+    @Test func runningCommandHasNoOutputYet() {
+        let t = term(20, 10, "\(A)$ sleep 9\r\n\(C)")
+        #expect(t.lastCommandOutput() == nil)
+    }
+
+    @Test func marksSurviveScrolling() {
+        let t = term(10, 3, "\(A)$ x\r\n\(C)1\r\n2\r\n3\r\n\(D)\(A)$ ")
+        #expect(t.promptLines().count == 2)
+        #expect(t.lastCommandOutput() == "1\n2\n3")
+    }
+}
+
+@Suite struct ImageTests {
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP4z8DAwMDAxMDAwMAAAA4AAWKpRh0AAAAASUVORK5CYII="
+
+    @Test func placesImageAndMovesCursor() {
+        let t = term(20, 10)
+        t.cellPixelWidth = 1
+        t.cellPixelHeight = 1
+        t.feed("ab\u{1B}]1337;File=inline=1;width=4;height=3:\(png)\u{07}")
+        #expect(t.images.count == 1)
+        let img = t.images[0]
+        #expect(img.column == 2 && img.line == 0 && img.widthCells == 4 && img.heightCells == 3)
+        #expect(t.cursor.y == 3 && t.cursor.x == 2)
+    }
+
+    @Test func downloadsAndClearsAreHandled() {
+        let t = term(20, 10)
+        t.feed("\u{1B}]1337;File=inline=0:\(png)\u{07}")
+        #expect(t.images.isEmpty)
+        t.feed("\u{1B}]1337;File=inline=1:\(png)\u{07}")
+        #expect(t.images.count == 1)
+        t.feed("\u{1B}[2J")
+        #expect(t.images.isEmpty)
+    }
+}

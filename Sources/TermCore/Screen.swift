@@ -77,6 +77,7 @@ public final class Screen {
         r.cells.withUnsafeMutableBufferPointer { $0.update(repeating: fill) }
         if !r.clusters.isEmpty { r.clusters.removeAll() }
         r.wrapped = false
+        r.mark = []
         return r
     }
 

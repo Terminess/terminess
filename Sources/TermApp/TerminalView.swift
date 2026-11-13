@@ -29,6 +29,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var syncStarted: Date?
     private var lastCursor: (x: Int, y: Int) = (0, 0)
     private var colorCache: [UInt32: CGColor] = [:]
+    private var imageCache: [Int: NSImage] = [:]
     private var markedText = ""
     private var trackingArea: NSTrackingArea?
 
@@ -45,6 +46,12 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var selectionHead: GridPoint?
     private var selectionUnit: SelectionUnit = .character
     private var mouseReporting = false
+
+    private var findBar: FindBar?
+    private var matches: [SearchMatch] = []
+    private var matchIndex: Int?
+    private var matchesByLine: [Int: [SearchMatch]] = [:]
+    private var lastSearch = Date.distantPast
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -189,6 +196,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private func flushUpdates() {
         lastFlush = Date()
         guard let t = terminal else { return }
+        if findBar != nil, Date().timeIntervalSince(lastSearch) > 0.3 { runSearch(keepCurrent: true) }
         if t.modes.synchronizedOutput {
             if syncStarted == nil {
                 syncStarted = Date()
@@ -227,8 +235,12 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         NSRect(x: 0, y: padding + CGFloat(y) * cellSize.height - 1, width: bounds.width, height: cellSize.height + 2)
     }
 
+    var onFocus: (() -> Void)?
+    var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
+
     override func becomeFirstResponder() -> Bool {
         updateCursorDisplay()
+        onFocus?()
         return true
     }
 
@@ -309,7 +321,12 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         for vy in first...last {
             drawRow(viewportRow(vy, t), vy: vy, line: absoluteLine(vy, t), selection: selection, t, p, ctx)
         }
+        drawImages(t)
         drawCursor(t, p, ctx)
+        if dimmed {
+            ctx.setFillColor(cgColor(p.background, alpha: 0.38))
+            ctx.fill(dirtyRect)
+        }
     }
 
     private func drawRow(_ row: Row, vy: Int, line: Int, selection: (GridPoint, GridPoint)?,
@@ -342,6 +359,19 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
                 ctx.fill(CGRect(x: padding + CGFloat(x) * cw, y: top, width: CGFloat(end - x) * cw, height: ch))
             }
             x = end
+        }
+
+        if let found = matchesByLine[line] {
+            let current = matchIndex.map { matches[$0] }
+            for m in found {
+                let from = m.startLine == line ? m.startColumn : 0
+                let to = m.endLine == line ? m.endColumn : cols - 1
+                let isCurrent = current == m
+                ctx.setFillColor(isCurrent ? CGColor(srgbRed: 1, green: 0.62, blue: 0.1, alpha: 0.75)
+                                           : CGColor(srgbRed: 1, green: 0.85, blue: 0.2, alpha: 0.35))
+                ctx.fill(CGRect(x: padding + CGFloat(from) * cw, y: top,
+                                width: CGFloat(to - from + 1) * cw, height: ch))
+            }
         }
 
         ctx.saveGState()
@@ -382,6 +412,30 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
             }
         }
         ctx.restoreGState()
+    }
+
+    private func drawImages(_ t: Terminal) {
+        let images = t.images
+        guard !images.isEmpty else {
+            if !imageCache.isEmpty { imageCache.removeAll() }
+            return
+        }
+        let top = absoluteLine(0, t)
+        var live = Set<Int>()
+        for img in images where img.onAlternate == t.isAlternate {
+            live.insert(img.id)
+            let vy = img.line - top
+            guard vy + img.heightCells > 0, vy < t.rows else { continue }
+            let image = imageCache[img.id] ?? NSImage(data: img.data)
+            guard let image else { continue }
+            imageCache[img.id] = image
+            let rect = NSRect(x: padding + CGFloat(img.column) * cellSize.width,
+                              y: padding + CGFloat(vy) * cellSize.height,
+                              width: CGFloat(img.widthCells) * cellSize.width,
+                              height: CGFloat(img.heightCells) * cellSize.height)
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+        imageCache = imageCache.filter { live.contains($0.key) }
     }
 
     private func drawText(_ text: String, at x: Int, baseline: CGFloat, attrs a: Attributes, p: Palette,
@@ -522,10 +576,24 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     }
 
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if window?.firstResponder === self, markedText.isEmpty, let b = KeyBinding.match(event) {
+            scrollToBottom()
+            session?.send(b.bytes)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func keyDown(with event: NSEvent) {
         guard let t = terminal else { return }
         NSCursor.setHiddenUntilMouseMoves(true)
         wakeCursor()
+        if markedText.isEmpty, let b = KeyBinding.match(event) {
+            scrollToBottom()
+            session?.send(b.bytes)
+            return
+        }
 
         if !markedText.isEmpty {
             interpretKeyEvents([event])
@@ -694,6 +762,110 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func characterIndex(for point: NSPoint) -> Int { 0 }
+
+
+    @objc func showFind(_ sender: Any?) {
+        if findBar == nil {
+            let bar = FindBar(frame: .zero)
+            bar.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(bar)
+            NSLayoutConstraint.activate([
+                bar.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+                bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            ])
+            bar.onChange = { [weak self] _, _, _ in self?.runSearch(keepCurrent: false) }
+            bar.onNext = { [weak self] in self?.step(1) }
+            bar.onPrevious = { [weak self] in self?.step(-1) }
+            bar.onClose = { [weak self] in self?.closeFind() }
+            findBar = bar
+            if let selected = selectedText(), !selected.isEmpty, !selected.contains("\n") {
+                bar.field.stringValue = selected
+                runSearch(keepCurrent: false)
+            }
+        }
+        window?.makeFirstResponder(findBar?.field)
+    }
+
+    func debugSetFindQuery(_ q: String) {
+        findBar?.field.stringValue = q
+        runSearch(keepCurrent: false)
+    }
+
+    @objc func findNext(_ sender: Any?) { if findBar == nil { showFind(nil) } else { step(1) } }
+    @objc func findPrevious(_ sender: Any?) { if findBar == nil { showFind(nil) } else { step(-1) } }
+
+    private func closeFind() {
+        findBar?.removeFromSuperview()
+        findBar = nil
+        matches = []
+        matchesByLine = [:]
+        matchIndex = nil
+        needsDisplay = true
+        window?.makeFirstResponder(self)
+    }
+
+    private func runSearch(keepCurrent: Bool) {
+        guard let t = terminal, let bar = findBar else { return }
+        lastSearch = Date()
+        let query = bar.field.stringValue
+        let previous = matchIndex.map { matches[$0] }
+        matches = t.search(query, regex: bar.regex, caseSensitive: bar.caseSensitive)
+        var byLine: [Int: [SearchMatch]] = [:]
+        for m in matches { for l in m.startLine...m.endLine { byLine[l, default: []].append(m) } }
+        matchesByLine = byLine
+        let valid = !bar.regex || (try? NSRegularExpression(pattern: query)) != nil || query.isEmpty
+        if keepCurrent, let previous, let i = matches.firstIndex(of: previous) {
+            matchIndex = i
+        } else {
+            matchIndex = matches.isEmpty ? nil : matches.count - 1
+            if let i = matchIndex { reveal(matches[i]) }
+        }
+        bar.setCount(current: matchIndex, total: matches.count, valid: valid)
+        needsDisplay = true
+    }
+
+    private func step(_ delta: Int) {
+        guard !matches.isEmpty else { return }
+        let i = ((matchIndex ?? matches.count - 1) + delta + matches.count) % matches.count
+        matchIndex = i
+        reveal(matches[i])
+        findBar?.setCount(current: i, total: matches.count, valid: true)
+        needsDisplay = true
+    }
+
+    private func reveal(_ m: SearchMatch) {
+        guard let t = terminal else { return }
+        let sb = t.screen.scrollback.count
+        let top = absoluteLine(0, t), bottom = absoluteLine(t.rows - 1, t)
+        guard m.startLine < top || m.endLine > bottom else { return }
+        let wanted = t.firstAbsoluteLine + sb + t.rows / 2 - m.startLine
+        scrollOffset = min(max(wanted, 0), sb)
+        needsDisplay = true
+    }
+
+
+    @objc func previousPrompt(_ sender: Any?) { jumpToPrompt(-1) }
+    @objc func nextPrompt(_ sender: Any?) { jumpToPrompt(1) }
+
+    private func jumpToPrompt(_ direction: Int) {
+        guard let t = terminal, !t.isAlternate else { return }
+        let prompts = t.promptLines()
+        let top = absoluteLine(0, t)
+        let target = direction < 0 ? prompts.last(where: { $0 < top }) : prompts.first(where: { $0 > top })
+        guard let line = target else {
+            if direction > 0 { scrollToBottom() } else { NSSound.beep() }
+            return
+        }
+        let sb = t.screen.scrollback.count
+        scrollOffset = min(max(t.firstAbsoluteLine + sb - line, 0), sb)
+        needsDisplay = true
+    }
+
+    @objc func copyLastOutput(_ sender: Any?) {
+        guard let text = terminal?.lastCommandOutput(), !text.isEmpty else { NSSound.beep(); return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
 
 
     @objc func copy(_ sender: Any?) {

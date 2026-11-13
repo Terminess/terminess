@@ -7,6 +7,8 @@ struct OpenTab: Identifiable, Equatable {
     let command: String
     let directory: String
     let isKey: Bool
+    var attention = false
+    var panes = 1
 }
 
 struct PairJob: Identifiable, Equatable {
@@ -50,6 +52,7 @@ struct SessionItem: Identifiable, Equatable, Decodable {
 protocol SidebarActions: AnyObject {
     func focusTab(_ id: ObjectIdentifier)
     func renameTab(_ id: ObjectIdentifier)
+    func setTheme(_ name: String?, forTab id: ObjectIdentifier)
     func resume(_ session: SessionItem)
     func startPair(mode: String, target: String)
     func jobAction(_ job: PairJob, _ action: String)
