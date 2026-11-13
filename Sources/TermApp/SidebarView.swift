@@ -10,6 +10,7 @@ enum SidebarID: Hashable {
 
 struct SidebarView: View {
     @ObservedObject var model: SidebarModel
+    var drops: DropRelay?
     @State private var selection: SidebarID?
     @AppStorage("sidebar.openExpanded") private var openExpanded = true
     @AppStorage("sidebar.pairExpanded") private var pairExpanded = true
@@ -29,6 +30,11 @@ struct SidebarView: View {
                     if model.issuesRepo != nil { issuesSection }
                 }
                 sessionSections
+                if !model.search.isEmpty && listedSessions.isEmpty {
+                    Text("No matches for \u{201C}\(model.search)\u{201D}")
+                        .font(.callout).foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                }
                 if let note = model.sessionsNote, model.search.isEmpty {
                     Text(note).font(.callout).foregroundStyle(.tertiary)
                 }
@@ -44,6 +50,7 @@ struct SidebarView: View {
             }
         }
         .frame(minWidth: 220)
+        .onDrop(of: Drops.utTypes, isTargeted: nil) { _ in drops?.dropFromSwiftUI() ?? false }
     }
 
 
@@ -364,6 +371,7 @@ private struct SearchField: View {
                 .foregroundStyle(.secondary)
             TextField("Search", text: $text)
                 .textFieldStyle(.plain)
+                .onExitCommand { text = "" }
             if !text.isEmpty {
                 Button { text = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)

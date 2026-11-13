@@ -93,6 +93,12 @@ struct SettingsView: View {
                 Toggle("Hide the agent's own input box while the composer is open", isOn: $settings.composerHidesAgentInput)
                 Text("Leaves one place to type. The agent's status line stays, just above the composer. Questions and menus from the agent still show in the terminal.")
                     .font(.caption).foregroundStyle(.secondary)
+                Picker("Status line", selection: $settings.statusStyle) {
+                    Text("Native").tag("native")
+                    Text("As in the terminal").tag("terminal")
+                }
+                Text("Native redraws the agent's status line as labels and meters. Esc or Cmd-. in the composer stops the agent while it works.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Links") {

@@ -146,7 +146,15 @@ enum DebugScript {
                     let view = env["TERMAPP_READER"] != nil ? c.contentContainer : (env["TERMAPP_SPLITS"] != nil ? c.paneHost : c.terminalView)
                     if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                         view.cacheDisplay(in: view.bounds, to: rep)
-                        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                        let out = rep.copy() as! NSBitmapImageRep
+                        NSGraphicsContext.saveGraphicsState()
+                        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: out)
+                        let r = NSRect(origin: .zero, size: out.size)
+                        (c.window?.backgroundColor ?? .black).withAlphaComponent(1).setFill()
+                        r.fill()
+                        rep.draw(in: r, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
+                        NSGraphicsContext.restoreGraphicsState()
+                        try? out.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
                     }
                     let m = SidebarModel.shared
                     m.refreshTabs()

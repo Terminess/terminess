@@ -7,6 +7,7 @@ final class ReaderModel: ObservableObject {
     @Published var agentName = ""
     @Published var agentID = ""
     @Published var live = false
+    var drops: DropRelay?
     @Published var working = false
     var activity: (() -> Date?)?
     private var watcher: DispatchSourceFileSystemObject?
@@ -165,7 +166,7 @@ struct ReaderView: View {
             }
         }
         .frame(minWidth: 300)
-        .background(.background)
+        .onDrop(of: Drops.utTypes, isTargeted: nil) { _ in model.drops?.dropFromSwiftUI() ?? false }
     }
 }
 
@@ -238,11 +239,23 @@ private struct ItemView: View {
     }
 }
 
+@MainActor
+final class ComposerState: ObservableObject {
+    @Published var busy = false
+    @Published var draft = ""
+    var drops: DropRelay?
+}
+
 struct ComposerView: View {
     let placeholder: String
+    @ObservedObject var state: ComposerState
     let onSend: (String) -> Void
+    let onStop: () -> Void
     let onEscape: () -> Void
-    @State private var text = ""
+    private var text: String {
+        get { state.draft }
+        nonmutating set { state.draft = newValue }
+    }
     @State private var height: CGFloat = 22
 
     var body: some View {
@@ -251,24 +264,41 @@ struct ComposerView: View {
                 if text.isEmpty {
                     Text(placeholder).foregroundStyle(.tertiary).padding(.leading, 5).padding(.top, 1)
                 }
-                ComposerTextView(text: $text, height: $height, onSend: send, onEscape: onEscape)
+                ComposerTextView(text: $state.draft, height: $height, onSend: send, onEscape: escape)
                     .frame(height: min(max(height, 22), 140))
             }
-            Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
+            if state.busy && text.isEmpty {
+                Button(action: onStop) {
+                    Image(systemName: "stop.circle.fill").font(.system(size: 22))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.primary)
+                .keyboardShortcut(".", modifiers: .command)
+                .help("Stop the agent (Esc or Cmd-.)")
+            } else {
+                Button(action: send) {
+                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(text.isEmpty ? Color.secondary : Color.accentColor)
+                .disabled(text.isEmpty)
+                .help("Send (Return)")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(text.isEmpty ? Color.secondary : Color.accentColor)
-            .disabled(text.isEmpty)
-            .help("Send (Return)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.background.opacity(0.9))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(.separator, lineWidth: 0.5)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.06))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.12), lineWidth: 0.5)))
         .padding(.horizontal, 12)
         .padding(.bottom, 10)
         .padding(.top, 4)
+        .onDrop(of: Drops.utTypes, isTargeted: nil) { _ in state.drops?.dropFromSwiftUI() ?? false }
+    }
+
+    private func escape() {
+        if state.busy { onStop() }
+        else if !text.isEmpty { text = "" }
+        else { onEscape() }
     }
 
     private func send() {
@@ -303,14 +333,22 @@ private struct ComposerTextView: NSViewRepresentable {
         tv.delegate = context.coordinator
         tv.onSend = onSend
         tv.onEscape = onEscape
-        tv.registerForDraggedTypes([.fileURL])
+        tv.registerForDraggedTypes([.fileURL, .png, .tiff])
         scroll.documentView = tv
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let tv = scroll.documentView as? KeyTextView else { return }
-        if tv.string != text { tv.string = text }
+        if tv.string != text {
+            tv.string = text
+            tv.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+            if let lm = tv.layoutManager, let tc = tv.textContainer {
+                lm.ensureLayout(for: tc)
+                let h = lm.usedRect(for: tc).height + 6
+                DispatchQueue.main.async { height = h }
+            }
+        }
         tv.onSend = onSend
         tv.onEscape = onEscape
     }
@@ -345,8 +383,10 @@ final class KeyTextView: NSTextView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        if let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
-            insertText(urls.map { shellQuote($0.path) }.joined(separator: " ") + " ", replacementRange: selectedRange())
+        let pb = sender.draggingPasteboard
+        let isFileOrImage = pb.availableType(from: [.fileURL, .png, .tiff]) != nil
+        if isFileOrImage, let text = Drops.text(from: pb) {
+            insertText(text + " ", replacementRange: selectedRange())
             return true
         }
         return super.performDragOperation(sender)

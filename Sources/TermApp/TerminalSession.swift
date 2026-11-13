@@ -27,7 +27,7 @@ final class TerminalSession {
 
     init(columns: Int, rows: Int) {
         terminal = Terminal(columns: columns, rows: rows, scrollback: Settings.shared.scrollback)
-        terminal.softwareName = "terminal"
+        terminal.softwareName = "Terminess"
         terminal.supportsKittyKeyboard = true
         events.session = self
         terminal.delegate = events
@@ -38,7 +38,7 @@ final class TerminalSession {
         let name = "-" + (shell.split(separator: "/").last.map(String.init) ?? "zsh")
         let cwd = workingDirectory ?? FileManager.default.homeDirectoryForCurrentUser.path
         do {
-            let env = ShellIntegration.environment(for: shell, base: PTYProcess.defaultEnvironment())
+            let env = ShellIntegration.environment(for: shell, base: PTYProcess.defaultEnvironment(program: "Terminess"))
             let p = try PTYProcess(executable: shell, argv0: name, environment: env, workingDirectory: cwd,
                                    columns: terminal.columns, rows: terminal.rows,
                                    pixelWidth: terminal.columns * cellWidth, pixelHeight: terminal.rows * cellHeight)

@@ -284,10 +284,11 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     var hideAgentInput = false { didSet { if hideAgentInput != oldValue { updateAgentScreen(); needsDisplay = true } } }
     var hideAgentStatus = false { didSet { if hideAgentStatus != oldValue { updateAgentScreen(); needsDisplay = true } } }
-    var onAgentScreen: ((Bool, [Row]) -> Void)?
+    var onAgentScreen: ((Bool, [Row], Bool) -> Void)?
     private var hiddenBand: ClosedRange<Int>?
     private var lastStatusText = ""
     private var lastInputVisible: Bool?
+    private var lastBusy = false
 
     func updateAgentScreen() {
         guard let t = terminal else { return }
@@ -304,10 +305,15 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         }
         let text = status.map { $0.plainText() }.joined(separator: "\n")
         let visible = input != nil
-        if text != lastStatusText || visible != lastInputVisible {
+        var busy = false
+        for y in max(0, t.rows - 30)..<t.rows where t.screen.rows[y].plainText().lowercased().contains("esc to interrupt") {
+            busy = true; break
+        }
+        if text != lastStatusText || visible != lastInputVisible || busy != lastBusy {
             lastStatusText = text
             lastInputVisible = visible
-            onAgentScreen?(visible, status)
+            lastBusy = busy
+            onAgentScreen?(visible, status, busy)
         }
     }
 

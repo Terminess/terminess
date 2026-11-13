@@ -225,10 +225,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         controller.apply(scheme: theme.isDark ? .dark : .light, palette: theme.palette, appearance: forcedAppearance)
         if let host, let window = controller.window {
             host.addTabbedWindow(window, ordered: .above)
-            window.makeKeyAndOrderFront(nil)
-        } else {
-            controller.showWindow(nil)
         }
+        controller.focus()
         SidebarModel.shared.refreshTabs()
         return controller
     }

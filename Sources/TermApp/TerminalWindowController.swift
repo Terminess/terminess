@@ -83,6 +83,7 @@ final class PaneHostView: NSView {
 
 final class ContentContainer: NSView {
     let split = NSSplitView()
+    var drops: DropRelay?
     let strip = StatusStripView()
     var showStrip = false { didSet { strip.isHidden = !showStrip; needsLayout = true } }
     var composer: NSView? {
@@ -100,6 +101,13 @@ final class ContentContainer: NSView {
         addSubview(split)
         strip.isHidden = true
         addSubview(strip)
+        registerForDraggedTypes(Drops.pasteboardTypes)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        drops?.drop(sender.draggingPasteboard) ?? false
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -123,7 +131,9 @@ final class ContentContainer: NSView {
 @MainActor
 final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
     private let container = ContentContainer()
+    private let drops = DropRelay()
     let reader = ReaderModel()
+    let composerState = ComposerState()
     private var readerHost: NSView?
     private(set) var panes: [Pane] = []
     private(set) var focused: Pane!
@@ -150,7 +160,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     private static let modeItem = NSToolbarItem.Identifier("viewMode")
 
     init(workingDirectory: String?, command: String? = nil, layout: PaneLayout? = nil) {
-        let sidebarHost = NSHostingController(rootView: SidebarView(model: SidebarModel.shared))
+        let sidebarHost = NSHostingController(rootView: SidebarView(model: SidebarModel.shared, drops: drops))
         sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarHost)
         sidebarItem.minimumThickness = 220
         sidebarItem.maximumThickness = 420
@@ -173,7 +183,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
                               backing: .buffered, defer: false)
         window.tabbingMode = .preferred
         window.tabbingIdentifier = "terminal"
-        window.title = "terminal"
+        window.title = "Terminess"
         window.backgroundColor = probe.backgroundNSColor
         window.contentViewController = split
         window.setContentSize(size)
@@ -181,6 +191,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         window.setFrameAutosaveName("TerminalWindow")
         super.init(window: window)
         window.delegate = self
+        container.drops = drops
+        reader.drops = drops
+        composerState.drops = drops
+        drops.handler = { [weak self] pb in self?.acceptDrop(pb) ?? false }
 
         let toolbar = NSToolbar(identifier: "terminal")
         toolbar.delegate = self
@@ -268,8 +282,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     }
 
     private func agentScreenChanged(inputVisible: Bool, status: [Row]) {
-        container.strip.rows = status
         container.strip.palette = session.terminal.palette
+        container.strip.native = Settings.shared.statusStyle == "native"
+        container.strip.rows = status
         container.needsLayout = true
         guard mode == .chat, Agent.detect(session.process?.foregroundCommand) != nil else { return }
         questionTimer?.cancel()
@@ -324,7 +339,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             let isAgent = agent == "claude" || agent == "codex"
             p.view.hideAgentInput = on && isAgent
             p.view.hideAgentStatus = on && isAgent
-            p.view.onAgentScreen = p === focused ? { [weak self] visible, status in
+            p.view.onAgentScreen = p === focused ? { [weak self] visible, status, busy in
+                self?.composerState.busy = busy
                 self?.agentScreenChanged(inputVisible: visible, status: status)
             } : nil
         }
@@ -336,13 +352,35 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         guard visible != composerVisible else { return }
         if visible {
             let view = NSHostingView(rootView: ComposerView(placeholder: "Message the agent in this tab",
+                state: composerState,
                 onSend: { [weak self] text in self?.sendFromComposer(text) },
+                onStop: { [weak self] in self?.interruptAgent() },
                 onEscape: { [weak self] in self?.focus() }))
             container.composer = view
         } else {
             container.composer = nil
             focus()
         }
+    }
+
+    func interruptAgent() {
+        guard let pane = focused else { return }
+        pane.session.send([0x1B])
+    }
+
+    func acceptDrop(_ pb: NSPasteboard) -> Bool {
+        guard let text = Drops.text(from: pb), !text.isEmpty else { return false }
+        if composerVisible {
+            let draft = composerState.draft
+            let gap = draft.isEmpty || draft.hasSuffix(" ") || draft.hasSuffix("\n") ? "" : " "
+            composerState.draft = draft + gap + text + " "
+            return true
+        }
+        guard let pane = focused else { return false }
+        if pane.parked != nil { resume(pane) }
+        pane.session.send(InputEncoder.paste(text + " ", modes: pane.session.terminal.modes))
+        window?.makeFirstResponder(pane.view)
+        return true
     }
 
     func sendFromComposer(_ text: String) {
@@ -582,10 +620,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     func apply(scheme: TermCore.ColorScheme, palette: Palette, appearance: NSAppearance?) {
         window?.appearance = appearance
         container.strip.palette = palette
-        container.wantsLayer = true
-        container.layer?.backgroundColor = CGColor(srgbRed: CGFloat(palette.background.r) / 255,
-                                                   green: CGFloat(palette.background.g) / 255,
-                                                   blue: CGFloat(palette.background.b) / 255, alpha: 1)
+        container.strip.native = Settings.shared.statusStyle == "native"
         for p in panes {
             p.session.terminal.setColorScheme(scheme, palette: palette)
             p.view.needsDisplay = true

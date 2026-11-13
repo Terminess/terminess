@@ -41,6 +41,7 @@ final class Settings: ObservableObject {
     @Published var idleParkingMinutes: Int { didSet { save("idleParkingMinutes", idleParkingMinutes) } }
     @Published var editor: String { didSet { save("editor", editor) } }
     @Published var composerHidesAgentInput: Bool { didSet { save("composerHidesAgentInput", composerHidesAgentInput) } }
+    @Published var statusStyle: String { didSet { save("statusStyle", statusStyle) } }
     @Published var naturalTextEditing: Bool { didSet { save("naturalTextEditing", naturalTextEditing) } }
     @Published var keyBindings: [KeyBinding] {
         didSet {
@@ -77,6 +78,7 @@ final class Settings: ObservableObject {
         naturalTextEditing = d.object(forKey: "naturalTextEditing") as? Bool ?? true
         composerHidesAgentInput = d.object(forKey: "composerHidesAgentInput") as? Bool ?? true
         editor = d.string(forKey: "editor") ?? "default"
+        statusStyle = d.string(forKey: "statusStyle") ?? "native"
         idleParking = d.object(forKey: "idleParking") as? Bool ?? true
         idleParkingMinutes = d.object(forKey: "idleParkingMinutes") as? Int ?? 30
         if let data = d.data(forKey: "keyBindings"), let b = try? JSONDecoder().decode([KeyBinding].self, from: data) {
