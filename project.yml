@@ -74,6 +74,8 @@ targets:
     dependencies:
       - package: Terminal
         product: TermHost
+      - package: Terminal
+        product: TermHostServer
     settings:
       base:
         PRODUCT_NAME: terminessd

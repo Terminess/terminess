@@ -6,6 +6,7 @@ import Darwin
 import Dispatch
 import Foundation
 import TermHost
+import TermHostServer
 
 setvbuf(stdout, nil, _IONBF, 0)
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -271,6 +272,41 @@ func service(_ action: String?) -> Never {
 }
 
 
+func pair() -> Never {
+    let env = ProcessInfo.processInfo.environment
+    let user = env["USER"] ?? NSUserName()
+    var address = value(after: "--address", in: rest)
+    if address == nil {
+        if let conn = env["SSH_CONNECTION"]?.split(separator: " "), conn.count >= 3 { address = String(conn[2]) }
+    }
+    let host = ProcessInfo.processInfo.hostName
+    guard let addr = address else { fail("pass --address with this machine's public address or name") }
+    let name = value(after: "--name", in: rest) ?? host.split(separator: ".").first.map(String.init) ?? addr
+    let port = env["SSH_CONNECTION"]?.split(separator: " ").last.map(String.init) ?? "22"
+    let me = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
+    let home = env["HOME"] ?? NSHomeDirectory()
+    let path = me.hasPrefix(home + "/") ? "~" + me.dropFirst(home.count) : me
+    let hostKey = (try? String(contentsOfFile: "/etc/ssh/ssh_host_ed25519_key.pub", encoding: .utf8))?
+        .split(separator: " ").prefix(2).joined(separator: " ")
+    var c = URLComponents()
+    c.scheme = "terminess"
+    c.host = "add"
+    c.queryItems = [URLQueryItem(name: "name", value: name), URLQueryItem(name: "address", value: addr),
+                    URLQueryItem(name: "user", value: user), URLQueryItem(name: "port", value: port),
+                    URLQueryItem(name: "path", value: path)]
+        + (hostKey.map { [URLQueryItem(name: "hostkey", value: $0)] } ?? [])
+    let link = c.url!.absoluteString.replacingOccurrences(of: "+", with: "%2B")
+    print("""
+    Open this link on your iPhone (or scan it as a QR code) to add \(name) to Terminess:
+
+    \(link)
+
+    Then add the iPhone's key (Terminess shows it under "This iPhone's key") to ~/.ssh/authorized_keys here.
+    """)
+    exit(0)
+}
+
+
 func value(after flag: String, in args: [String]) -> String? {
     guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
     return args[i + 1]
@@ -322,6 +358,9 @@ case "stdio":
 case "service":
     service(rest.first)
 
+case "pair":
+    pair()
+
 case "-h", "--help", "help":
     print("""
     terminessd: keeps shells and agents alive for Terminess clients.
@@ -332,6 +371,7 @@ case "-h", "--help", "help":
       terminessd attach [ID|NAME]      attach (newest by default); Ctrl-\\ detaches
       terminessd kill ID|NAME          end a session
       terminessd stdio                 bridge stdin/stdout to the service (for ssh)
+      terminessd pair [--address A]    print a link that adds this machine to Terminess on iPhone
       terminessd service install       run it as a systemd user service (Linux)
       terminessd service uninstall|status
     """)

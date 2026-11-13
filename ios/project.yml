@@ -1,0 +1,50 @@
+# Terminess for iPhone. Generate with: cd ios && xcodegen generate
+# Lives apart from the Mac project so the two never block each other.
+name: TerminessPhone
+options:
+  bundleIdPrefix: com.nsokin
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    SWIFT_VERSION: "5.0"
+packages:
+  Terminal:
+    path: ..
+  NIOSSH:
+    url: https://github.com/apple/swift-nio-ssh.git
+    from: "0.9.0"
+targets:
+  Terminess:
+    type: application
+    platform: iOS
+    sources:
+      - path: Terminess
+    dependencies:
+      - package: Terminal
+        product: TermCore
+      - package: Terminal
+        product: TermHost
+      - package: NIOSSH
+        product: NIOSSH
+    info:
+      path: Terminess/Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: com.nsokin.terminal.add
+            CFBundleURLSchemes: [terminess]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nsokin.terminal.ios
+        PRODUCT_NAME: Terminess
+        TARGETED_DEVICE_FAMILY: "1"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Terminess
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Terminess connects to your own machines over SSH, including ones on your local network.

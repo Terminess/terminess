@@ -70,6 +70,10 @@ public struct SessionInfo: Codable, Equatable {
     public var cwd: String
     public var created: Double
     public var clients: Int
+
+    public init(id: String, name: String, command: String, cwd: String, created: Double, clients: Int) {
+        self.id = id; self.name = name; self.command = command; self.cwd = cwd; self.created = created; self.clients = clients
+    }
 }
 
 public struct ForegroundInfo: Codable, Equatable {

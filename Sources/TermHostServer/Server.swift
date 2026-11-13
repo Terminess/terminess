@@ -5,6 +5,7 @@ import Darwin
 #endif
 import Dispatch
 import Foundation
+import TermHost
 import TermPTY
 
 final class HostSession {
