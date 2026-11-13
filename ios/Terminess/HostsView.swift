@@ -3,11 +3,12 @@ import UIKit
 
 struct HostsView: View {
     @ObservedObject var store = HostStore.shared
+    @ObservedObject var router = Router.shared
     @State private var editing: SavedHost?
     @State private var copied = false
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $router.path) {
             List {
                 Section {
                     ForEach(store.hosts) { host in

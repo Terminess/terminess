@@ -10,7 +10,14 @@ final class ScreenModel: ObservableObject {
     @Published private(set) var text = AttributedString()
     @Published private(set) var status: String?
     @Published private(set) var ended = false
+    @Published private(set) var sessionID: String?
+    @Published private(set) var title = ""
+    @Published private(set) var command = ""
+    @Published private(set) var connected = false
+    private let events = ScreenEvents()
+    private var pendingInput: String?
     private var sizeAfterReplay: (Int, Int)?
+    private var viewGrid: (cols: Int, rows: Int)?
     private var renderPending = false
     let font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
 
@@ -18,7 +25,20 @@ final class ScreenModel: ObservableObject {
         terminal = Terminal(columns: 50, rows: 30, scrollback: 2000)
         terminal.softwareName = "Terminess"
         terminal.setColorScheme(.dark)
+        events.model = self
+        terminal.delegate = events
     }
+
+    var isAgent: Bool { command == "claude" || command == "codex" }
+    var busy: Bool {
+        guard let first = title.unicodeScalars.first else { return false }
+        return (0x25D0...0x25D3).contains(first.value) || (0x2800...0x28FF).contains(first.value)
+    }
+    var topic: String {
+        String(title.drop { !$0.isLetter && !$0.isNumber }).trimmingCharacters(in: .whitespaces)
+    }
+
+    fileprivate func titleChanged(_ t: String) { title = t }
 
     var background: SwiftUI.Color { SwiftUI.Color(rgb: terminal.palette.background) }
 
@@ -28,14 +48,22 @@ final class ScreenModel: ObservableObject {
         return (max(20, Int((size.width - 12) / w)), max(8, Int((size.height - 8) / h)))
     }
 
-    func start(_ attachment: HostAttachment, cols: Int, rows: Int) {
+    func start(_ attachment: HostAttachment, cols: Int, rows: Int, input: String? = nil) {
         self.attachment = attachment
-        terminal.resize(columns: cols, rows: rows)
+        pendingInput = input
+        status = nil
+        terminal.fullReset()
+        terminal.setColorScheme(.dark)
+        let size = viewGrid ?? (cols, rows)
+        terminal.resize(columns: size.cols, rows: size.rows)
         attachment.resizesAfterReplay = true
         terminal.onResponse = { [weak attachment] bytes in attachment?.write(bytes) }
-        attachment.onAttached = { [weak self] _, c, r in
+        attachment.onAttached = { [weak self] id, c, r in
             MainActor.assumeIsolated {
-                guard let self, c > 0, r > 0 else { return }
+                guard let self else { return }
+                self.sessionID = id
+                self.connected = true
+                guard c > 0, r > 0 else { return }
                 if c != self.terminal.columns || r != self.terminal.rows {
                     self.sizeAfterReplay = (self.terminal.columns, self.terminal.rows)
                     self.terminal.resize(columns: c, rows: r)
@@ -51,6 +79,10 @@ final class ScreenModel: ObservableObject {
                 }
                 self.attachment?.resize(cols: self.terminal.columns, rows: self.terminal.rows)
                 self.scheduleRender()
+                if let input = self.pendingInput {
+                    self.pendingInput = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.send(Array((input + "\r").utf8)) }
+                }
             }
         }
         attachment.onOutput = { [weak self] bytes in
@@ -59,12 +91,19 @@ final class ScreenModel: ObservableObject {
                 self?.scheduleRender()
             }
         }
-        attachment.onExit = { [weak self] _ in MainActor.assumeIsolated { self?.ended = true; self?.status = "Session ended" } }
-        attachment.onDisconnect = { [weak self] m in MainActor.assumeIsolated { self?.status = m } }
+        attachment.onForeground = { [weak self] fg in MainActor.assumeIsolated { self?.command = fg.command } }
+        attachment.onExit = { [weak self] _ in MainActor.assumeIsolated { self?.ended = true; self?.connected = false; self?.status = "Session ended" } }
+        attachment.onDisconnect = { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.connected = false
+                self?.status = "Reconnecting…"
+            }
+        }
         attachment.start()
     }
 
     func resize(cols: Int, rows: Int) {
+        viewGrid = (cols, rows)
         guard cols != terminal.columns || rows != terminal.rows else { return }
         if sizeAfterReplay != nil { sizeAfterReplay = (cols, rows); return }
         terminal.resize(columns: cols, rows: rows)
@@ -81,7 +120,11 @@ final class ScreenModel: ObservableObject {
 
     func key(_ k: Key) { send(InputEncoder.encode(k, modifiers: [], modes: terminal.modes)) }
 
-    func detach() { attachment?.detach() }
+    func detach() {
+        attachment?.detach()
+        attachment = nil
+        connected = false
+    }
 
     private func scheduleRender() {
         guard !renderPending else { return }
@@ -139,6 +182,13 @@ final class ScreenModel: ObservableObject {
         if a.flags.contains(.faint) { r.foregroundColor = SwiftUI.Color(rgb: fg).opacity(0.6) }
         if a.underline != .none { r.underlineStyle = .single }
         return r
+    }
+}
+
+private final class ScreenEvents: TerminalDelegate {
+    weak var model: ScreenModel?
+    func terminal(_ t: Terminal, titleChanged title: String) {
+        MainActor.assumeIsolated { model?.titleChanged(title) }
     }
 }
 

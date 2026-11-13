@@ -7,6 +7,7 @@ import Dispatch
 import Foundation
 import TermHost
 import TermPTY
+import TermTranscript
 
 final class HostSession {
     let id: String
@@ -20,6 +21,13 @@ final class HostSession {
     var cols: Int
     var rows: Int
     var lastForeground: ForegroundInfo?
+    var scanner = OutputScanner()
+    var title = ""
+    var busy = false
+    var attention = false
+    var active = Date().timeIntervalSince1970
+    var lastPush = 0.0
+    var transcript: (agent: String, path: String, pid: Int32)?
 
     init(id: String, name: String, process: PTYProcess, command: String, cols: Int, rows: Int) {
         self.id = id
@@ -47,8 +55,21 @@ final class HostSession {
     }
 
     var info: SessionInfo {
-        SessionInfo(id: id, name: name, command: process.foregroundCommand ?? initialCommand,
-                    cwd: process.foregroundDirectory ?? "", created: created, clients: clients.count)
+        var i = SessionInfo(id: id, name: name, command: process.foregroundCommand ?? initialCommand,
+                            cwd: process.foregroundDirectory ?? "", created: created, clients: clients.count)
+        i.title = title.isEmpty ? nil : title
+        i.busy = busy
+        i.attention = attention
+        i.active = active
+        return i
+    }
+
+    var readableTitle: String {
+        let command = process.foregroundCommand ?? initialCommand
+        let topic = TitleState.clean(title)
+        let agent = command == "claude" ? "Claude Code" : (command == "codex" ? "Codex" : nil)
+        if let agent { return topic.isEmpty || topic.lowercased() == agent.lowercased() ? agent : topic }
+        return topic.isEmpty ? command : topic
     }
 }
 
@@ -57,6 +78,9 @@ public final class HostServer: @unchecked Sendable {
     private var listenFD: Int32 = -1
     private var acceptSource: DispatchSourceRead?
     private var infoTimer: DispatchSourceTimer?
+    private let push = PushRegistry()
+    private var transcriptSubs: [ObjectIdentifier: (session: String, sent: [TranscriptItem], mtime: Date?)] = [:]
+    private var uploads: [ObjectIdentifier: (path: String, handle: FileHandle)] = [:]
     private var sessions: [String: HostSession] = [:]
     private var order: [String] = []
     private var connections: [ObjectIdentifier: Connection] = [:]
@@ -77,7 +101,10 @@ public final class HostServer: @unchecked Sendable {
         src.resume()
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + 1, repeating: 1)
-        t.setEventHandler { [weak self] in self?.pushForeground() }
+        t.setEventHandler { [weak self] in
+            self?.pushForeground()
+            self?.pushTranscripts()
+        }
         infoTimer = t
         t.resume()
         log("listening on \(socketPath)")
@@ -99,6 +126,8 @@ public final class HostServer: @unchecked Sendable {
 
     private func dropConnection(_ key: ObjectIdentifier) {
         if let id = bindings.removeValue(forKey: key) { sessions[id]?.clients[key] = nil }
+        transcriptSubs[key] = nil
+        if let u = uploads.removeValue(forKey: key) { try? u.handle.close(); unlink(u.path) }
         connections[key] = nil
     }
 
@@ -106,7 +135,11 @@ public final class HostServer: @unchecked Sendable {
         let key = ObjectIdentifier(conn)
         switch frame.kind {
         case .input:
-            if let id = bindings[key], let s = sessions[id] { s.process.write(frame.payload) }
+            if let id = bindings[key], let s = sessions[id] {
+                s.process.write(frame.payload)
+                s.attention = false
+                s.active = Date().timeIntervalSince1970
+            }
         case .output:
             break
         case .control:
@@ -161,6 +194,20 @@ public final class HostServer: @unchecked Sendable {
             let pg = s.process.foregroundProcessGroup
             let sent = pg > 0 && pg != s.process.pid && kill(-pg, sig) == 0
             conn.send(Message(op: "ok", id: s.id, code: sent ? 1 : 0))
+        case "transcript":
+            guard let id = m.id, sessions[id] != nil else { conn.send(Message(op: "error", message: "no session \(m.id ?? "")")); return }
+            transcriptSubs[key] = (id, [], nil)
+            pushTranscripts(only: key)
+        case "untranscript":
+            transcriptSubs[key] = nil
+        case "projects":
+            conn.send(Message(op: "projects", projects: Projects.recent()))
+        case "upload":
+            upload(m, from: conn)
+        case "register-push":
+            guard let token = m.token, !token.isEmpty else { conn.send(Message(op: "error", message: "no token")); return }
+            push.register(token: token, environment: m.message ?? "production", host: m.name)
+            conn.send(Message(op: "ok"))
         case "detach":
             if let id = bindings.removeValue(forKey: key) { sessions[id]?.clients[key] = nil }
         case "kill":
@@ -228,8 +275,99 @@ public final class HostServer: @unchecked Sendable {
 
     private func output(_ bytes: [UInt8], from s: HostSession) {
         s.record(bytes)
+        s.active = Date().timeIntervalSince1970
+        for event in s.scanner.scan(bytes) {
+            switch event {
+            case .title(let t):
+                s.title = t
+                let wasBusy = s.busy
+                s.busy = TitleState.busy(t)
+                if wasBusy && !s.busy { raiseAttention(s, body: "Finished, or waiting for you") }
+            case .bell:
+                raiseAttention(s, body: "Needs your attention")
+            case .notify(let text):
+                raiseAttention(s, body: text.isEmpty ? "Needs your attention" : text)
+            }
+        }
         let frame = Wire.Frame(.output, bytes)
         for c in s.clients.values { c.send(frame) }
+    }
+
+    private func raiseAttention(_ s: HostSession, body: String) {
+        s.attention = true
+        let now = Date().timeIntervalSince1970
+        guard now - s.lastPush > 20 else { return }
+        s.lastPush = now
+        push.notify(title: s.readableTitle, body: body, session: s.id)
+    }
+
+    private func transcriptPath(_ s: HostSession) -> (agent: String, path: String)? {
+        let fg = s.foreground
+        if fg.command == "claude" || fg.command == "codex", !fg.cwd.isEmpty {
+            if let pinned = s.transcript, pinned.agent == fg.command, pinned.pid == fg.pid { return (pinned.agent, pinned.path) }
+            if let path = Transcript.locate(agent: fg.command, directory: fg.cwd,
+                                            started: Date(timeIntervalSince1970: fg.started > 0 ? fg.started : s.created),
+                                            arguments: fg.args) {
+                s.transcript = (fg.command, path, fg.pid)
+            }
+        }
+        return s.transcript.map { ($0.agent, $0.path) }
+    }
+
+    private func pushTranscripts(only: ObjectIdentifier? = nil) {
+        for (key, sub) in transcriptSubs where only == nil || key == only {
+            guard let conn = connections[key], let s = sessions[sub.session] else { continue }
+            guard let t = transcriptPath(s) else {
+                if only != nil { conn.send(Message(op: "transcript", id: s.id, code: 0, items: [])) }
+                continue
+            }
+            let mtime = Transcript.mtime(t.path)
+            if only == nil, mtime == sub.mtime { continue }
+            let items = Transcript.parse(t.path, agent: t.agent).map(Self.trimmed)
+            var from = 0
+            while from < items.count, from < sub.sent.count, items[from] == sub.sent[from] { from += 1 }
+            transcriptSubs[key] = (sub.session, items, mtime)
+            if from == items.count && items.count == sub.sent.count && only == nil { continue }
+            conn.send(Message(op: "transcript", id: s.id, code: from, items: Array(items[from...])))
+        }
+    }
+
+    private static func trimmed(_ item: TranscriptItem) -> TranscriptItem {
+        guard case .tool(let name, let summary, let detail, let result) = item.kind else { return item }
+        func cut(_ s: String) -> String { s.count > 1500 ? String(s.prefix(1500)) + "\n…" : s }
+        return TranscriptItem(id: item.id, kind: .tool(name: name, summary: summary, detail: cut(detail), result: result.map(cut)))
+    }
+
+    private func upload(_ m: Message, from conn: Connection) {
+        let key = ObjectIdentifier(conn)
+        if uploads[key] == nil {
+            let day = String(ISO8601DateFormatter().string(from: Date()).prefix(10))
+            let dir = HostPaths.stateDirectory + "/uploads/" + day
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            let raw = (m.name ?? "file").replacingOccurrences(of: "/", with: "-")
+            let safe = String(raw.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || ".-_ ".unicodeScalars.contains($0) })
+            var name = safe.isEmpty ? "file" : safe
+            var path = dir + "/" + name
+            var n = 2
+            while FileManager.default.fileExists(atPath: path) {
+                let ext = (name as NSString).pathExtension, base = (safe as NSString).deletingPathExtension
+                name = ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)"
+                path = dir + "/" + name
+                n += 1
+            }
+            FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600])
+            guard let h = FileHandle(forWritingAtPath: path) else { conn.send(Message(op: "error", message: "could not save the file")); return }
+            uploads[key] = (path, h)
+        }
+        guard let u = uploads[key] else { return }
+        if let chunk = m.data, let bytes = Data(base64Encoded: chunk) { u.handle.write(bytes) }
+        if m.code == 1 {
+            try? u.handle.close()
+            uploads[key] = nil
+            conn.send(Message(op: "uploaded", message: u.path))
+        } else {
+            conn.send(Message(op: "ok"))
+        }
     }
 
     private func ended(_ id: String, code: Int) {

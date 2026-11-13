@@ -1,20 +1,21 @@
 import Foundation
 
-struct TranscriptItem: Identifiable, Equatable {
-    enum Kind: Equatable {
+public struct TranscriptItem: Identifiable, Equatable, Codable, Sendable {
+    public enum Kind: Equatable, Codable, Sendable {
         case user(String)
         case assistant(String)
         case tool(name: String, summary: String, detail: String, result: String?)
         case thinking(String)
     }
-    let id: Int
-    var kind: Kind
+    public let id: Int
+    public var kind: Kind
+    public init(id: Int, kind: Kind) { self.id = id; self.kind = kind }
 }
 
-enum Transcript {
-    static let home = FileManager.default.homeDirectoryForCurrentUser.path
+public enum Transcript {
+    public static let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
 
-    static func locate(agent: String, directory: String, started: Date, arguments: [String]) -> String? {
+    public static func locate(agent: String, directory: String, started: Date, arguments: [String]) -> String? {
         let fm = FileManager.default
         func created(_ p: String) -> Date? { (try? fm.attributesOfItem(atPath: p))?[.creationDate] as? Date }
         var named: String?
@@ -65,7 +66,7 @@ enum Transcript {
         return out
     }
 
-    static func locate(agent: String, directory: String) -> String? {
+    public static func locate(agent: String, directory: String) -> String? {
         let fm = FileManager.default
         func newest(_ paths: [String]) -> String? {
             paths.max { (mtime($0) ?? .distantPast) < (mtime($1) ?? .distantPast) }
@@ -93,7 +94,7 @@ enum Transcript {
         return nil
     }
 
-    static func mtime(_ path: String) -> Date? {
+    public static func mtime(_ path: String) -> Date? {
         (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
     }
 
@@ -110,7 +111,7 @@ enum Transcript {
     }
 
 
-    static func parse(_ path: String, agent: String) -> [TranscriptItem] {
+    public static func parse(_ path: String, agent: String) -> [TranscriptItem] {
         guard let data = FileManager.default.contents(atPath: path) else { return [] }
         var items: [TranscriptItem] = []
         var toolIndex: [String: Int] = [:]

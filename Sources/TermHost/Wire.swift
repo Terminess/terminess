@@ -1,7 +1,8 @@
 import Foundation
+import TermTranscript
 
 public enum Wire {
-    public static let version = 2
+    public static let version = 3
     public static let maxFrame = 8 * 1024 * 1024
 
     public enum Kind: UInt8 {
@@ -70,10 +71,20 @@ public struct SessionInfo: Codable, Equatable {
     public var cwd: String
     public var created: Double
     public var clients: Int
+    public var title: String?
+    public var busy: Bool?
+    public var attention: Bool?
+    public var active: Double?
 
     public init(id: String, name: String, command: String, cwd: String, created: Double, clients: Int) {
         self.id = id; self.name = name; self.command = command; self.cwd = cwd; self.created = created; self.clients = clients
     }
+}
+
+public struct ProjectInfo: Codable, Equatable, Sendable {
+    public var path: String
+    public var used: Double
+    public init(path: String, used: Double) { self.path = path; self.used = used }
 }
 
 public struct ForegroundInfo: Codable, Equatable {
@@ -105,15 +116,21 @@ public struct Message: Codable, Equatable {
     public var env: [String: String]?
     public var foreground: ForegroundInfo?
     public var signal: String?
+    public var items: [TranscriptItem]?
+    public var projects: [ProjectInfo]?
+    public var data: String?
+    public var token: String?
 
     public init(op: String, version: Int? = nil, host: String? = nil, id: String? = nil, name: String? = nil,
                 cwd: String? = nil, command: String? = nil, args: [String]? = nil, cols: Int? = nil, rows: Int? = nil,
                 code: Int? = nil, message: String? = nil, sessions: [SessionInfo]? = nil,
-                env: [String: String]? = nil, foreground: ForegroundInfo? = nil, signal: String? = nil) {
+                env: [String: String]? = nil, foreground: ForegroundInfo? = nil, signal: String? = nil,
+                items: [TranscriptItem]? = nil, projects: [ProjectInfo]? = nil, data: String? = nil, token: String? = nil) {
         self.op = op; self.version = version; self.host = host; self.id = id; self.name = name
         self.cwd = cwd; self.command = command; self.args = args; self.cols = cols; self.rows = rows
         self.code = code; self.message = message; self.sessions = sessions
         self.env = env; self.foreground = foreground; self.signal = signal
+        self.items = items; self.projects = projects; self.data = data; self.token = token
     }
 }
 

@@ -1,3 +1,4 @@
+import TermTranscript
 import AppKit
 import SwiftUI
 

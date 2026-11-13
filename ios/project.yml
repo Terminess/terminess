@@ -30,6 +30,8 @@ targets:
         product: TermCore
       - package: Terminal
         product: TermHost
+      - package: Terminal
+        product: TermTranscript
       - package: NIOSSH
         product: NIOSSH
     info:
@@ -41,6 +43,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nsokin.terminal.ios
+        CODE_SIGN_ENTITLEMENTS: Terminess/Terminess.entitlements
         PRODUCT_NAME: Terminess
         TARGETED_DEVICE_FAMILY: "1"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
