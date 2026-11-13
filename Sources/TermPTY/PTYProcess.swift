@@ -1,5 +1,9 @@
 import CPTY
+#if canImport(Glibc)
+import Glibc
+#else
 import Darwin
+#endif
 import Dispatch
 
 public struct PTYError: Error, CustomStringConvertible {
@@ -14,7 +18,11 @@ public final class PTYProcess: @unchecked Sendable {
 
     private let lock = PThreadLock()
     private var readSource: DispatchSourceRead?
+    #if canImport(Darwin)
     private var exitSource: DispatchSourceProcess?
+    #else
+    private var exitSource: DispatchSourceRead?
+    #endif
     private var exited = false
 
     public static let agentSessionVariables: Set<String> = [
@@ -104,6 +112,7 @@ public final class PTYProcess: @unchecked Sendable {
         readSource = src
         src.resume()
 
+        #if canImport(Darwin)
         let ex = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
         ex.setEventHandler { [weak self] in
             queue.asyncAfter(deadline: .now() + .milliseconds(50)) {
@@ -113,6 +122,7 @@ public final class PTYProcess: @unchecked Sendable {
         }
         exitSource = ex
         ex.resume()
+        #endif
     }
 
     private func reap(_ onExit: @Sendable (Int32) -> Void) {
@@ -130,7 +140,7 @@ public final class PTYProcess: @unchecked Sendable {
     public func write(_ bytes: [UInt8]) {
         var offset = 0
         while offset < bytes.count {
-            let n = bytes.withUnsafeBytes { Darwin.write(fd, $0.baseAddress! + offset, bytes.count - offset) }
+            let n = bytes.withUnsafeBytes { sysWrite(fd, $0.baseAddress! + offset, bytes.count - offset) }
             if n > 0 { offset += n; continue }
             if n < 0 && (errno == EAGAIN || errno == EINTR) {
                 var p = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
@@ -153,7 +163,7 @@ public final class PTYProcess: @unchecked Sendable {
     }
 
     public var foregroundDirectory: String? {
-        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        var buf = [CChar](repeating: 0, count: Int(PTYProcess.maxPath))
         let pid = cpty_foreground_pid(fd, self.pid)
         guard cpty_process_cwd(pid, &buf, Int32(buf.count)) == 0 else { return nil }
         return String(cString: buf)
@@ -183,7 +193,7 @@ public final class PTYProcess: @unchecked Sendable {
     }
 
     public var foregroundCommand: String? {
-        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        var buf = [CChar](repeating: 0, count: Int(PTYProcess.maxPath))
         let pid = cpty_foreground_pid(fd, self.pid)
         guard cpty_process_path(pid, &buf, Int32(buf.count)) == 0 else { return nil }
         let path = String(cString: buf)
@@ -233,4 +243,20 @@ final class PThreadLock: @unchecked Sendable {
     deinit { pthread_mutex_destroy(&m) }
     func lock() { pthread_mutex_lock(&m) }
     func unlock() { pthread_mutex_unlock(&m) }
+}
+
+extension PTYProcess {
+    #if canImport(Glibc)
+    static let maxPath = Int32(PATH_MAX)
+    #else
+    static let maxPath = Int32(MAXPATHLEN)
+    #endif
+}
+
+@inline(__always) func sysWrite(_ fd: Int32, _ buf: UnsafeRawPointer, _ n: Int) -> Int {
+    #if canImport(Glibc)
+    return Glibc.write(fd, buf, n)
+    #else
+    return Darwin.write(fd, buf, n)
+    #endif
 }

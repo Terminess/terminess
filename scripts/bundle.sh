@@ -2,10 +2,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 swift build -c release --product TermApp
+swift build -c release --product terminessd
 APP=dist/terminal-dev.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/TermApp "$APP/Contents/MacOS/TermApp"
+cp .build/release/terminessd "$APP/Contents/MacOS/terminessd"
 cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

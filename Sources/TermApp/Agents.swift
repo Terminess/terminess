@@ -5,6 +5,13 @@ struct Agent: Equatable {
     let name: String
     let tint: NSColor
 
+    static func topic(fromTitle title: String, agentName: String) -> String? {
+        let topic = String(title.drop { !$0.isLetter && !$0.isNumber }).trimmingCharacters(in: .whitespaces)
+        let plain = topic.lowercased()
+        guard !topic.isEmpty, plain != agentName.lowercased(), plain != "claude", plain != "codex" else { return nil }
+        return topic
+    }
+
     static let claude = Agent(id: "claude", name: "Claude Code", tint: NSColor(srgbRed: 0.85, green: 0.47, blue: 0.34, alpha: 1))
     static let codex = Agent(id: "codex", name: "Codex", tint: NSColor(srgbRed: 0.36, green: 0.62, blue: 0.95, alpha: 1))
     static let local = NSColor(srgbRed: 0.38, green: 0.72, blue: 0.45, alpha: 1)

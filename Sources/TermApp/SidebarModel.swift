@@ -1,3 +1,4 @@
+import TermHost
 import AppKit
 import Combine
 
@@ -11,6 +12,8 @@ struct OpenTab: Identifiable, Equatable {
     var panes = 1
     var parked = false
     var branch: String?
+    var busy = false
+    var hostIDs: [String] = []
 }
 
 struct PairJob: Identifiable, Equatable {
@@ -70,6 +73,8 @@ protocol SidebarActions: AnyObject {
     func startPair(mode: String, target: String)
     func jobAction(_ job: PairJob, _ action: String)
     func showRun(_ run: PairRun)
+    func attachHost(_ session: SessionInfo)
+    func killHost(_ id: String)
 }
 
 @MainActor
@@ -81,6 +86,8 @@ final class SidebarModel: ObservableObject {
     @Published var runs: [PairRun] = []
     @Published var sessions: [SessionItem] = []
     @Published var sessionsNote: String?
+    @Published var background: [SessionInfo] = []
+    private var loadingBackground = false
     @Published var search = ""
     @Published var issues: [IssueItem] = []
     @Published var issuesRepo: String?
@@ -134,6 +141,7 @@ final class SidebarModel: ObservableObject {
             MainActor.assumeIsolated {
                 SidebarModel.shared.refreshTabs()
                 SidebarModel.shared.refreshPair()
+                SidebarModel.shared.refreshBackground()
             }
         }
         slowTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { _ in
@@ -173,6 +181,24 @@ final class SidebarModel: ObservableObject {
     func refreshTabs() {
         let new = tabProvider?() ?? []
         if new != tabs { tabs = new }
+    }
+
+    func refreshBackground() {
+        guard !loadingBackground, Settings.shared.keepSessions else {
+            if !Settings.shared.keepSessions, !background.isEmpty { background = [] }
+            return
+        }
+        loadingBackground = true
+        Task.detached(priority: .utility) {
+            let all = HostAttachment.list(timeout: 1) ?? []
+            await MainActor.run {
+                let model = SidebarModel.shared
+                model.loadingBackground = false
+                let shown = Set(model.tabs.flatMap(\.hostIDs))
+                let free = all.filter { !shown.contains($0.id) }
+                if free != model.background { model.background = free }
+            }
+        }
     }
 
     func refreshPair() {

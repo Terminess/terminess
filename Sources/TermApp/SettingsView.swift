@@ -183,6 +183,8 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("Reopen windows and tabs on launch", isOn: $settings.restoreSession)
+                Toggle("Keep shells and agents running after Terminess quits", isOn: $settings.keepSessions)
+                    .help("Shells run in terminessd, so quitting the app leaves them running and reopening it reattaches. Applies to new tabs.")
                 Toggle("New tabs open in the current tab's folder", isOn: $settings.newTabsInCurrentFolder)
                 Toggle("Shell integration (zsh)", isOn: $settings.shellIntegration)
                 Text("Marks prompts and commands so you can jump between prompts, copy the last output, and be notified when long commands finish. Your dotfiles are not changed. Applies to new tabs.")

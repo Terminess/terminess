@@ -36,6 +36,7 @@ final class Settings: ObservableObject {
     @Published var startFolder: String { didSet { save("startFolder", startFolder) } }
     @Published var shellIntegration: Bool { didSet { save("shellIntegration", shellIntegration) } }
     @Published var restoreSession: Bool { didSet { save("restoreSession", restoreSession) } }
+    @Published var keepSessions: Bool { didSet { save("keepSessions", keepSessions) } }
     @Published var quickTerminalKey: String { didSet { save("quickTerminalKey", quickTerminalKey) } }
     @Published var idleParking: Bool { didSet { save("idleParking", idleParking) } }
     @Published var idleParkingMinutes: Int { didSet { save("idleParkingMinutes", idleParkingMinutes) } }
@@ -74,6 +75,7 @@ final class Settings: ObservableObject {
         startFolder = d.string(forKey: "startFolder") ?? ""
         shellIntegration = d.object(forKey: "shellIntegration") as? Bool ?? true
         restoreSession = d.object(forKey: "restoreSession") as? Bool ?? true
+        keepSessions = d.object(forKey: "keepSessions") as? Bool ?? true
         quickTerminalKey = d.string(forKey: "quickTerminalKey") ?? "ctrl-grave"
         naturalTextEditing = d.object(forKey: "naturalTextEditing") as? Bool ?? true
         composerHidesAgentInput = d.object(forKey: "composerHidesAgentInput") as? Bool ?? true

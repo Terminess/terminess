@@ -43,8 +43,9 @@ enum Drops {
 }
 
 @MainActor
-final class DropRelay {
+final class WindowLink {
     var handler: ((NSPasteboard) -> Bool)?
+    var owner: ObjectIdentifier?
     func drop(_ pb: NSPasteboard) -> Bool { handler?(pb) ?? false }
     func dropFromSwiftUI() -> Bool { drop(NSPasteboard(name: .drag)) }
 }

@@ -7,7 +7,7 @@ final class ReaderModel: ObservableObject {
     @Published var agentName = ""
     @Published var agentID = ""
     @Published var live = false
-    var drops: DropRelay?
+    var drops: WindowLink?
     @Published var working = false
     var activity: (() -> Date?)?
     private var watcher: DispatchSourceFileSystemObject?
@@ -243,7 +243,7 @@ private struct ItemView: View {
 final class ComposerState: ObservableObject {
     @Published var busy = false
     @Published var draft = ""
-    var drops: DropRelay?
+    var drops: WindowLink?
 }
 
 struct ComposerView: View {

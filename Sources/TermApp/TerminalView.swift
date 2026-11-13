@@ -290,6 +290,14 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var lastInputVisible: Bool?
     private var lastBusy = false
 
+    func agentLooksBusy() -> Bool {
+        guard let t = terminal else { return false }
+        for y in max(0, t.rows - 30)..<t.rows where t.screen.rows[y].plainText().lowercased().contains("esc to interrupt") {
+            return true
+        }
+        return false
+    }
+
     func updateAgentScreen() {
         guard let t = terminal else { return }
         let input = detectInputBand(t)
@@ -305,10 +313,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         }
         let text = status.map { $0.plainText() }.joined(separator: "\n")
         let visible = input != nil
-        var busy = false
-        for y in max(0, t.rows - 30)..<t.rows where t.screen.rows[y].plainText().lowercased().contains("esc to interrupt") {
-            busy = true; break
-        }
+        let busy = agentLooksBusy()
         if text != lastStatusText || visible != lastInputVisible || busy != lastBusy {
             lastStatusText = text
             lastInputVisible = visible

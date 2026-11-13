@@ -1,3 +1,4 @@
+import TermHost
 import SwiftUI
 
 enum SidebarID: Hashable {
@@ -6,11 +7,12 @@ enum SidebarID: Hashable {
     case run(String)
     case session(String)
     case issue(Int)
+    case host(String)
 }
 
 struct SidebarView: View {
     @ObservedObject var model: SidebarModel
-    var drops: DropRelay?
+    var drops: WindowLink?
     @State private var selection: SidebarID?
     @AppStorage("sidebar.openExpanded") private var openExpanded = true
     @AppStorage("sidebar.pairExpanded") private var pairExpanded = true
@@ -26,6 +28,7 @@ struct SidebarView: View {
             List(selection: $selection) {
                 if model.search.isEmpty {
                     openSection
+                    if !model.background.isEmpty { runningSection }
                     pairSection
                     if model.issuesRepo != nil { issuesSection }
                 }
@@ -61,8 +64,11 @@ struct SidebarView: View {
                 Row(symbol: tab.attention ? "circle.fill" : (tab.parked ? "moon.zzz" : (agent != nil ? "sparkle" : "terminal")),
                     tint: tab.attention ? .orange : (agent.map { Color(nsColor: $0.tint) } ?? .secondary),
                     title: tab.title,
-                    subtitle: [tab.branch.map { "⎇ \($0)" }, tab.directory, tab.panes > 1 ? "\(tab.panes) panes" : nil,
+                    subtitle: [tab.busy ? "working" : nil, tab.branch.map { "⎇ \($0)" }, tab.directory,
+                               tab.panes > 1 ? "\(tab.panes) panes" : nil,
                                tab.parked ? "parked" : nil].compactMap { $0 }.joined(separator: " · "),
+                    busy: tab.busy && !tab.attention,
+                    current: tab.id == drops?.owner,
                     actions: [
                         RowAction(symbol: "pencil", help: "Rename") { model.actions?.renameTab(tab.id) },
                         RowAction(symbol: "xmark", help: "Close tab") { model.actions?.closeTab(tab.id) },
@@ -70,6 +76,28 @@ struct SidebarView: View {
                     .tag(SidebarID.tab(tab.id))
             }
         }
+    }
+
+    private var runningSection: some View {
+        Section("Running") {
+            ForEach(model.background, id: \.id) { s in
+                let agent = Agent.detect(s.command)
+                Row(symbol: agent != nil ? "sparkle" : "terminal",
+                    tint: agent.map { Color(nsColor: $0.tint) } ?? .secondary,
+                    title: agent?.name ?? s.command,
+                    subtitle: [shortPath(s.cwd), s.clients > 0 ? "open elsewhere" : "no tab"].filter { !$0.isEmpty }.joined(separator: " · "),
+                    actions: [
+                        RowAction(symbol: "arrow.up.forward.app", help: "Open in a tab") { model.actions?.attachHost(s) },
+                        RowAction(symbol: "xmark", help: "End this session") { model.actions?.killHost(s.id) },
+                    ])
+                    .tag(SidebarID.host(s.id))
+            }
+        }
+    }
+
+    private func shortPath(_ p: String) -> String {
+        let home = SidebarModel.home
+        return p.hasPrefix(home) ? "~" + p.dropFirst(home.count) : p
     }
 
     private var pairSection: some View {
@@ -209,6 +237,7 @@ struct SidebarView: View {
         case .run(let r): if let run = model.runs.first(where: { $0.id == r }) { model.actions?.showRun(run) }
         case .session(let s): if let item = model.sessions.first(where: { $0.id == s }) { model.actions?.resume(item) }
         case .issue(let n): if let issue = model.issues.first(where: { $0.number == n }) { model.actions?.startIssue(issue, agent: "claude") }
+        case .host(let h): if let s = model.background.first(where: { $0.id == h }) { model.actions?.attachHost(s) }
         }
     }
 
@@ -245,6 +274,12 @@ struct SidebarView: View {
         case .run(let r):
             if let run = model.runs.first(where: { $0.id == r }) {
                 Button("Show Result") { model.actions?.showRun(run) }
+            }
+        case .host(let h):
+            if let s = model.background.first(where: { $0.id == h }) {
+                Button("Open in a Tab") { model.actions?.attachHost(s) }
+                Divider()
+                Button("End Session") { model.actions?.killHost(h) }
             }
         case .issue(let n):
             if let issue = model.issues.first(where: { $0.number == n }) {
@@ -317,17 +352,26 @@ private struct Row: View {
     let title: String
     let subtitle: String
     var dimmed = false
+    var busy = false
+    var current = false
     var actions: [RowAction] = []
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(tint)
-                .frame(width: 16)
+            Group {
+                if busy {
+                    ProgressView().controlSize(.mini).tint(tint)
+                } else {
+                    Image(systemName: symbol)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(tint)
+                }
+            }
+            .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
+                    .fontWeight(current ? .semibold : .regular)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Text(subtitle)
@@ -355,6 +399,9 @@ private struct Row: View {
             }
         }
         .padding(.vertical, 2)
+        .listRowBackground(current
+            ? RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.18)).padding(.horizontal, 8)
+            : nil)
         .opacity(dimmed && !hovering ? 0.58 : 1)
         .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
         .help(title)

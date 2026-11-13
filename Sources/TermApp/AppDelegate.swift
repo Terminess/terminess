@@ -2,6 +2,7 @@ import AppKit
 
 import SwiftUI
 import TermCore
+import TermHost
 
 enum AppearanceSetting: Int {
     case system = 0, light = 1, dark = 2
@@ -168,7 +169,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var lastQuickKey = Settings.shared.quickTerminalKey
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if ProcessInfo.processInfo.environment["TERMAPP_SCRIPT"] == nil { saveSession() }
+        let env = ProcessInfo.processInfo.environment
+        if env["TERMAPP_SCRIPT"] == nil || env["TERMAPP_ALLOW_RESTORE"] != nil { saveSession() }
+        TerminalSession.appIsQuitting = true
         return .terminateNow
     }
 
@@ -271,13 +274,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let home = SidebarModel.home
         return controllers.map { c in
             c.refreshTitle()
+            c.refreshBusy()
             let dir = c.currentDirectory ?? ""
             let shown = dir.hasPrefix(home) ? "~" + dir.dropFirst(home.count) : dir
-            return OpenTab(id: ObjectIdentifier(c), title: c.customTitle ?? c.agent?.name ?? c.displayTitle,
+            return OpenTab(id: ObjectIdentifier(c), title: c.customTitle ?? c.displayTitle,
                            command: c.session.process?.foregroundCommand ?? "",
                            directory: shown, isKey: c.window?.isKeyWindow == true,
                            attention: AttentionCenter.shared.needsAttention(c),
-                           panes: c.panes.count, parked: c.hasParkedPane, branch: c.worktree?.branch)
+                           panes: c.panes.count, parked: c.hasParkedPane, branch: c.worktree?.branch,
+                           busy: c.busy,
+                           hostIDs: c.panes.compactMap { $0.session.process?.hostSessionID })
         }
     }
 
@@ -328,6 +334,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     func focusTab(_ id: ObjectIdentifier) {
         controllers.first { ObjectIdentifier($0) == id }?.focus()
+    }
+
+    func attachHost(_ session: SessionInfo) {
+        let dir = FileManager.default.fileExists(atPath: session.cwd) ? session.cwd : SidebarModel.home
+        open(tabbedWith: keyController?.window, layout: .pane(directory: dir, history: nil, host: session.id))
+        SidebarModel.shared.background.removeAll { $0.id == session.id }
+    }
+
+    func killHost(_ id: String) {
+        HostAttachment.send(Message(op: "kill", id: id))
+        SidebarModel.shared.background.removeAll { $0.id == id }
     }
 
     func resume(_ session: SessionItem) {

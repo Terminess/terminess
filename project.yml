@@ -28,6 +28,11 @@ targets:
         product: TermCore
       - package: Terminal
         product: TermPTY
+      - package: Terminal
+        product: TermHost
+      # The session service, shipped next to the app's executable (docs/remote.md).
+      - target: terminessd
+        link: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nsokin.terminal
@@ -46,7 +51,33 @@ targets:
         NSHighResolutionCapable: true
         NSSupportsAutomaticTermination: false
     postBuildScripts:
+      - name: Embed terminessd
+        script: |
+          dest="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/terminessd"
+          cp "$BUILT_PRODUCTS_DIR/terminessd" "$dest"
+          if [ -n "$EXPANDED_CODE_SIGN_IDENTITY" ] && [ "$EXPANDED_CODE_SIGN_IDENTITY" != "-" ]; then
+            codesign --force --options runtime --timestamp --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$dest"
+          fi
+        inputFiles:
+          - $(BUILT_PRODUCTS_DIR)/terminessd
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/terminessd
       - name: Copy icon
         script: cp "$SRCROOT/assets/AppIcon.icns" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/AppIcon.icns"
         outputFiles:
           - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/AppIcon.icns
+  terminessd:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/terminessd
+    dependencies:
+      - package: Terminal
+        product: TermHost
+    settings:
+      base:
+        PRODUCT_NAME: terminessd
+        PRODUCT_BUNDLE_IDENTIFIER: com.nsokin.terminal.terminessd
+        SWIFT_VERSION: "5.0"
+        SKIP_INSTALL: YES
+        ENABLE_HARDENED_RUNTIME: YES

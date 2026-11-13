@@ -8,10 +8,15 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
+#ifdef __APPLE__
 #include <util.h>
 #include <libproc.h>
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
+#else
+#include <pty.h>
+#include <stdio.h>
+#endif
 
 int cpty_spawn(const char *path, char *const argv[], char *const envp[], const char *cwd,
                unsigned short rows, unsigned short cols,
@@ -64,6 +69,8 @@ pid_t cpty_foreground_pid(int master, pid_t fallback) {
     return pg > 0 ? pg : fallback;
 }
 
+#ifdef __APPLE__
+
 int cpty_process_cwd(pid_t pid, char *buf, int len) {
     struct proc_vnodepathinfo info;
     int r = proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, sizeof info);
@@ -103,3 +110,68 @@ int cpty_process_args(pid_t pid, char *buf, int len) {
     free(raw);
     return (int)n;
 }
+
+#else
+
+
+static int read_link(const char *what, pid_t pid, char *buf, int len) {
+    char path[64];
+    snprintf(path, sizeof path, "/proc/%d/%s", (int)pid, what);
+    ssize_t n = readlink(path, buf, (size_t)len - 1);
+    if (n < 0) return -1;
+    buf[n] = 0;
+    return 0;
+}
+
+int cpty_process_cwd(pid_t pid, char *buf, int len) { return read_link("cwd", pid, buf, len); }
+
+int cpty_process_path(pid_t pid, char *buf, int len) {
+    if (read_link("exe", pid, buf, len) != 0) return -1;
+    size_t n = strlen(buf);
+    const char *tag = " (deleted)";
+    size_t t = strlen(tag);
+    if (n > t && strcmp(buf + n - t, tag) == 0) buf[n - t] = 0;
+    return 0;
+}
+
+double cpty_process_start(pid_t pid) {
+    char path[64], line[1024];
+    snprintf(path, sizeof path, "/proc/%d/stat", (int)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    size_t n = fread(line, 1, sizeof line - 1, f);
+    fclose(f);
+    line[n] = 0;
+    char *p = strrchr(line, ')');
+    if (!p) return 0;
+    p++;
+    unsigned long long start = 0;
+    for (int field = 3; field <= 22 && p; field++) {
+        while (*p == ' ') p++;
+        if (field == 22) { start = strtoull(p, NULL, 10); break; }
+        p = strchr(p, ' ');
+    }
+    if (!start) return 0;
+    double boot = 0;
+    f = fopen("/proc/stat", "r");
+    if (!f) return 0;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, "btime ", 6) == 0) { boot = strtod(line + 6, NULL); break; }
+    }
+    fclose(f);
+    long hz = sysconf(_SC_CLK_TCK);
+    if (boot <= 0 || hz <= 0) return 0;
+    return boot + (double)start / (double)hz;
+}
+
+int cpty_process_args(pid_t pid, char *buf, int len) {
+    char path[64];
+    snprintf(path, sizeof path, "/proc/%d/cmdline", (int)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    size_t n = fread(buf, 1, (size_t)len, f);
+    fclose(f);
+    return n > 0 ? (int)n : -1;
+}
+
+#endif

@@ -125,7 +125,8 @@ final class QuickTerminal: NSObject, NSWindowDelegate {
             session.terminal.setColorScheme(theme.isDark ? .dark : .light, palette: theme.palette)
         }
         session.start(workingDirectory: Settings.shared.startDirectory,
-                      cellWidth: Int(view.cellSize.width.rounded()), cellHeight: Int(view.cellSize.height.rounded()))
+                      cellWidth: Int(view.cellSize.width.rounded()), cellHeight: Int(view.cellSize.height.rounded()),
+                      persistent: false)
         return pane
     }
 

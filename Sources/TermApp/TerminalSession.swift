@@ -1,11 +1,14 @@
 import AppKit
 import TermCore
 import TermPTY
+import TermHost
 
 @MainActor
 final class TerminalSession {
     let terminal: Terminal
-    private(set) var process: PTYProcess?
+    private(set) var process: SessionBackend?
+    static var appIsQuitting = false
+    private var sizeAfterReplay: (columns: Int, rows: Int)?
     var onUpdate: (() -> Void)?
     var onExit: ((Int32) -> Void)?
     var onTitle: ((String) -> Void)?
@@ -33,10 +36,80 @@ final class TerminalSession {
         terminal.delegate = events
     }
 
-    func start(workingDirectory: String?, cellWidth: Int, cellHeight: Int) {
+    func start(workingDirectory: String?, cellWidth: Int, cellHeight: Int, attach: String? = nil, persistent: Bool = true) {
+        let cwd = workingDirectory ?? FileManager.default.homeDirectoryForCurrentUser.path
+        if persistent, Settings.shared.keepSessions, HostService.ensureRunning() {
+            startHost(attach.map { .attach(id: $0) } ?? createTarget(cwd: cwd), cwd: cwd, cellWidth: cellWidth, cellHeight: cellHeight)
+        } else {
+            startLocal(cwd: cwd, cellWidth: cellWidth, cellHeight: cellHeight)
+        }
+    }
+
+    private func createTarget(cwd: String) -> HostAttachment.Target {
+        let shell = PTYProcess.userShell
+        let env = ShellIntegration.environment(for: shell, base: PTYProcess.defaultEnvironment(program: "Terminess"))
+        return .create(cwd: cwd, command: nil, args: [], env: env, name: nil)
+    }
+
+    private func startHost(_ target: HostAttachment.Target, cwd: String, cellWidth: Int, cellHeight: Int) {
+        guard let a = HostAttachment(target: target, cols: terminal.columns, rows: terminal.rows) else {
+            startLocal(cwd: cwd, cellWidth: cellWidth, cellHeight: cellHeight)
+            return
+        }
+        a.resizesAfterReplay = true
+        let backend = HostBackend(attachment: a)
+        process = backend
+        var attached = false
+        terminal.onResponse = { [weak self] bytes in self?.process?.write(bytes) }
+        let ref = WeakRef(self)
+        a.onAttached = { _, cols, rows in
+            MainActor.assumeIsolated {
+                attached = true
+                guard let session = ref.value, cols > 0, rows > 0 else { return }
+                let t = session.terminal
+                if cols != t.columns || rows != t.rows {
+                    session.sizeAfterReplay = (t.columns, t.rows)
+                    t.resize(columns: cols, rows: rows)
+                }
+            }
+        }
+        a.onReplayed = {
+            MainActor.assumeIsolated {
+                guard let session = ref.value else { return }
+                let t = session.terminal
+                if let size = session.sizeAfterReplay {
+                    session.sizeAfterReplay = nil
+                    t.resize(columns: size.columns, rows: size.rows)
+                    session.onUpdate?()
+                }
+                session.process?.resize(columns: t.columns, rows: t.rows,
+                                        pixelWidth: t.columns * t.cellPixelWidth, pixelHeight: t.rows * t.cellPixelHeight)
+            }
+        }
+        a.onOutput = { bytes in MainActor.assumeIsolated { ref.value?.receive(bytes) } }
+        a.onForeground = { [weak backend] fg in MainActor.assumeIsolated { backend?.update(fg) } }
+        a.onExit = { code in MainActor.assumeIsolated { ref.value?.onExit?(Int32(code)) } }
+        a.onDisconnect = { message in
+            MainActor.assumeIsolated {
+                guard let session = ref.value else { return }
+                if attached {
+                    session.terminal.feed("\r\n\u{1B}[2m[\(message)]\u{1B}[0m\r\n")
+                    session.onUpdate?()
+                    return
+                }
+                if case .attach = target {
+                    session.startHost(session.createTarget(cwd: cwd), cwd: cwd, cellWidth: cellWidth, cellHeight: cellHeight)
+                } else {
+                    session.startLocal(cwd: cwd, cellWidth: cellWidth, cellHeight: cellHeight)
+                }
+            }
+        }
+        a.start()
+    }
+
+    private func startLocal(cwd: String, cellWidth: Int, cellHeight: Int) {
         let shell = PTYProcess.userShell
         let name = "-" + (shell.split(separator: "/").last.map(String.init) ?? "zsh")
-        let cwd = workingDirectory ?? FileManager.default.homeDirectoryForCurrentUser.path
         do {
             let env = ShellIntegration.environment(for: shell, base: PTYProcess.defaultEnvironment(program: "Terminess"))
             let p = try PTYProcess(executable: shell, argv0: name, environment: env, workingDirectory: cwd,
@@ -71,6 +144,10 @@ final class TerminalSession {
     func resize(columns: Int, rows: Int, cellWidth: Int, cellHeight: Int) {
         terminal.cellPixelWidth = cellWidth
         terminal.cellPixelHeight = cellHeight
+        if sizeAfterReplay != nil {
+            sizeAfterReplay = (columns, rows)
+            return
+        }
         guard columns != terminal.columns || rows != terminal.rows else { return }
         terminal.resize(columns: columns, rows: rows)
         process?.resize(columns: columns, rows: rows, pixelWidth: columns * cellWidth, pixelHeight: rows * cellHeight)
@@ -78,7 +155,7 @@ final class TerminalSession {
     }
 
     func close() {
-        process?.hangUp()
+        if TerminalSession.appIsQuitting { process?.detach() } else { process?.hangUp() }
     }
 
     fileprivate func title(_ t: String) { onTitle?(t) }

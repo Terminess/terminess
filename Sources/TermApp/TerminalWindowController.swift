@@ -44,7 +44,7 @@ enum ReaderSource {
 }
 
 indirect enum PaneLayout: Codable {
-    case pane(directory: String, history: String?)
+    case pane(directory: String, history: String?, host: String? = nil)
     case split(vertical: Bool, children: [PaneLayout], fractions: [Double])
 }
 
@@ -83,7 +83,7 @@ final class PaneHostView: NSView {
 
 final class ContentContainer: NSView {
     let split = NSSplitView()
-    var drops: DropRelay?
+    var drops: WindowLink?
     let strip = StatusStripView()
     var showStrip = false { didSet { strip.isHidden = !showStrip; needsLayout = true } }
     var composer: NSView? {
@@ -131,7 +131,7 @@ final class ContentContainer: NSView {
 @MainActor
 final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
     private let container = ContentContainer()
-    private let drops = DropRelay()
+    private let drops = WindowLink()
     let reader = ReaderModel()
     let composerState = ComposerState()
     private var readerHost: NSView?
@@ -195,6 +195,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         reader.drops = drops
         composerState.drops = drops
         drops.handler = { [weak self] pb in self?.acceptDrop(pb) ?? false }
+        drops.owner = ObjectIdentifier(self)
 
         let toolbar = NSToolbar(identifier: "terminal")
         toolbar.delegate = self
@@ -396,10 +397,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     @objc func toggleReader(_ sender: Any?) { setMode(mode == .terminal ? .split : .terminal) }
 
 
-    private func makePane(directory: String?, command: String?, history: String? = nil) -> Pane {
+    private func makePane(directory: String?, command: String?, history: String? = nil, attach: String? = nil) -> Pane {
         let pane = Pane(columns: 100, rows: 30)
         let view = pane.view, session = pane.session
-        if let history, !history.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if attach == nil, let history, !history.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let body = history.replacingOccurrences(of: "\n", with: "\r\n")
             session.terminal.feed("\u{1B}[2m\(body)\r\n\u{1B}[0;2;3mRestored from the previous session\u{1B}[0m\r\n\r\n")
         }
@@ -433,7 +434,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         }
         panes.append(pane)
         session.start(workingDirectory: directory,
-                      cellWidth: Int(view.cellSize.width.rounded()), cellHeight: Int(view.cellSize.height.rounded()))
+                      cellWidth: Int(view.cellSize.width.rounded()), cellHeight: Int(view.cellSize.height.rounded()),
+                      attach: attach)
         if let command {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak session] in
                 MainActor.assumeIsolated { session?.send(Array((command + "\r").utf8)) }
@@ -587,14 +589,15 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             let lines = t.allText().split(separator: "\n", omittingEmptySubsequences: false).suffix(300)
             history = lines.joined(separator: "\n")
         }
-        return .pane(directory: pane?.currentDirectory ?? Settings.shared.startDirectory, history: history)
+        return .pane(directory: pane?.currentDirectory ?? Settings.shared.startDirectory, history: history,
+                     host: pane?.session.process?.hostSessionID)
     }
 
     private func build(_ layout: PaneLayout) -> NSView {
         switch layout {
-        case .pane(let dir, let history):
+        case .pane(let dir, let history, let host):
             let exists = FileManager.default.fileExists(atPath: dir)
-            return makePane(directory: exists ? dir : nil, command: nil, history: history).view
+            return makePane(directory: exists ? dir : nil, command: nil, history: history, attach: host).view
         case .split(let vertical, let children, _):
             let sv = NSSplitView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
             sv.isVertical = vertical
@@ -650,7 +653,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         if let custom = customTitle, !custom.isEmpty {
             title = custom
         } else if let found {
-            title = folder.isEmpty ? found.name : "\(found.name) · \(folder)"
+            if let topic = Agent.topic(fromTitle: focused.programTitle, agentName: found.name) {
+                title = topic
+            } else {
+                title = folder.isEmpty ? found.name : "\(found.name) · \(folder)"
+            }
         } else if Agent.shells.contains(command) || command.isEmpty {
             title = folder.isEmpty ? "shell" : folder
         } else if !focused.programTitle.isEmpty {
@@ -667,8 +674,27 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         if window?.title != title { window?.title = title }
     }
 
+    private(set) var busy = false
+
+    func refreshBusy() {
+        let now = panes.contains { Agent.detect($0.session.process?.foregroundCommand) != nil && $0.view.agentLooksBusy() }
+        if now != busy {
+            busy = now
+            updateTabBadge()
+        }
+    }
+
     func updateTabBadge() {
         let attention = AttentionCenter.shared.needsAttention(self)
+        if busy && !attention {
+            let spinner = NSProgressIndicator(frame: NSRect(x: 0, y: 0, width: 14, height: 14))
+            spinner.style = .spinning
+            spinner.controlSize = .small
+            spinner.isIndeterminate = true
+            spinner.startAnimation(nil)
+            window?.tab.accessoryView = spinner
+            return
+        }
         let symbol = attention ? "circle.fill" : (agent != nil ? "sparkle" : nil)
         guard let symbol, let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) else {
             window?.tab.accessoryView = nil
