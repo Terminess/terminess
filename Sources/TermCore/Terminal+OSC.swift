@@ -33,6 +33,7 @@ extension Terminal {
                 switch kind {
                 case "A": screen.rows[cursor.y].mark.insert(.prompt)
                 case "C": screen.rows[cursor.y].mark.insert(.output)
+                case "D": markFinished(status: fields.count > 1 ? Int(fields[1]) ?? 0 : 0)
                 default: break
                 }
                 delegate?.terminal(self, semanticMark: kind, params: Array(fields.dropFirst()))
@@ -44,6 +45,29 @@ extension Terminal {
                 delegate?.terminal(self, notify: fields.count > 1 ? fields[1] : "", body: fields.count > 2 ? fields[2] : "")
             }
         default: break
+        }
+    }
+
+    private func markFinished(status: Int) {
+        let flags: RowMark = status == 0 ? [.finished] : [.finished, .failed]
+        var y = cursor.y
+        while y >= 0 {
+            if screen.rows[y].mark.contains(.prompt) {
+                if y < cursor.y || !screen.rows[y].mark.contains(.finished) {
+                    screen.rows[y].mark.formUnion(flags)
+                    touch(y)
+                    return
+                }
+            }
+            y -= 1
+        }
+        var i = screen.scrollback.count - 1
+        while i >= 0 && i >= screen.scrollback.count - 500 {
+            if screen.scrollback[i].mark.contains(.prompt) {
+                screen.scrollback[i].mark.formUnion(flags)
+                return
+            }
+            i -= 1
         }
     }
 

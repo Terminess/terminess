@@ -37,6 +37,91 @@ enum DebugScript {
                 }
             }
         }
+        if env["TERMAPP_PARK_TEST"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + last + 0.8) { [weak controller] in
+                MainActor.assumeIsolated {
+                    guard let c = controller, let pane = c.panes.first else { return }
+                    let dir = pane.currentDirectory ?? ""
+                    let fake = SessionItem(tool: "claude", id: "test-session", cwd: dir, repo: "x", title: "t",
+                                           mtime: Date().timeIntervalSince1970, linked: [], pair: nil)
+                    print("park: before=\(pane.session.process?.foregroundCommand ?? "-") parked=\(c.park(pane, sessions: [fake]))")
+                    fflush(stdout)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        MainActor.assumeIsolated {
+                            print("park: after stop=\(pane.session.process?.foregroundCommand ?? "-") state=\(pane.parked.map { "\($0.tool) \($0.id)" } ?? "none")")
+                            c.resume(pane)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                MainActor.assumeIsolated {
+                                    let lastLine = pane.session.terminal.screenText().split(separator: "\n").last ?? ""
+                                    print("park: after resume=\(pane.session.process?.foregroundCommand ?? "-") line=\(lastLine)")
+                                    fflush(stdout)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let repo = env["TERMAPP_WORKTREE_TEST"] {
+            switch Worktrees.create(repo: repo, branch: "agent/test-\(Int(Date().timeIntervalSince1970))") {
+            case .failure(let e): print("worktree: failed \(e.message)")
+            case .success(let w):
+                print("worktree: created \(w.path) branch=\(w.branch) base=\(w.base)")
+                print("worktree: env copied=\(FileManager.default.fileExists(atPath: w.path + "/.env")) node_modules linked=\((try? FileManager.default.destinationOfSymbolicLink(atPath: w.path + "/node_modules")) != nil)")
+                print("worktree: main status clean=\(Git.run(w.repo, ["status", "--porcelain"]).output.isEmpty)")
+                try? "def greet(name):\n    return f'Hello, {name}!'\n".write(toFile: w.path + "/greet.py", atomically: true, encoding: .utf8)
+                Task {
+                    let msg = await Git.draftCommitMessage(w.path, fallback: "FALLBACK")
+                    print("worktree: drafted message (on-device available=\(OnDeviceModel.isAvailable)):\n\(msg)")
+                    fflush(stdout)
+                }
+            }
+            fflush(stdout)
+        }
+        if env["TERMAPP_READER"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak controller] in
+                MainActor.assumeIsolated {
+                    if let m = env["TERMAPP_MODE"], let mode = TerminalWindowController.ViewMode(rawValue: Int(m) ?? 1) {
+                        controller?.setMode(mode)
+                    } else {
+                        controller?.toggleReader(nil)
+                    }
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + last + 0.9) { [weak controller] in
+                MainActor.assumeIsolated {
+                    let m = controller?.reader
+                    print("composer shown=\(controller?.composerVisible ?? false) height=\(Int((controller?.contentContainer.subviews.last?.frame.height) ?? 0))")
+                    let proc = controller?.focused?.session.process
+                    print("foreground: \(proc?.foregroundCommand ?? "-") args=\(proc?.foregroundArguments.prefix(4).joined(separator: " ") ?? "-")")
+                    print("reader: agent=\(m?.agentName ?? "-") items=\(m?.items.count ?? 0) terminalWidth=\(Int(controller?.paneHost.frame.width ?? 0))")
+                    fflush(stdout)
+                }
+            }
+        }
+        if let msg = env["TERMAPP_COMPOSE"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak controller] in
+                MainActor.assumeIsolated { controller?.sendFromComposer(msg) }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak controller] in
+                MainActor.assumeIsolated {
+                    let lines = controller?.session.terminal.screenText().split(separator: "\n").suffix(3) ?? []
+                    print("compose: " + lines.joined(separator: " | "))
+                    fflush(stdout)
+                }
+            }
+        }
+        if env["TERMAPP_DOCTOR"] != nil {
+            Task.detached {
+                let tools = DoctorModel.probeTools()
+                await MainActor.run {
+                    for c in DoctorModel.buildChecks(tools: tools, notifications: .notDetermined) {
+                        print("doctor: [\(c.status)] \(c.title): \(c.detail)\(c.fix.map { "  (fix: \($0.label))" } ?? "")")
+                    }
+                    fflush(stdout)
+                }
+            }
+        }
         if env["TERMAPP_QUICK"] != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 MainActor.assumeIsolated { QuickTerminal.shared.toggle() }
@@ -58,7 +143,7 @@ enum DebugScript {
             DispatchQueue.main.asyncAfter(deadline: .now() + last + 1.0) {
                 MainActor.assumeIsolated {
                     let c = (NSApp.keyWindow?.windowController as? TerminalWindowController) ?? controller
-                    let view = env["TERMAPP_SPLITS"] != nil ? c.paneHost : c.terminalView
+                    let view = env["TERMAPP_READER"] != nil ? c.contentContainer : (env["TERMAPP_SPLITS"] != nil ? c.paneHost : c.terminalView)
                     if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                         view.cacheDisplay(in: view.bounds, to: rep)
                         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))

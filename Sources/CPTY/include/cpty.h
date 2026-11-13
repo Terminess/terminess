@@ -17,4 +17,8 @@ int cpty_process_cwd(pid_t pid, char *buf, int len);
 
 int cpty_process_path(pid_t pid, char *buf, int len);
 
+double cpty_process_start(pid_t pid);
+
+int cpty_process_args(pid_t pid, char *buf, int len);
+
 #endif

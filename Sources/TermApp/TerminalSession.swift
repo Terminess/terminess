@@ -13,6 +13,7 @@ final class TerminalSession {
     var onNotify: ((String, String) -> Void)?
     var onCommandFinished: ((Double, Int) -> Void)?
     private var commandStarted: Date?
+    private(set) var lastActivity = Date()
     private let events = SessionEvents()
 
     var currentDirectory: String? {
@@ -56,12 +57,14 @@ final class TerminalSession {
     }
 
     private func receive(_ bytes: [UInt8]) {
+        lastActivity = Date()
         terminal.feed(bytes)
         onUpdate?()
     }
 
     func send(_ bytes: [UInt8]) {
         guard !bytes.isEmpty else { return }
+        lastActivity = Date()
         process?.write(bytes)
     }
 

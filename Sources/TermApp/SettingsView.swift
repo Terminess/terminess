@@ -10,6 +10,32 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Style") {
+                Picker("Style", selection: $settings.style) {
+                    Text("Classic").tag("classic")
+                    Text("Modern").tag("modern")
+                }
+                .pickerStyle(.segmented)
+                Text(settings.isModern
+                     ? "More space around text, softer box lines, a translucent window, a gliding cursor and smooth scrolling."
+                     : "A traditional terminal: compact, opaque and crisp.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if settings.isModern {
+                    HStack {
+                        Text("Background opacity")
+                        Slider(value: $settings.backgroundOpacity, in: 0.6...1.0, step: 0.02)
+                        Text("\(Int(settings.backgroundOpacity * 100))%").foregroundStyle(.secondary).monospacedDigit()
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                    HStack {
+                        Text("Letter spacing")
+                        Slider(value: $settings.letterSpacing, in: 0...1.5, step: 0.1)
+                        Text(String(format: "%.1f", settings.letterSpacing)).foregroundStyle(.secondary).monospacedDigit()
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                }
+            }
+
             Section("Appearance") {
                 Picker("Mode", selection: $settings.appearance) {
                     Text("Follow System").tag(0)
@@ -63,6 +89,20 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            Section("Reader and Composer") {
+                Toggle("Hide the agent's own input box while the composer is open", isOn: $settings.composerHidesAgentInput)
+                Text("Leaves one place to type. The agent's status line stays, just above the composer. Questions and menus from the agent still show in the terminal.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Links") {
+                Picker("Open file paths in", selection: $settings.editor) {
+                    ForEach(Editor.choices, id: \.0) { Text($0.1).tag($0.0) }
+                }
+                Text("Hold Command over a file path or link to underline it, and click to open. Paths like src/app.ts:42 open at that line.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("Cursor") {
                 Picker("Shape", selection: $settings.cursorShape) {
                     Text("Block").tag("block")
@@ -97,6 +137,19 @@ struct SettingsView: View {
                 }
                 Button("Add Key Binding…") { addingBinding = true }
                 Text("Sends text or an escape sequence (\\e for Escape, \\r, \\n, \\t, \\xHH). Menu shortcuts can be changed in System Settings, Keyboard, Keyboard Shortcuts, App Shortcuts.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Memory") {
+                Toggle("Park idle agent tabs", isOn: $settings.idleParking)
+                Picker("After", selection: $settings.idleParkingMinutes) {
+                    Text("10 minutes").tag(10)
+                    Text("30 minutes").tag(30)
+                    Text("1 hour").tag(60)
+                    Text("2 hours").tag(120)
+                }
+                .disabled(!settings.idleParking)
+                Text("Claude Code and Codex tabs left idle in the background are stopped to free memory, and resume the same conversation when you switch back.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

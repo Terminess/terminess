@@ -20,7 +20,11 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var fakeItalic = false
     private var ascent: CGFloat = 0
     private(set) var cellSize = NSSize(width: 8, height: 16)
-    let padding: CGFloat = 6
+    var padding: CGFloat { Settings.shared.isModern ? 18 : 6 }
+    private var kern: CGFloat = 0
+    private var cursorShown: CGPoint?
+    private var cursorTimer: Timer?
+    private var scrollPixel: CGFloat = 0
 
 
     private var scrollOffset = 0
@@ -84,7 +88,11 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
-    override var isOpaque: Bool { true }
+    override var isOpaque: Bool { !Settings.shared.isModern || Settings.shared.backgroundOpacity >= 1 }
+
+    private var backgroundAlpha: CGFloat {
+        Settings.shared.isModern ? CGFloat(Settings.shared.backgroundOpacity) : 1
+    }
 
     var backgroundNSColor: NSColor {
         let c = (terminal?.palette ?? Palette()).background
@@ -117,7 +125,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         ascent = CTFontGetAscent(regular)
         let natural = ceil(ascent + CTFontGetDescent(regular) + CTFontGetLeading(regular))
         let height = ceil(max(natural, ceil(size * 1.2)) * CGFloat(Settings.shared.lineSpacing))
-        cellSize = NSSize(width: advance.width, height: height)
+        kern = Settings.shared.isModern ? CGFloat(Settings.shared.letterSpacing) : 0
+        cellSize = NSSize(width: advance.width + kern, height: height)
     }
 
     @objc private func settingsChanged() {
@@ -211,19 +220,57 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         let scrolled = t.screen.scrolledOff - lastScrolledOff
         lastScrolledOff = t.screen.scrolledOff
         let dirty = t.takeDirtyRows()
+        if hideAgentInput || onAgentScreen != nil { updateAgentScreen() }
         if scrollOffset > 0 {
             scrollOffset = min(scrollOffset + max(0, scrolled), t.screen.scrollback.count)
+            needsDisplay = true
+        } else if hiddenBand != nil || hideAgentInput {
             needsDisplay = true
         } else {
             for y in dirty { setNeedsDisplay(rowRect(y)) }
         }
         let c = (t.cursor.x, t.cursor.y)
+        if c != lastCursor && Settings.shared.isModern { glideCursor(to: c, from: lastCursor) }
         if c != lastCursor {
             setNeedsDisplay(rowRect(lastCursor.y))
             setNeedsDisplay(rowRect(c.1))
             lastCursor = c
         }
         updateCursorDisplay()
+    }
+
+    private func glideCursor(to c: (Int, Int), from old: (x: Int, y: Int)) {
+        let target = CGPoint(x: padding + CGFloat(c.0) * cellSize.width, y: padding + CGFloat(c.1) * cellSize.height)
+        let start = cursorShown ?? CGPoint(x: padding + CGFloat(old.x) * cellSize.width, y: padding + CGFloat(old.y) * cellSize.height)
+        if abs(c.1 - old.y) > 2 || abs(c.0 - old.x) > 30 {
+            cursorShown = target
+            return
+        }
+        cursorShown = start
+        guard cursorTimer == nil else { return }
+        cursorTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard let t = self.terminal, let shown = self.cursorShown else {
+                    self.cursorTimer?.invalidate()
+                    self.cursorTimer = nil
+                    return
+                }
+                let goal = CGPoint(x: self.padding + CGFloat(t.cursor.x) * self.cellSize.width,
+                                   y: self.padding + CGFloat(t.cursor.y) * self.cellSize.height)
+                let next = CGPoint(x: shown.x + (goal.x - shown.x) * 0.38, y: shown.y + (goal.y - shown.y) * 0.38)
+                let done = hypot(goal.x - next.x, goal.y - next.y) < 0.5
+                self.cursorShown = done ? goal : next
+                let area = NSRect(x: min(shown.x, goal.x) - 2, y: min(shown.y, goal.y) - 2,
+                                  width: abs(goal.x - shown.x) + self.cellSize.width * 2 + 4,
+                                  height: abs(goal.y - shown.y) + self.cellSize.height + 4)
+                self.setNeedsDisplay(area)
+                if done {
+                    self.cursorTimer?.invalidate()
+                    self.cursorTimer = nil
+                }
+            }
+        }
     }
 
     private func updateCursorDisplay() {
@@ -234,6 +281,82 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private func rowRect(_ y: Int) -> NSRect {
         NSRect(x: 0, y: padding + CGFloat(y) * cellSize.height - 1, width: bounds.width, height: cellSize.height + 2)
     }
+
+    var hideAgentInput = false { didSet { if hideAgentInput != oldValue { updateAgentScreen(); needsDisplay = true } } }
+    var hideAgentStatus = false { didSet { if hideAgentStatus != oldValue { updateAgentScreen(); needsDisplay = true } } }
+    var onAgentScreen: ((Bool, [Row]) -> Void)?
+    private var hiddenBand: ClosedRange<Int>?
+    private var lastStatusText = ""
+    private var lastInputVisible: Bool?
+
+    func updateAgentScreen() {
+        guard let t = terminal else { return }
+        let input = detectInputBand(t)
+        if hideAgentInput, let input {
+            hiddenBand = hideAgentStatus ? input.lowerBound...(t.rows - 1) : input
+        } else {
+            hiddenBand = nil
+        }
+        var status: [Row] = []
+        if let input, input.upperBound + 1 < t.rows {
+            status = Array(t.screen.rows[(input.upperBound + 1)...])
+            while let last = status.last, last.plainText().isEmpty { status.removeLast() }
+        }
+        let text = status.map { $0.plainText() }.joined(separator: "\n")
+        let visible = input != nil
+        if text != lastStatusText || visible != lastInputVisible {
+            lastStatusText = text
+            lastInputVisible = visible
+            onAgentScreen?(visible, status)
+        }
+    }
+
+    private func detectInputBand(_ t: Terminal) -> ClosedRange<Int>? {
+        guard scrollOffset == 0, scrollPixel == 0, !t.isAlternate || t.screen.rows.count > 0 else { return nil }
+        let rows = t.screen.rows
+        let lowest = max(0, t.rows - 30)
+        func isRule(_ r: Row) -> Bool {
+            var n = 0
+            for c in r.cells where c.scalar == 0x2500 || c.scalar == 0x2501 { n += 1 }
+            return n >= max(10, r.count * 6 / 10)
+        }
+        func firstText(_ r: Row) -> String {
+            r.plainText().trimmingCharacters(in: .whitespaces)
+        }
+        var y = t.rows - 1
+        while y > lowest {
+            if isRule(rows[y]) {
+                var top = y - 1
+                while top >= max(lowest, y - 14), !isRule(rows[top]) { top -= 1 }
+                if top >= lowest, top < y - 1, isRule(rows[top]) {
+                    let prompt = firstText(rows[top + 1])
+                    if prompt.hasPrefix("\u{276F}") || prompt.hasPrefix(">") { return top...y }
+                }
+            }
+            y -= 1
+        }
+        y = t.rows - 1
+        while y > lowest {
+            let r = rows[y]
+            if firstText(r).hasPrefix("\u{203A}"), let bg = r.cells.first(where: { !$0.attrs.bg.isDefault })?.attrs.bg {
+                var top = y, bottom = y
+                func shaded(_ i: Int) -> Bool { rows[i].cells.prefix(4).contains { $0.attrs.bg == bg } }
+                while top > lowest, shaded(top - 1) { top -= 1 }
+                while bottom < t.rows - 1, shaded(bottom + 1) { bottom += 1 }
+                return top...bottom
+            }
+            y -= 1
+        }
+        return nil
+    }
+
+    private func sourceRow(_ d: Int) -> Int {
+        guard let band = hiddenBand else { return d }
+        let k = band.count
+        return d < band.lowerBound + k ? d - k : d
+    }
+
+    var parkedNotice: String? { didSet { needsDisplay = true } }
 
     var onFocus: (() -> Void)?
     var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
@@ -257,9 +380,10 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     private func viewportRow(_ vy: Int, _ t: Terminal) -> Row {
         let sb = t.screen.scrollback
-        if scrollOffset == 0 { return t.screen.rows[vy] }
+        if scrollOffset == 0 && vy >= 0 { return t.screen.rows[vy] }
         let k = sb.count - scrollOffset + vy
-        return k < sb.count ? sb[max(0, k)] : t.screen.rows[min(k - sb.count, t.rows - 1)]
+        if k < 0 { return Row(columns: t.columns) }
+        return k < sb.count ? sb[k] : t.screen.rows[min(k - sb.count, t.rows - 1)]
     }
 
     private func absoluteLine(_ vy: Int, _ t: Terminal) -> Int {
@@ -277,7 +401,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func scrollToBottom() {
-        if scrollOffset != 0 { scrollOffset = 0; needsDisplay = true }
+        if scrollOffset != 0 || scrollPixel != 0 { scrollOffset = 0; scrollPixel = 0; needsDisplay = true }
     }
 
 
@@ -310,23 +434,44 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.setShouldSmoothFonts(!Settings.shared.thinStrokes)
         let p = terminal?.palette ?? Palette()
-        ctx.setFillColor(cgColor(p.background))
-        ctx.fill(dirtyRect)
+        if backgroundAlpha < 1 {
+            ctx.clear(dirtyRect)
+        } else {
+            ctx.setFillColor(cgColor(p.background))
+            ctx.fill(dirtyRect)
+        }
         guard let t = terminal else { return }
 
-        let first = max(0, Int((dirtyRect.minY - padding) / cellSize.height))
+        let shift = scrollPixel
+        ctx.saveGState()
+        if shift > 0 { ctx.translateBy(x: 0, y: shift) }
+        let first = max(shift > 0 ? -1 : 0, Int((dirtyRect.minY - shift - padding) / cellSize.height))
         let last = min(t.rows - 1, Int((dirtyRect.maxY - padding) / cellSize.height))
-        guard first <= last else { return }
-        let selection = normalisedSelection()
-        for vy in first...last {
-            drawRow(viewportRow(vy, t), vy: vy, line: absoluteLine(vy, t), selection: selection, t, p, ctx)
+        drawBlocks(t, p, ctx)
+        if first <= last {
+            let selection = normalisedSelection()
+            for vy in first...last {
+                let src = sourceRow(vy)
+                drawRow(viewportRow(src, t), vy: vy, line: absoluteLine(src, t), selection: selection, t, p, ctx)
+            }
+            drawImages(t)
+            if let link = hoverLink {
+                var vy = link.line - absoluteLine(0, t)
+                if let band = hiddenBand, vy < band.lowerBound { vy += band.count }
+                let y = padding + CGFloat(vy + 1) * cellSize.height - 1.5
+                ctx.setStrokeColor(cgColor(p.colors[4]))
+                ctx.setLineWidth(1)
+                ctx.strokeLineSegments(between: [CGPoint(x: padding + CGFloat(link.from) * cellSize.width, y: y),
+                                                 CGPoint(x: padding + CGFloat(link.to + 1) * cellSize.width, y: y)])
+            }
         }
-        drawImages(t)
+        ctx.restoreGState()
         drawCursor(t, p, ctx)
         if dimmed {
             ctx.setFillColor(cgColor(p.background, alpha: 0.38))
             ctx.fill(dirtyRect)
         }
+        if let notice = parkedNotice { drawNotice(notice, p) }
     }
 
     private func drawRow(_ row: Row, vy: Int, line: Int, selection: (GridPoint, GridPoint)?,
@@ -400,8 +545,27 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
                     let fg = colors(for: a, p, reverseScreen: reverse).fg
                     let rect = CGRect(x: padding + CGFloat(x) * cw, y: top, width: CGFloat(w) * cw, height: ch)
                     let scale = window?.backingScaleFactor ?? 2
-                    if BoxDrawing.draw(cell.scalar, in: rect, color: cgColor(fg, alpha: a.flags.contains(.faint) ? 0.55 : 1),
-                                       lineWidth: max(1, (fontSize / 13).rounded()), scale: scale, ctx) {
+                    let modern = Settings.shared.isModern
+                    let isLine = cell.scalar < 0x2580
+                    var glyph = cell.scalar
+                    if modern {
+                        switch glyph {
+                        case 0x250C: glyph = 0x256D
+                        case 0x2510: glyph = 0x256E
+                        case 0x2514: glyph = 0x2570
+                        case 0x2518: glyph = 0x256F
+                        default: break
+                        }
+                    }
+                    let alpha: CGFloat = a.flags.contains(.faint) ? 0.55 : 1
+                    var ink = fg
+                    if modern && isLine {
+                        func mix(_ f: UInt8, _ b: UInt8) -> UInt8 { UInt8((Double(f) * 0.55 + Double(b) * 0.45).rounded()) }
+                        ink = RGB(mix(fg.r, p.background.r), mix(fg.g, p.background.g), mix(fg.b, p.background.b))
+                    }
+                    let width: CGFloat = modern && isLine ? 0.75 : max(1, (fontSize / 13).rounded())
+                    if BoxDrawing.draw(glyph, in: rect, color: cgColor(ink, alpha: alpha),
+                                       lineWidth: width, scale: scale, ctx) {
                         x += w
                         continue
                     }
@@ -412,6 +576,18 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
             }
         }
         ctx.restoreGState()
+    }
+
+    private func drawNotice(_ text: String, _ p: Palette) {
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                                                    .foregroundColor: NSColor(cgColor: cgColor(p.background)) ?? .white]
+        let label = NSAttributedString(string: "⏾  " + text, attributes: attrs)
+        let size = label.size()
+        let rect = NSRect(x: (bounds.width - size.width) / 2 - 14, y: bounds.height - size.height - 26,
+                          width: size.width + 28, height: size.height + 12)
+        NSColor(cgColor: cgColor(p.foreground, alpha: 0.85))?.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
+        label.draw(at: NSPoint(x: rect.minX + 14, y: rect.minY + 6))
     }
 
     private func drawImages(_ t: Terminal) {
@@ -448,6 +624,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): color,
             NSAttributedString.Key(kCTLigatureAttributeName as String): 0,
         ]
+        if kern > 0 { attributes[NSAttributedString.Key(kCTKernAttributeName as String)] = kern }
         if fakeBold && a.flags.contains(.bold) {
             attributes[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] = -7.0
             attributes[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] = color
@@ -526,13 +703,15 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func drawCursor(_ t: Terminal, _ p: Palette, _ ctx: CGContext) {
-        guard t.modes.cursorVisible || !markedText.isEmpty, scrollOffset == 0 else { return }
+        guard t.modes.cursorVisible || !markedText.isEmpty, scrollOffset == 0, hiddenBand == nil else { return }
         if !cursorOn && markedText.isEmpty { return }
         let x = t.cursor.x, y = t.cursor.y
         let row = t.screen.rows[y]
         let wide = x < row.count && row.cells[x].isWide
-        let rect = CGRect(x: padding + CGFloat(x) * cellSize.width, y: padding + CGFloat(y) * cellSize.height,
-                          width: cellSize.width * (wide ? 2 : 1), height: cellSize.height)
+        let target = CGPoint(x: padding + CGFloat(x) * cellSize.width, y: padding + CGFloat(y) * cellSize.height)
+        let origin = Settings.shared.isModern ? (cursorShown ?? target) : target
+        let settled = hypot(origin.x - target.x, origin.y - target.y) < 1
+        let rect = CGRect(x: origin.x, y: origin.y, width: cellSize.width * (wide ? 2 : 1), height: cellSize.height)
         let color = cgColor(p.cursor)
 
         if !markedText.isEmpty {
@@ -557,8 +736,13 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         switch t.cursorShape {
         case .block:
             ctx.setFillColor(color)
-            ctx.fill(rect)
-            if x < row.count, !row.cells[x].isEmpty {
+            if Settings.shared.isModern {
+                ctx.addPath(CGPath(roundedRect: rect, cornerWidth: 2, cornerHeight: 2, transform: nil))
+                ctx.fillPath()
+            } else {
+                ctx.fill(rect)
+            }
+            if settled, x < row.count, !row.cells[x].isEmpty {
                 ctx.saveGState()
                 ctx.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
                 let baseline = rect.minY + floor((cellSize.height - (ascent + CTFontGetDescent(regular))) / 2) + ascent
@@ -952,6 +1136,12 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        if let button = copyButtonRect, let b = hoverBlock, let t = terminal,
+           button.contains(convert(event.locationInWindow, from: nil)) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(blockOutput(b, t), forType: .string)
+            return
+        }
         if event.modifierFlags.contains(.command), openLink(at: event) { return }
         if reportsMouse(event) {
             mouseReporting = true
@@ -961,7 +1151,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         mouseReporting = false
         guard let t = terminal else { return }
         let c = cell(for: event)
-        let point = GridPoint(line: absoluteLine(c.y, t), col: c.x)
+        let point = GridPoint(line: absoluteLine(sourceRow(c.y), t), col: c.x)
         switch event.clickCount {
         case 2: selectionUnit = .word
         case 3...: selectionUnit = .line
@@ -984,7 +1174,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         if p.y < padding, !t.isAlternate { scrollBy(lines: 1) }
         if p.y > bounds.height - padding, scrollOffset > 0 { scrollBy(lines: -1) }
         let c = cell(for: event)
-        selectionHead = GridPoint(line: absoluteLine(c.y, t), col: c.x)
+        selectionHead = GridPoint(line: absoluteLine(sourceRow(c.y), t), col: c.x)
         needsDisplay = true
     }
 
@@ -1012,12 +1202,30 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        updateHoverLink(event)
+        if let t = terminal, Settings.shared.isModern {
+            let p = convert(event.locationInWindow, from: nil)
+            let block = visibleBlocks(t).first { blockRect($0, t).contains(p) }
+            if block?.start != hoverBlock?.start {
+                hoverBlock = block
+                needsDisplay = true
+            }
+        }
         guard let t = terminal, t.modes.mouseTracking == .any else { return }
         sendMouse(.none, .move, event)
     }
 
     override func scrollWheel(with event: NSEvent) {
         guard let t = terminal else { return }
+        if Settings.shared.isModern, event.hasPreciseScrollingDeltas, !reportsMouse(event), !t.isAlternate {
+            let ch = cellSize.height
+            let maxPixels = CGFloat(t.screen.scrollback.count) * ch
+            let total = min(max(CGFloat(scrollOffset) * ch + scrollPixel + event.scrollingDeltaY, 0), maxPixels)
+            scrollOffset = Int(total / ch)
+            scrollPixel = total - CGFloat(scrollOffset) * ch
+            needsDisplay = true
+            return
+        }
         let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / cellSize.height : event.scrollingDeltaY
         scrollRemainder += delta
         let lines = Int(scrollRemainder)
@@ -1038,34 +1246,178 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private func scrollBy(lines: Int) {
         guard let t = terminal else { return }
         let new = min(max(scrollOffset + lines, 0), t.screen.scrollback.count)
+        scrollPixel = 0
         if new != scrollOffset {
             scrollOffset = new
             needsDisplay = true
         }
     }
 
-    private func openLink(at event: NSEvent) -> Bool {
-        guard let t = terminal else { return false }
+    private struct LinkTarget {
+        enum Kind { case url(URL), file(path: String, line: Int?, column: Int?) }
+        let kind: Kind
+        let line: Int
+        let from: Int, to: Int
+    }
+
+    private func linkTarget(at event: NSEvent) -> LinkTarget? {
+        guard let t = terminal else { return nil }
         let c = cell(for: event)
-        let row = viewportRow(c.y, t)
-        guard c.x < row.count else { return false }
+        let row = viewportRow(sourceRow(c.y), t)
+        guard c.x < row.count else { return nil }
+        let line = absoluteLine(sourceRow(c.y), t)
         if let uri = t.hyperlink(id: row.cells[c.x].attrs.link), let url = URL(string: uri) {
-            NSWorkspace.shared.open(url)
-            return true
+            var a = c.x, b = c.x
+            let id = row.cells[c.x].attrs.link
+            while a > 0, row.cells[a - 1].attrs.link == id { a -= 1 }
+            while b < row.count - 1, row.cells[b + 1].attrs.link == id { b += 1 }
+            return LinkTarget(kind: .url(url), line: line, from: a, to: b)
         }
-        let text = row.plainText(trimTrailing: false)
-        let chars = Array(text)
-        guard c.x < chars.count else { return false }
-        var start = c.x, end = c.x
-        let stop: Set<Character> = [" ", "\t", "\"", "'", "<", ">", "(", ")", "[", "]", "{", "}", "`"]
-        while start > 0, !stop.contains(chars[start - 1]) { start -= 1 }
-        while end < chars.count - 1, !stop.contains(chars[end + 1]) { end += 1 }
-        let candidate = String(chars[start...end])
-        if candidate.hasPrefix("http://") || candidate.hasPrefix("https://"), let url = URL(string: candidate) {
-            NSWorkspace.shared.open(url)
-            return true
+        var cols: [String] = []
+        for x in 0..<row.count { cols.append(row.cells[x].isWideTail ? "" : (row.cells[x].isEmpty ? " " : row.text(at: x))) }
+        let stop: Set<String> = [" ", "\t", "\"", "'", "<", ">", "(", ")", "[", "]", "{", "}", "`", "│", ","]
+        guard !stop.contains(cols[c.x]) else { return nil }
+        var a = c.x, b = c.x
+        while a > 0, !stop.contains(cols[a - 1]) { a -= 1 }
+        while b < cols.count - 1, !stop.contains(cols[b + 1]) { b += 1 }
+        var word = cols[a...b].joined()
+        if word.hasPrefix("http://") || word.hasPrefix("https://") {
+            while let last = word.last, ".:;!?".contains(last) { word.removeLast(); b -= 1 }
+            return URL(string: word).map { LinkTarget(kind: .url($0), line: line, from: a, to: b) }
         }
-        return false
+        while let last = word.last, ".;!?:".contains(last) { word.removeLast(); b -= 1 }
+        var lineNo: Int?, colNo: Int?
+        let parts = word.split(separator: ":", omittingEmptySubsequences: false)
+        var path = word
+        if parts.count >= 2, let n = Int(parts[parts.count - 1]) {
+            if parts.count >= 3, let l = Int(parts[parts.count - 2]) {
+                lineNo = l; colNo = n
+                path = parts.dropLast(2).joined(separator: ":")
+            } else {
+                lineNo = n
+                path = parts.dropLast().joined(separator: ":")
+            }
+        }
+        guard path.contains("/") || path.contains(".") else { return nil }
+        let base = (window?.windowController as? TerminalWindowController)?.panes.first { $0.view === self }?.currentDirectory
+            ?? session?.currentDirectory ?? SidebarModel.home
+        var full = path
+        if path.hasPrefix("~/") { full = SidebarModel.home + path.dropFirst(1) }
+        else if !path.hasPrefix("/") { full = base + "/" + path }
+        full = (full as NSString).standardizingPath
+        guard FileManager.default.fileExists(atPath: full) else { return nil }
+        return LinkTarget(kind: .file(path: full, line: lineNo, column: colNo), line: line, from: a, to: b)
+    }
+
+    private func openLink(at event: NSEvent) -> Bool {
+        guard let target = linkTarget(at: event) else { return false }
+        switch target.kind {
+        case .url(let url): NSWorkspace.shared.open(url)
+        case .file(let path, let line, let col): Editor.open(path, line: line, column: col)
+        }
+        return true
+    }
+
+    private var hoverLink: LinkTarget?
+
+    private func updateHoverLink(_ event: NSEvent) {
+        let target = event.modifierFlags.contains(.command) ? linkTarget(at: event) : nil
+        let changed = target?.line != hoverLink?.line || target?.from != hoverLink?.from || target?.to != hoverLink?.to
+        hoverLink = target
+        if target != nil { NSCursor.pointingHand.set() } else if changed { NSCursor.iBeam.set() }
+        if changed { needsDisplay = true }
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        if let w = window, let e = NSEvent.mouseEvent(with: .mouseMoved, location: w.mouseLocationOutsideOfEventStream,
+                                                     modifierFlags: event.modifierFlags, timestamp: event.timestamp,
+                                                     windowNumber: w.windowNumber, context: nil, eventNumber: 0,
+                                                     clickCount: 0, pressure: 0) {
+            updateHoverLink(e)
+        }
+    }
+
+
+    private struct Block { let start: Int; let end: Int; let failed: Bool }
+    private var hoverBlock: Block?
+    private var copyButtonRect: NSRect?
+
+    private func visibleBlocks(_ t: Terminal) -> [Block] {
+        guard Settings.shared.isModern, !t.isAlternate else { return [] }
+        let top = absoluteLine(-1, t), bottom = absoluteLine(t.rows - 1, t)
+        var start = top
+        var scanned = 0
+        while start > t.firstAbsoluteLine, scanned < 3_000, !(row(atAbsolute: start, t)?.mark.contains(.prompt) ?? false) {
+            start -= 1
+            scanned += 1
+        }
+        var blocks: [Block] = []
+        var current: (Int, RowMark)?
+        var line = start
+        while line <= bottom + 1 {
+            let mark = row(atAbsolute: line, t)?.mark ?? []
+            if mark.contains(.prompt) || line == bottom + 1 {
+                if let (s, m) = current, m.contains(.finished) {
+                    blocks.append(Block(start: s, end: line - 1, failed: m.contains(.failed)))
+                }
+                current = mark.contains(.prompt) ? (line, mark) : nil
+            }
+            line += 1
+        }
+        return blocks
+    }
+
+    private func blockRect(_ b: Block, _ t: Terminal) -> NSRect {
+        let top = absoluteLine(0, t)
+        let y0 = padding + CGFloat(b.start - top) * cellSize.height + 3
+        let y1 = padding + CGFloat(b.end - top + 1) * cellSize.height - 3
+        let inset = max(4, padding - 10)
+        return NSRect(x: inset, y: y0, width: bounds.width - inset * 2, height: max(0, y1 - y0))
+    }
+
+    private func drawBlocks(_ t: Terminal, _ p: Palette, _ ctx: CGContext) {
+        let blocks = visibleBlocks(t)
+        for b in blocks {
+            let r = blockRect(b, t)
+            ctx.addPath(CGPath(roundedRect: r, cornerWidth: 8, cornerHeight: 8, transform: nil))
+            ctx.setFillColor(cgColor(p.foreground, alpha: 0.045))
+            ctx.fillPath()
+            let accent = b.failed ? p.colors[1] : p.colors[2]
+            ctx.addPath(CGPath(roundedRect: NSRect(x: r.minX + 1, y: r.minY + 6, width: 2.5, height: max(0, r.height - 12)),
+                               cornerWidth: 1.25, cornerHeight: 1.25, transform: nil))
+            ctx.setFillColor(cgColor(accent, alpha: 0.75))
+            ctx.fillPath()
+        }
+        copyButtonRect = nil
+        if let b = hoverBlock, blocks.contains(where: { $0.start == b.start }) {
+            let r = blockRect(b, t)
+            let button = NSRect(x: r.maxX - 66, y: r.minY + 4, width: 60, height: 20)
+            copyButtonRect = button
+            ctx.addPath(CGPath(roundedRect: button, cornerWidth: 6, cornerHeight: 6, transform: nil))
+            ctx.setFillColor(cgColor(p.foreground, alpha: 0.12))
+            ctx.fillPath()
+            let label = NSAttributedString(string: "Copy", attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                                                                         .foregroundColor: NSColor(cgColor: cgColor(p.foreground)) ?? .white])
+            let size = label.size()
+            label.draw(at: NSPoint(x: button.midX - size.width / 2, y: button.midY - size.height / 2))
+        }
+    }
+
+    private func blockOutput(_ b: Block, _ t: Terminal) -> String {
+        var out: [String] = []
+        var current = ""
+        var line = b.start
+        while line <= b.end {
+            if let r = row(atAbsolute: line, t) {
+                current += r.plainText(trimTrailing: !r.wrapped)
+                if !r.wrapped { out.append(current); current = "" }
+            }
+            line += 1
+        }
+        if !current.isEmpty { out.append(current) }
+        while out.last?.isEmpty == true { out.removeLast() }
+        return out.joined(separator: "\n")
     }
 
 

@@ -11,6 +11,7 @@
 #include <util.h>
 #include <libproc.h>
 #include <sys/proc_info.h>
+#include <sys/sysctl.h>
 
 int cpty_spawn(const char *path, char *const argv[], char *const envp[], const char *cwd,
                unsigned short rows, unsigned short cols,
@@ -73,4 +74,32 @@ int cpty_process_cwd(pid_t pid, char *buf, int len) {
 
 int cpty_process_path(pid_t pid, char *buf, int len) {
     return proc_pidpath(pid, buf, (uint32_t)len) > 0 ? 0 : -1;
+}
+
+double cpty_process_start(pid_t pid) {
+    struct proc_bsdinfo info;
+    if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof info) != (int)sizeof info) return 0;
+    return (double)info.pbi_start_tvsec + (double)info.pbi_start_tvusec / 1e6;
+}
+
+int cpty_process_args(pid_t pid, char *buf, int len) {
+    int mib[3] = { CTL_KERN, KERN_PROCARGS2, pid };
+    size_t size = 0;
+    if (sysctl(mib, 3, NULL, &size, NULL, 0) != 0 || size == 0) return -1;
+    char *raw = malloc(size);
+    if (!raw) return -1;
+    if (sysctl(mib, 3, raw, &size, NULL, 0) != 0) { free(raw); return -1; }
+    int argc = 0;
+    memcpy(&argc, raw, sizeof argc);
+    size_t i = sizeof argc;
+    while (i < size && raw[i] != 0) i++;
+    while (i < size && raw[i] == 0) i++;
+    size_t start = i;
+    int seen = 0;
+    while (i < size && seen < argc) { if (raw[i] == 0) seen++; i++; }
+    size_t n = i - start;
+    if ((int)n > len) n = (size_t)len;
+    memcpy(buf, raw + start, n);
+    free(raw);
+    return (int)n;
 }

@@ -479,3 +479,13 @@ func replies(_ t: Terminal, _ input: String) -> String {
         #expect(t.images.isEmpty)
     }
 }
+
+@Suite struct CommandStatusTests {
+    @Test func finishedAndFailedMarks() {
+        let A = "\u{1B}]133;A\u{07}", C = "\u{1B}]133;C\u{07}"
+        let t = term(20, 10, "\(A)$ true\r\n\(C)\u{1B}]133;D;0\u{07}\(A)$ false\r\n\(C)\u{1B}]133;D;1\u{07}\(A)$ ")
+        #expect(t.screen.rows[0].mark.contains(.finished) && !t.screen.rows[0].mark.contains(.failed))
+        #expect(t.screen.rows[1].mark.contains(.failed))
+        #expect(!t.screen.rows[2].mark.contains(.finished))
+    }
+}

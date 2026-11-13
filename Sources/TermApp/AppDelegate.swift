@@ -71,6 +71,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     private var settingsWindow: NSWindow?
+    private var doctorWindow: NSWindow?
+
+    @objc func showDoctor(_ sender: Any?) {
+        if doctorWindow == nil {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: DoctorView()))
+            w.title = "Doctor"
+            w.styleMask = [.titled, .closable]
+            w.isReleasedWhenClosed = false
+            w.center()
+            doctorWindow = w
+        } else {
+            DoctorModel.sharedForWindow.run()
+        }
+        doctorWindow?.makeKeyAndOrderFront(nil)
+    }
 
     @objc func showSettings(_ sender: Any?) {
         if settingsWindow == nil {
@@ -113,11 +128,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let sidebar = SidebarModel.shared
         sidebar.actions = self
         sidebar.tabProvider = { [weak self] in self?.openTabs() ?? [] }
+        sidebar.currentDirectory = { [weak self] in self?.keyController?.currentDirectory }
         sidebar.start()
         let env = ProcessInfo.processInfo.environment
         let testing = env["TERMAPP_SCRIPT"] != nil && env["TERMAPP_ALLOW_RESTORE"] == nil
         if testing || !restoreSession() { newWindow(nil) }
         if let first = controllers.first { DebugScript.run(on: first) }
+        parkingTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
+            MainActor.assumeIsolated { (NSApp.delegate as? AppDelegate)?.parkIdleAgents() }
+        }
         if !testing {
             sessionTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
                 MainActor.assumeIsolated { (NSApp.delegate as? AppDelegate)?.saveSession() }
@@ -129,6 +148,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     private var sessionTimer: Timer?
+    var lastChoiceWasSecond = false
+    private var parkingTimer: Timer?
+
+    func parkIdleAgents(force: Bool = false) {
+        let settings = Settings.shared
+        guard settings.idleParking || force else { return }
+        let limit = force ? 0 : TimeInterval(settings.idleParkingMinutes * 60)
+        let sessions = SidebarModel.shared.sessions
+        for c in controllers {
+            for pane in c.panes {
+                let inView = NSApp.isActive && c.window?.isKeyWindow == true && c.focused === pane
+                if !inView, Date().timeIntervalSince(pane.session.lastActivity) >= limit {
+                    c.park(pane, sessions: sessions)
+                }
+            }
+        }
+    }
     private var lastQuickKey = Settings.shared.quickTerminalKey
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -148,6 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 let c = open(tabbedWith: host, layout: tab.layout)
                 c.customTitle = tab.title
                 c.themeOverride = tab.theme
+                if let w = tab.worktree, FileManager.default.fileExists(atPath: w.path) { c.worktree = w }
                 if host == nil, saved.frame.count == 4 {
                     c.window?.setFrame(NSRect(x: saved.frame[0], y: saved.frame[1], width: saved.frame[2], height: saved.frame[3]),
                                        display: true)
@@ -242,7 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                            command: c.session.process?.foregroundCommand ?? "",
                            directory: shown, isKey: c.window?.isKeyWindow == true,
                            attention: AttentionCenter.shared.needsAttention(c),
-                           panes: c.panes.count)
+                           panes: c.panes.count, parked: c.hasParkedPane, branch: c.worktree?.branch)
         }
     }
 
@@ -285,6 +322,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         c.customTitle = name.isEmpty ? nil : name
         SidebarModel.shared.refreshTabs()
+    }
+
+    func closeTab(_ id: ObjectIdentifier) {
+        controllers.first { ObjectIdentifier($0) == id }?.window?.performClose(nil)
     }
 
     func focusTab(_ id: ObjectIdentifier) {
@@ -380,6 +421,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let shell = NSMenu(title: "Shell")
         shell.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "n")
         shell.addItem(withTitle: "New Tab", action: #selector(newWindowForTab(_:)), keyEquivalent: "t")
+        let worktreeTab = NSMenuItem(title: "New Worktree Tab…", action: #selector(newWorktreeTab(_:)), keyEquivalent: "t")
+        worktreeTab.keyEquivalentModifierMask = [.command, .option]
+        shell.addItem(worktreeTab)
+        let commit = NSMenuItem(title: "Commit Changes…", action: #selector(commitChanges(_:)), keyEquivalent: "c")
+        commit.keyEquivalentModifierMask = [.command, .option]
+        shell.addItem(commit)
         shell.addItem(withTitle: "Show Quick Terminal", action: #selector(toggleQuickTerminal(_:)), keyEquivalent: "")
         shell.addItem(.separator())
         let tabTheme = NSMenuItem(title: "Tab Theme", action: nil, keyEquivalent: "")
@@ -441,6 +488,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         view.addItem(withTitle: "Next Prompt", action: #selector(TerminalView.nextPrompt(_:)),
                      keyEquivalent: String(Character(UnicodeScalar(NSDownArrowFunctionKey)!)))
         view.addItem(.separator())
+        for (title, sel, key) in [("Terminal", #selector(TerminalWindowController.showTerminalMode(_:)), "1"),
+                                  ("Terminal and Chat", #selector(TerminalWindowController.showSplitMode(_:)), "2"),
+                                  ("Chat", #selector(TerminalWindowController.showChatMode(_:)), "3")] {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: key)
+            item.keyEquivalentModifierMask = [.command, .option]
+            view.addItem(item)
+        }
+        view.addItem(.separator())
         let sidebarItem = NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleSidebar(_:)), keyEquivalent: "s")
         sidebarItem.keyEquivalentModifierMask = [.control, .command]
         view.addItem(sidebarItem)
@@ -458,6 +513,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewItem.submenu = view
         main.addItem(viewItem)
 
+        let helpItem = NSMenuItem()
+        let help = NSMenu(title: "Help")
+        help.addItem(withTitle: "Doctor…", action: #selector(showDoctor(_:)), keyEquivalent: "")
+        helpItem.submenu = help
+
         let windowItem = NSMenuItem()
         let window = NSMenu(title: "Window")
         window.addItem(withTitle: "Minimise", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
@@ -466,6 +526,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         windowItem.submenu = window
         main.addItem(windowItem)
         NSApp.windowsMenu = window
+        main.addItem(helpItem)
+        NSApp.helpMenu = help
 
         return main
     }

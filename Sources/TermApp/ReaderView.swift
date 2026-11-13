@@ -1,0 +1,354 @@
+import AppKit
+import SwiftUI
+
+@MainActor
+final class ReaderModel: ObservableObject {
+    @Published var items: [TranscriptItem] = []
+    @Published var agentName = ""
+    @Published var agentID = ""
+    @Published var live = false
+    @Published var working = false
+    var activity: (() -> Date?)?
+    private var watcher: DispatchSourceFileSystemObject?
+    private var path: String?
+    private var lastMTime: Date?
+    private var timer: Timer?
+    private var source: (() -> ReaderSource?)?
+    var onFound: ((Int32, String, String) -> Void)?
+    var visible = false { didSet { visible ? start() : stop() } }
+
+    func follow(_ source: @escaping () -> ReaderSource?) {
+        self.source = source
+        if visible { refresh(force: true) }
+    }
+
+    private func start() {
+        refresh(force: true)
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+            MainActor.assumeIsolated { [weak self] in self?.refresh() }
+        }
+    }
+
+    private func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    func refresh(force: Bool = false) {
+        let busy = live && (activity?().map { Date().timeIntervalSince($0) < 2.5 } ?? false)
+        if busy != working { working = busy }
+        switch source?() ?? .none {
+        case .none:
+            clear()
+        case .file(let agent, let path, let live):
+            show(agent: agent, path: path, live: live, force: force)
+        case .find(let agent, let dir, let pid, let started, let args):
+            Task.detached(priority: .utility) {
+                let path = Transcript.locate(agent: agent, directory: dir, started: started, arguments: args)
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    if let path {
+                        self.onFound?(pid, agent, path)
+                        self.show(agent: agent, path: path, live: true, force: true)
+                    } else {
+                        self.clear(agent: agent)
+                    }
+                }
+            }
+        }
+    }
+
+    private func watch(_ path: String, agent: String) {
+        watcher?.cancel()
+        let fd = open(path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .extend], queue: .main)
+        src.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.path == path else { return }
+                self.show(agent: agent, path: path, live: self.live, force: false)
+            }
+        }
+        src.setCancelHandler { close(fd) }
+        watcher = src
+        src.resume()
+    }
+
+    private func clear(agent: String? = nil) {
+        watcher?.cancel()
+        watcher = nil
+        items = []
+        path = nil
+        lastMTime = nil
+        agentID = agent ?? ""
+        agentName = agent == "claude" ? "Claude Code" : agent == "codex" ? "Codex" : ""
+        live = false
+    }
+
+    private func show(agent: String, path: String, live: Bool, force: Bool) {
+        agentID = agent
+        agentName = agent == "claude" ? "Claude Code" : "Codex"
+        self.live = live
+        let mtime = Transcript.mtime(path)
+        guard force || path != self.path || mtime != lastMTime else { return }
+        if path != self.path { watch(path, agent: agent) }
+        self.path = path
+        lastMTime = mtime
+        Task.detached(priority: .utility) {
+            let parsed = Transcript.parse(path, agent: agent)
+            await MainActor.run { [weak self] in
+                guard self?.path == path else { return }
+                self?.items = Array(parsed.suffix(400))
+            }
+        }
+    }
+}
+
+struct ReaderView: View {
+    @ObservedObject var model: ReaderModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkle")
+                    .foregroundStyle(model.agentID == "codex" ? Color(nsColor: Agent.codex.tint) : Color(nsColor: Agent.claude.tint))
+                Text(model.agentName.isEmpty ? "Chat" : model.agentName).font(.headline)
+                Spacer()
+                if model.live {
+                    HStack(spacing: 4) {
+                        Circle().fill(.green).frame(width: 6, height: 6)
+                        Text("Live").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            Divider()
+            if model.items.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "text.bubble").font(.largeTitle).foregroundStyle(.tertiary)
+                    Text(model.agentName.isEmpty ? "No agent in this tab" : "No messages yet").font(.headline).foregroundStyle(.secondary)
+                    Text(model.agentName.isEmpty
+                         ? "Start Claude Code or Codex here and this tab's conversation appears, formatted for reading."
+                         : "Send a message and the conversation appears here.")
+                        .font(.callout).foregroundStyle(.tertiary).multilineTextAlignment(.center).frame(maxWidth: 260)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 16) {
+                            ForEach(model.items) { item in
+                                ItemView(item: item).id(item.id)
+                            }
+                            if model.working {
+                                HStack(spacing: 8) {
+                                    ProgressView().controlSize(.small)
+                                    Text("\(model.agentName) is working…").font(.callout).foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 4)
+                                .transition(.opacity)
+                            }
+                            Color.clear.frame(height: 4).id("end")
+                        }
+                        .padding(16)
+                    }
+                    .onChange(of: model.working) { _, _ in
+                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
+                    }
+                    .onChange(of: model.items.count) { _, _ in
+                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
+                    }
+                    .onAppear { proxy.scrollTo("end", anchor: .bottom) }
+                }
+            }
+        }
+        .frame(minWidth: 300)
+        .background(.background)
+    }
+}
+
+private struct ItemView: View {
+    let item: TranscriptItem
+    @State private var expanded = false
+
+    var body: some View {
+        switch item.kind {
+        case .user(let text):
+            VStack(alignment: .leading, spacing: 4) {
+                Text("You").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.12)))
+
+        case .assistant(let text):
+            MarkdownView(text: text)
+
+        case .thinking(let text):
+            DisclosureGroup(isExpanded: $expanded) {
+                Text(text).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true).padding(.top, 4)
+            } label: {
+                Label("Thinking", systemImage: "brain").font(.callout).foregroundStyle(.secondary)
+            }
+
+        case .tool(let name, let summary, let detail, let result):
+            DisclosureGroup(isExpanded: $expanded) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if !detail.isEmpty && detail != summary {
+                        Text(detail).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let result, !result.isEmpty {
+                        Text(result).font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled).lineLimit(40).fixedSize(horizontal: false, vertical: true)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.4)))
+                    }
+                }
+                .padding(.top, 4)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: symbol(name)).foregroundStyle(.secondary).frame(width: 16)
+                    Text(name).font(.callout.weight(.medium))
+                    Text(summary).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+                    if result == nil { ProgressView().controlSize(.mini) }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.25)))
+        }
+    }
+
+    private func symbol(_ tool: String) -> String {
+        switch tool.lowercased() {
+        case "bash", "exec", "exec_command", "shell": return "terminal"
+        case "read", "view": return "doc.text"
+        case "edit", "write", "multiedit", "apply_patch": return "pencil"
+        case "grep", "glob", "search": return "magnifyingglass"
+        case "webfetch", "websearch": return "globe"
+        case "task", "agent": return "person.2"
+        default: return "wrench.and.screwdriver"
+        }
+    }
+}
+
+struct ComposerView: View {
+    let placeholder: String
+    let onSend: (String) -> Void
+    let onEscape: () -> Void
+    @State private var text = ""
+    @State private var height: CGFloat = 22
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            ZStack(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text(placeholder).foregroundStyle(.tertiary).padding(.leading, 5).padding(.top, 1)
+                }
+                ComposerTextView(text: $text, height: $height, onSend: send, onEscape: onEscape)
+                    .frame(height: min(max(height, 22), 140))
+            }
+            Button(action: send) {
+                Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(text.isEmpty ? Color.secondary : Color.accentColor)
+            .disabled(text.isEmpty)
+            .help("Send (Return)")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 12).fill(.background.opacity(0.9))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(.separator, lineWidth: 0.5)))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 10)
+        .padding(.top, 4)
+    }
+
+    private func send() {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        onSend(t)
+        text = ""
+    }
+}
+
+private struct ComposerTextView: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var height: CGFloat
+    let onSend: () -> Void
+    let onEscape: () -> Void
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        let tv = KeyTextView()
+        tv.isRichText = false
+        tv.drawsBackground = false
+        tv.font = .systemFont(ofSize: 13)
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled = false
+        tv.isContinuousSpellCheckingEnabled = true
+        tv.allowsUndo = true
+        tv.autoresizingMask = [.width]
+        tv.textContainerInset = NSSize(width: 0, height: 2)
+        tv.delegate = context.coordinator
+        tv.onSend = onSend
+        tv.onEscape = onEscape
+        tv.registerForDraggedTypes([.fileURL])
+        scroll.documentView = tv
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let tv = scroll.documentView as? KeyTextView else { return }
+        if tv.string != text { tv.string = text }
+        tv.onSend = onSend
+        tv.onEscape = onEscape
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        let parent: ComposerTextView
+        init(_ p: ComposerTextView) { parent = p }
+        func textDidChange(_ n: Notification) {
+            guard let tv = n.object as? NSTextView else { return }
+            parent.text = tv.string
+            if let lm = tv.layoutManager, let tc = tv.textContainer {
+                lm.ensureLayout(for: tc)
+                parent.height = lm.usedRect(for: tc).height + 6
+            }
+        }
+    }
+}
+
+final class KeyTextView: NSTextView {
+    var onSend: (() -> Void)?
+    var onEscape: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 36 || event.keyCode == 76 {
+            if event.modifierFlags.contains(.shift) || hasMarkedText() { super.keyDown(with: event) } else { onSend?() }
+            return
+        }
+        if event.keyCode == 53 { onEscape?(); return }
+        super.keyDown(with: event)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
+            insertText(urls.map { shellQuote($0.path) }.joined(separator: " ") + " ", replacementRange: selectedRange())
+            return true
+        }
+        return super.performDragOperation(sender)
+    }
+}

@@ -14,6 +14,15 @@ final class Settings: ObservableObject {
     @Published var fontName: String { didSet { save("fontName", fontName) } }
     @Published var fontSize: Double { didSet { save("fontSize", fontSize) } }
     @Published var lineSpacing: Double { didSet { save("lineSpacing", lineSpacing) } }
+    @Published var style: String {
+        didSet {
+            if style == "modern" && oldValue != "modern" && lineSpacing < 1.2 { lineSpacing = 1.3 }
+            save("style", style)
+        }
+    }
+    @Published var backgroundOpacity: Double { didSet { save("backgroundOpacity", backgroundOpacity) } }
+    @Published var letterSpacing: Double { didSet { save("letterSpacing", letterSpacing) } }
+    var isModern: Bool { style == "modern" }
     @Published var cursorShape: String { didSet { save("cursorShape", cursorShape) } }
     @Published var cursorBlink: Bool { didSet { save("cursorBlink", cursorBlink) } }
     @Published var optionKey: String { didSet { save("optionKey", optionKey) } }
@@ -28,6 +37,10 @@ final class Settings: ObservableObject {
     @Published var shellIntegration: Bool { didSet { save("shellIntegration", shellIntegration) } }
     @Published var restoreSession: Bool { didSet { save("restoreSession", restoreSession) } }
     @Published var quickTerminalKey: String { didSet { save("quickTerminalKey", quickTerminalKey) } }
+    @Published var idleParking: Bool { didSet { save("idleParking", idleParking) } }
+    @Published var idleParkingMinutes: Int { didSet { save("idleParkingMinutes", idleParkingMinutes) } }
+    @Published var editor: String { didSet { save("editor", editor) } }
+    @Published var composerHidesAgentInput: Bool { didSet { save("composerHidesAgentInput", composerHidesAgentInput) } }
     @Published var naturalTextEditing: Bool { didSet { save("naturalTextEditing", naturalTextEditing) } }
     @Published var keyBindings: [KeyBinding] {
         didSet {
@@ -45,6 +58,9 @@ final class Settings: ObservableObject {
         fontName = d.string(forKey: "fontName") ?? ""
         fontSize = d.object(forKey: "fontSize") as? Double ?? 12
         lineSpacing = d.object(forKey: "lineSpacing") as? Double ?? 1.0
+        style = d.string(forKey: "style") ?? "classic"
+        backgroundOpacity = d.object(forKey: "backgroundOpacity") as? Double ?? 0.9
+        letterSpacing = d.object(forKey: "letterSpacing") as? Double ?? 0.3
         cursorShape = d.string(forKey: "cursorShape") ?? "block"
         cursorBlink = d.object(forKey: "cursorBlink") as? Bool ?? false
         optionKey = d.string(forKey: "optionKey") ?? "left"
@@ -59,6 +75,10 @@ final class Settings: ObservableObject {
         restoreSession = d.object(forKey: "restoreSession") as? Bool ?? true
         quickTerminalKey = d.string(forKey: "quickTerminalKey") ?? "ctrl-grave"
         naturalTextEditing = d.object(forKey: "naturalTextEditing") as? Bool ?? true
+        composerHidesAgentInput = d.object(forKey: "composerHidesAgentInput") as? Bool ?? true
+        editor = d.string(forKey: "editor") ?? "default"
+        idleParking = d.object(forKey: "idleParking") as? Bool ?? true
+        idleParkingMinutes = d.object(forKey: "idleParkingMinutes") as? Int ?? 30
         if let data = d.data(forKey: "keyBindings"), let b = try? JSONDecoder().decode([KeyBinding].self, from: data) {
             keyBindings = b
         } else {

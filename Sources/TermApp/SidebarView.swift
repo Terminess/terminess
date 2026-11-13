@@ -5,6 +5,7 @@ enum SidebarID: Hashable {
     case job(String)
     case run(String)
     case session(String)
+    case issue(Int)
 }
 
 struct SidebarView: View {
@@ -25,6 +26,7 @@ struct SidebarView: View {
                 if model.search.isEmpty {
                     openSection
                     pairSection
+                    if model.issuesRepo != nil { issuesSection }
                 }
                 sessionSections
                 if let note = model.sessionsNote, model.search.isEmpty {
@@ -49,10 +51,15 @@ struct SidebarView: View {
         Section("Open", isExpanded: $openExpanded) {
             ForEach(model.tabs) { tab in
                 let agent = Agent.detect(tab.command)
-                Row(symbol: tab.attention ? "circle.fill" : (agent != nil ? "sparkle" : "terminal"),
+                Row(symbol: tab.attention ? "circle.fill" : (tab.parked ? "moon.zzz" : (agent != nil ? "sparkle" : "terminal")),
                     tint: tab.attention ? .orange : (agent.map { Color(nsColor: $0.tint) } ?? .secondary),
                     title: tab.title,
-                    subtitle: tab.panes > 1 ? "\(tab.directory) · \(tab.panes) panes" : tab.directory)
+                    subtitle: [tab.branch.map { "⎇ \($0)" }, tab.directory, tab.panes > 1 ? "\(tab.panes) panes" : nil,
+                               tab.parked ? "parked" : nil].compactMap { $0 }.joined(separator: " · "),
+                    actions: [
+                        RowAction(symbol: "pencil", help: "Rename") { model.actions?.renameTab(tab.id) },
+                        RowAction(symbol: "xmark", help: "Close tab") { model.actions?.closeTab(tab.id) },
+                    ])
                     .tag(SidebarID.tab(tab.id))
             }
         }
@@ -85,38 +92,106 @@ struct SidebarView: View {
         }
     }
 
+    @AppStorage("sidebar.issuesExpanded") private var issuesExpanded = true
+
+    private var issuesSection: some View {
+        Section(isExpanded: $issuesExpanded) {
+            if let note = model.issuesNote {
+                Text(note).font(.callout).foregroundStyle(.tertiary)
+            }
+            ForEach(model.issues) { issue in
+                Row(symbol: "smallcircle.filled.circle", tint: .green, title: issue.title,
+                    subtitle: (["#\(issue.number)"] + issue.labels.map(\.name)).joined(separator: " · "),
+                    actions: [
+                        RowAction(symbol: "play", help: "Start with Claude Code in a new worktree") { model.actions?.startIssue(issue, agent: "claude") },
+                    ])
+                    .tag(SidebarID.issue(issue.number))
+            }
+        } header: {
+            Text("Issues · \(model.issuesRepo?.split(separator: "/").last.map(String.init) ?? "")")
+        }
+    }
+
     private var sessionSections: some View {
-        ForEach(groupedSessions, id: \.title) { group in
-            Section(group.title, isExpanded: model.search.isEmpty ? $sessionsExpanded : .constant(true)) {
-                ForEach(group.items) { s in
-                    Row(symbol: "bubble.left", tint: toolTint(s.tool), title: s.title, subtitle: s.repo)
-                        .tag(SidebarID.session(s.id))
+        Group {
+            if !pinnedSessions.isEmpty && model.search.isEmpty {
+                Section("Pinned") {
+                    ForEach(pinnedSessions) { s in sessionRow(s, showRepo: true) }
+                }
+            }
+            ForEach(projectGroups, id: \.key) { group in
+                Section(isExpanded: expandedBinding(group.key)) {
+                    ForEach(group.visible) { s in sessionRow(s, showRepo: false) }
+                    if group.hidden > 0 {
+                        Button(showAll.contains(group.key) ? "Show less" : "Show \(group.hidden) more") {
+                            if showAll.contains(group.key) { showAll.remove(group.key) } else { showAll.insert(group.key) }
+                        }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text(group.title)
                 }
             }
         }
     }
 
+    private func sessionRow(_ s: SessionItem, showRepo: Bool) -> some View {
+        let recent = Date().timeIntervalSince1970 - s.mtime < 86_400
+        let pinned = model.pinned.contains(s.id)
+        return Row(symbol: "bubble.left", tint: toolTint(s.tool), title: s.title,
+                   subtitle: showRepo ? "\(s.repo) · \(relative(s.mtime))" : relative(s.mtime),
+                   dimmed: !recent && !pinned,
+                   actions: [
+                       RowAction(symbol: "arrow.uturn.forward", help: "Resume in new tab") { model.actions?.resume(s) },
+                       RowAction(symbol: pinned ? "pin.slash" : "pin", help: pinned ? "Unpin" : "Pin") { model.togglePin(s.id) },
+                   ])
+            .tag(SidebarID.session(s.id))
+    }
 
-    private struct Group { let title: String; let items: [SessionItem] }
 
-    private var groupedSessions: [Group] {
-        let items = model.filteredSessions.filter { $0.pair == nil && $0.title != "(no messages)" }.prefix(150)
-        if !model.search.isEmpty { return [Group(title: "Sessions", items: Array(items))] }
-        let cal = Calendar.current
-        let now = Date()
-        var buckets: [(String, [SessionItem])] = [("Today", []), ("Yesterday", []), ("Previous 7 Days", []),
-                                                    ("Previous 30 Days", []), ("Older", [])]
+    @State private var showAll: Set<String> = []
+    @State private var collapsed: Set<String> = []
+
+    private func expandedBinding(_ key: String) -> Binding<Bool> {
+        Binding(get: { !collapsed.contains(key) || !model.search.isEmpty },
+                set: { if $0 { collapsed.remove(key) } else { collapsed.insert(key) } })
+    }
+
+    private var listedSessions: [SessionItem] {
+        model.filteredSessions.filter { $0.pair == nil && $0.title != "(no messages)" }
+    }
+
+    private var pinnedSessions: [SessionItem] {
+        listedSessions.filter { model.pinned.contains($0.id) }
+    }
+
+    private struct ProjectGroup {
+        let key: String
+        let title: String
+        let visible: [SessionItem]
+        let hidden: Int
+    }
+
+    private var projectGroups: [ProjectGroup] {
+        let items = listedSessions.filter { model.search.isEmpty ? !model.pinned.contains($0.id) : true }
+        var order: [String] = []
+        var byKey: [String: [SessionItem]] = [:]
         for s in items {
-            let d = Date(timeIntervalSince1970: s.mtime)
-            let i: Int
-            if cal.isDateInToday(d) { i = 0 }
-            else if cal.isDateInYesterday(d) { i = 1 }
-            else if now.timeIntervalSince(d) < 7 * 86_400 { i = 2 }
-            else if now.timeIntervalSince(d) < 30 * 86_400 { i = 3 }
-            else { i = 4 }
-            buckets[i].1.append(s)
+            if byKey[s.cwd] == nil { order.append(s.cwd) }
+            byKey[s.cwd, default: []].append(s)
         }
-        return buckets.filter { !$0.1.isEmpty }.map { Group(title: $0.0, items: $0.1) }
+        let cutoff = Date().timeIntervalSince1970 - 6 * 3600
+        return order.map { key in
+            let all = byKey[key] ?? []
+            let title = all.first?.repo ?? key
+            if !model.search.isEmpty || showAll.contains(key) {
+                return ProjectGroup(key: key, title: title, visible: all, hidden: showAll.contains(key) ? max(0, all.count - 5) : 0)
+            }
+            let shown = all.enumerated().filter { $0.offset < 5 || $0.element.mtime > cutoff }.map(\.element)
+            return ProjectGroup(key: key, title: title, visible: shown, hidden: all.count - shown.count)
+        }
     }
 
 
@@ -126,6 +201,7 @@ struct SidebarView: View {
         case .job(let j): if let job = model.jobs.first(where: { $0.id == j }) { model.actions?.jobAction(job, "wait") }
         case .run(let r): if let run = model.runs.first(where: { $0.id == r }) { model.actions?.showRun(run) }
         case .session(let s): if let item = model.sessions.first(where: { $0.id == s }) { model.actions?.resume(item) }
+        case .issue(let n): if let issue = model.issues.first(where: { $0.number == n }) { model.actions?.startIssue(issue, agent: "claude") }
         }
     }
 
@@ -135,6 +211,13 @@ struct SidebarView: View {
         case .tab(let t):
             Button("Show Tab") { model.actions?.focusTab(t) }
             Button("Rename…") { model.actions?.renameTab(t) }
+            if let tab = model.tabs.first(where: { $0.id == t }), let branch = tab.branch {
+                Divider()
+                Button("Commit and Merge \(branch)…") { model.actions?.worktreeAction(t, "merge") }
+                Button("Remove Worktree, Keep Branch") { model.actions?.worktreeAction(t, "remove") }
+                Button("Discard Worktree…") { model.actions?.worktreeAction(t, "discard") }
+                Divider()
+            }
             Menu("Theme") {
                 Button("Same as App") { model.actions?.setTheme(nil, forTab: t) }
                 Divider()
@@ -155,6 +238,17 @@ struct SidebarView: View {
         case .run(let r):
             if let run = model.runs.first(where: { $0.id == r }) {
                 Button("Show Result") { model.actions?.showRun(run) }
+            }
+        case .issue(let n):
+            if let issue = model.issues.first(where: { $0.number == n }) {
+                Button("Start with Claude Code") { model.actions?.startIssue(issue, agent: "claude") }
+                Button("Start with Codex") { model.actions?.startIssue(issue, agent: "codex") }
+                Divider()
+                Button("Open on GitHub") {
+                    if let repo = model.issuesRepo, let url = URL(string: "https://github.com/\(repo)/issues/\(issue.number)") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
             }
         case .session(let s):
             if let item = model.sessions.first(where: { $0.id == s }) {
@@ -204,11 +298,20 @@ private func jobTint(_ state: String) -> Color {
     }
 }
 
+struct RowAction {
+    let symbol: String
+    let help: String
+    let perform: () -> Void
+}
+
 private struct Row: View {
     let symbol: String
     let tint: Color
     let title: String
     let subtitle: String
+    var dimmed = false
+    var actions: [RowAction] = []
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -226,8 +329,27 @@ private struct Row: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            Spacer(minLength: 4)
+            if hovering && !actions.isEmpty {
+                HStack(spacing: 2) {
+                    ForEach(actions.indices, id: \.self) { i in
+                        Button(action: actions[i].perform) {
+                            Image(systemName: actions[i].symbol)
+                                .font(.system(size: 11, weight: .medium))
+                                .frame(width: 20, height: 20)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help(actions[i].help)
+                    }
+                }
+                .transition(.opacity)
+            }
         }
         .padding(.vertical, 2)
+        .opacity(dimmed && !hovering ? 0.58 : 1)
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
         .help(title)
     }
 }
@@ -278,4 +400,10 @@ private struct PairMenu: View {
         .disabled(SidebarModel.pairTool == nil)
         .help("Ask, review, hand off or run in parallel, in this tab's folder")
     }
+}
+
+private func relative(_ t: Double) -> String {
+    let f = RelativeDateTimeFormatter()
+    f.unitsStyle = .short
+    return f.localizedString(for: Date(timeIntervalSince1970: t), relativeTo: Date())
 }

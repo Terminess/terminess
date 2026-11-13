@@ -83,6 +83,8 @@ public struct RowMark: OptionSet, Sendable {
     public init(rawValue: UInt8) { self.rawValue = rawValue }
     public static let prompt = RowMark(rawValue: 1)
     public static let output = RowMark(rawValue: 2)
+    public static let finished = RowMark(rawValue: 4)
+    public static let failed = RowMark(rawValue: 8)
 }
 
 public struct Row: Sendable {

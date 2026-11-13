@@ -9,6 +9,8 @@ struct OpenTab: Identifiable, Equatable {
     let isKey: Bool
     var attention = false
     var panes = 1
+    var parked = false
+    var branch: String?
 }
 
 struct PairJob: Identifiable, Equatable {
@@ -32,6 +34,14 @@ struct PairRun: Identifiable, Equatable {
     let resultFile: String
 }
 
+struct IssueItem: Identifiable, Equatable, Decodable {
+    struct Label: Equatable, Decodable { let name: String }
+    let number: Int
+    let title: String
+    let labels: [Label]
+    var id: Int { number }
+}
+
 struct SessionItem: Identifiable, Equatable, Decodable {
     struct PairInfo: Equatable, Decodable {
         let from: String
@@ -53,6 +63,9 @@ protocol SidebarActions: AnyObject {
     func focusTab(_ id: ObjectIdentifier)
     func renameTab(_ id: ObjectIdentifier)
     func setTheme(_ name: String?, forTab id: ObjectIdentifier)
+    func closeTab(_ id: ObjectIdentifier)
+    func worktreeAction(_ id: ObjectIdentifier, _ action: String)
+    func startIssue(_ issue: IssueItem, agent: String)
     func resume(_ session: SessionItem)
     func startPair(mode: String, target: String)
     func jobAction(_ job: PairJob, _ action: String)
@@ -69,6 +82,19 @@ final class SidebarModel: ObservableObject {
     @Published var sessions: [SessionItem] = []
     @Published var sessionsNote: String?
     @Published var search = ""
+    @Published var issues: [IssueItem] = []
+    @Published var issuesRepo: String?
+    @Published var issuesNote: String?
+    private var issuesLoadedAt = Date.distantPast
+    private var issuesFor: String?
+    var currentDirectory: (() -> String?)?
+    @Published var pinned: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "pinnedSessions") ?? []) {
+        didSet { UserDefaults.standard.set(Array(pinned), forKey: "pinnedSessions") }
+    }
+
+    func togglePin(_ id: String) {
+        if pinned.contains(id) { pinned.remove(id) } else { pinned.insert(id) }
+    }
     @Published var visible: Bool = UserDefaults.standard.object(forKey: "sidebarVisible") as? Bool ?? true {
         didSet { UserDefaults.standard.set(visible, forKey: "sidebarVisible") }
     }
@@ -79,8 +105,8 @@ final class SidebarModel: ObservableObject {
     private var slowTimer: Timer?
     private var loadingSessions = false
 
-    static let home = FileManager.default.homeDirectoryForCurrentUser.path
-    static let pairState = home + "/.local/state/pair"
+    nonisolated static let home = FileManager.default.homeDirectoryForCurrentUser.path
+    nonisolated static let pairState = home + "/.local/state/pair"
     static var sessionsTool: String? {
         let p = home + "/.local/bin/sessions"
         return FileManager.default.isExecutableFile(atPath: p) ? p : nil
@@ -111,7 +137,36 @@ final class SidebarModel: ObservableObject {
             }
         }
         slowTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { _ in
-            MainActor.assumeIsolated { SidebarModel.shared.refreshSessions() }
+            MainActor.assumeIsolated {
+                SidebarModel.shared.refreshSessions()
+                SidebarModel.shared.refreshIssues()
+            }
+        }
+    }
+
+    func refreshIssues(force: Bool = false) {
+        guard let dir = currentDirectory?(), let gh = Git.gh else { issues = []; issuesRepo = nil; return }
+        Task.detached(priority: .utility) {
+            let repo = Git.githubRepo(dir)
+            await MainActor.run {
+                let m = SidebarModel.shared
+                guard let repo else { m.issues = []; m.issuesRepo = nil; return }
+                let stale = Date().timeIntervalSince(m.issuesLoadedAt) > 120
+                guard force || repo != m.issuesFor || stale else { return }
+                m.issuesFor = repo
+                m.issuesLoadedAt = Date()
+                Task.detached(priority: .utility) {
+                    let r = Git.exec(gh, ["issue", "list", "-R", repo, "--json", "number,title,labels", "--limit", "25"])
+                    let items = (try? JSONDecoder().decode([IssueItem].self, from: Data(r.output.utf8))) ?? []
+                    await MainActor.run {
+                        let m = SidebarModel.shared
+                        m.issuesRepo = repo
+                        m.issues = items
+                        m.issuesNote = r.status != 0 ? (r.output.contains("auth") || r.output.contains("login")
+                            ? "Run gh auth login to see issues." : "Could not load issues.") : (items.isEmpty ? "No open issues." : nil)
+                    }
+                }
+            }
         }
     }
 

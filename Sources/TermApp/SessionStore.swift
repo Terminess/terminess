@@ -6,6 +6,7 @@ enum SessionStore {
         var layout: PaneLayout
         var title: String?
         var theme: String?
+        var worktree: WorktreeInfo?
     }
     struct SavedWindow: Codable {
         var frame: [Double]
@@ -28,7 +29,7 @@ enum SessionStore {
             let group = w.tabbedWindows ?? [w]
             group.forEach { seen.insert(ObjectIdentifier($0)) }
             let tabs = group.compactMap { $0.windowController as? TerminalWindowController }
-            let saved = tabs.map { SavedTab(layout: $0.layout(), title: $0.customTitle, theme: $0.themeOverride) }
+            let saved = tabs.map { SavedTab(layout: $0.layout(), title: $0.customTitle, theme: $0.themeOverride, worktree: $0.worktree) }
             let f = w.frame
             windows.append(SavedWindow(frame: [f.minX, f.minY, f.width, f.height], tabs: saved,
                                        selected: group.firstIndex { $0.isKeyWindow || $0 == w.tabGroup?.selectedWindow } ?? 0))

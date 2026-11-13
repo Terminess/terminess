@@ -159,6 +159,29 @@ public final class PTYProcess: @unchecked Sendable {
         return String(cString: buf)
     }
 
+    public var foregroundStartTime: Double? {
+        let t = cpty_process_start(cpty_foreground_pid(fd, pid))
+        return t > 0 ? t : nil
+    }
+
+    public var foregroundPID: pid_t { cpty_foreground_pid(fd, pid) }
+
+    public var foregroundArguments: [String] {
+        var buf = [CChar](repeating: 0, count: 64 * 1024)
+        let n = cpty_process_args(cpty_foreground_pid(fd, pid), &buf, Int32(buf.count))
+        guard n > 0 else { return [] }
+        return buf[0..<Int(n)].split(separator: 0).map { String(decoding: $0.map { UInt8(bitPattern: $0) }, as: UTF8.self) }
+    }
+
+    public var foregroundProcessGroup: pid_t { cpty_foreground_pid(fd, pid) }
+
+    @discardableResult
+    public func terminateForeground() -> Bool {
+        let pg = foregroundProcessGroup
+        guard pg > 0, pg != pid else { return false }
+        return kill(-pg, SIGTERM) == 0
+    }
+
     public var foregroundCommand: String? {
         var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
         let pid = cpty_foreground_pid(fd, self.pid)
