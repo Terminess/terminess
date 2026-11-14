@@ -101,6 +101,15 @@ final class TerminalSession {
             }
         }
         a.onOutput = { bytes in MainActor.assumeIsolated { ref.value?.receive(bytes) } }
+        a.onSize = { cols, rows in
+            MainActor.assumeIsolated {
+                guard let session = ref.value, session.sizeAfterReplay == nil else { return }
+                let t = session.terminal
+                guard cols != t.columns || rows != t.rows else { return }
+                t.resize(columns: cols, rows: rows)
+                session.onUpdate?()
+            }
+        }
         a.onForeground = { [weak backend] fg in MainActor.assumeIsolated { backend?.update(fg) } }
         a.onExit = { code in MainActor.assumeIsolated { ref.value?.onExit?(Int32(code)) } }
         a.onDisconnect = { message in

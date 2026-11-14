@@ -18,11 +18,11 @@ final class HostConnection: ObservableObject {
     init(hostID: UUID) { self.hostID = hostID }
 
     var host: SavedHost? { HostStore.shared.host(hostID) }
-    var stdioCommand: String { "\(host?.terminessd ?? "~/.local/bin/terminessd") stdio" }
+    var stdioCommand: String { RemotePath.shellQuoted(host?.terminessd ?? "~/.local/bin/terminessd") + " stdio" }
     var isConnected: Bool { state == .connected && ssh != nil }
 
     func connect() async {
-        guard let host else { return }
+        guard let host, !AppLock.shared.locked else { return }
         if ssh != nil, control?.isOpen == true { await refresh(); return }
         if state == .connecting { return }
         ssh?.disconnect()
@@ -38,6 +38,7 @@ final class HostConnection: ObservableObject {
                     if var h = HostStore.shared.host(id) { h.hostKey = seen; HostStore.shared.save(h) }
                 }
             }
+            if AppLock.shared.locked { disconnect(); state = .idle; return }
             state = .connected
             await refresh()
             await registerPush()
@@ -119,7 +120,14 @@ final class HostConnection: ObservableObject {
 
     func registerPush() async {
         guard let token = PushTokens.shared.token else { return }
-        _ = await request(Message(op: "register-push", name: hostID.uuidString, message: PushTokens.environment, token: token))
+        _ = await request(Message(op: "register-push", name: hostID.uuidString, message: PushTokens.environment, token: token,
+                                  credential: PushTokens.shared.credential,
+                                  key: DeviceKey.authorizedKeyLine().split(separator: " ").dropFirst().first.map(String.init)))
+    }
+
+    func unregisterPush() async {
+        guard isConnected, let token = PushTokens.shared.token else { return }
+        _ = await request(Message(op: "unregister-push", token: token))
     }
 
     func attachment(to target: HostAttachment.Target, cols: Int, rows: Int) async throws -> HostAttachment {

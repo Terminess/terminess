@@ -157,6 +157,8 @@ public enum Transcript {
                 parseClaude(obj, items: &items, toolIndex: &toolIndex, survey: &survey)
             } else if agent == "ollama" {
                 parseLocalChat(obj, items: &items, partial: &partial, survey: &survey)
+            } else if agent == "codex-exec" {
+                parseCodexExec(obj, items: &items, toolIndex: &toolIndex, survey: &survey)
             } else {
                 if let p = obj["payload"] as? [String: Any], let v = p["cli_version"] as? String { survey.version = v }
                 parseCodex(obj, items: &items, toolIndex: &toolIndex, survey: &survey)
@@ -315,6 +317,81 @@ public enum Transcript {
         case let other:
             survey.unknown["record:" + (other ?? "?"), default: 0] += 1
         }
+    }
+
+    private static func parseCodexExec(_ obj: [String: Any], items: inout [TranscriptItem], toolIndex: inout [String: Int],
+                                       survey: inout Survey) {
+        func add(_ k: TranscriptItem.Kind) { items.append(TranscriptItem(id: items.count, kind: k)) }
+        let type = obj["type"] as? String ?? "?"
+        switch type {
+        case "thread.started", "turn.started", "turn.completed":
+            return
+        case "error", "turn.failed":
+            let message = (obj["message"] as? String) ?? ((obj["error"] as? [String: Any])?["message"] as? String) ?? "Codex stopped."
+            add(.assistant("**Codex stopped:** " + message))
+            return
+        case "item.started", "item.updated", "item.completed":
+            break
+        default:
+            survey.unknown["record:" + type, default: 0] += 1
+            return
+        }
+        guard let item = obj["item"] as? [String: Any] else { return }
+        let id = item["id"] as? String ?? UUID().uuidString
+        let done = type == "item.completed"
+        func clip(_ s: String) -> String { s.count > 4_000 ? String(s.prefix(4_000)) + "\n…" : s }
+        func step(_ name: String, _ summary: String, _ detail: String, result: String?) {
+            if let i = toolIndex[id] {
+                items[i].kind = .tool(name: name, summary: summary, detail: detail, result: result)
+            } else {
+                add(.tool(name: name, summary: summary, detail: detail, result: result))
+                toolIndex[id] = items.count - 1
+            }
+        }
+        switch item["type"] as? String ?? "?" {
+        case "agent_message":
+            if done, let t = item["text"] as? String, !t.isEmpty { add(.assistant(t)) }
+        case "reasoning":
+            if done, let t = item["text"] as? String, !t.isEmpty { add(.thinking(t)) }
+        case "command_execution":
+            let command = shellCommand(item["command"] as? String ?? "")
+            var result: String?
+            if done {
+                result = clip(item["aggregated_output"] as? String ?? "")
+                if let code = item["exit_code"] as? Int, code != 0 { result = (result ?? "") + "\n(exit code \(code))" }
+            }
+            step("Shell", command.split(separator: "\n").first.map(String.init) ?? command, command, result: result)
+        case "file_change":
+            let changes = (item["changes"] as? [[String: Any]] ?? []).map { "\($0["kind"] as? String ?? "change") \($0["path"] as? String ?? "")" }
+            step("Edit", changes.first ?? "files", changes.joined(separator: "\n"), result: done ? "" : nil)
+        case "web_search":
+            let query = item["query"] as? String ?? ""
+            step("Web search", query, query, result: done ? "\((item["results"] as? [Any])?.count ?? 0) results" : nil)
+        case "mcp_tool_call":
+            let name = [item["server"] as? String, item["tool"] as? String].compactMap { $0 }.joined(separator: ".")
+            let args = item["arguments"].map(pretty) ?? ""
+            var result: String?
+            if done {
+                if let e = item["error"], !(e is NSNull) { result = "Error: " + pretty(e) }
+                else { result = clip(item["result"].map(pretty) ?? "") }
+            }
+            step(name.isEmpty ? "Tool" : name, "", args, result: result)
+        case "todo_list":
+            let list = (item["items"] as? [[String: Any]] ?? []).map { (($0["completed"] as? Bool) == true ? "[x] " : "[ ] ") + ($0["text"] as? String ?? "") }
+            if !list.isEmpty { step("Plan", "\(list.count) steps", list.joined(separator: "\n"), result: "") }
+        case let other:
+            survey.unknown["item:" + other, default: 0] += 1
+        }
+    }
+
+    static func shellCommand(_ s: String) -> String {
+        guard let m = s.firstMatch(of: #/^\S*/(?:ba|z)?sh -lc (.*)$/#.dotMatchesNewlines()) else { return s }
+        var inner = String(m.1)
+        if inner.count >= 2, let q = inner.first, q == "'" || q == "\"", inner.last == q {
+            inner = String(inner.dropFirst().dropLast())
+            if q == "'" { inner = inner.replacingOccurrences(of: "'\\''", with: "'") }
+        }
+        return inner
     }
 
     private static func parseCodex(_ obj: [String: Any], items: inout [TranscriptItem], toolIndex: inout [String: Int],

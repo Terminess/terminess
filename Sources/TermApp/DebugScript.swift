@@ -78,6 +78,36 @@ enum DebugScript {
             }
             fflush(stdout)
         }
+        if let file = env["TERMAPP_PAIR_MATCH"], let command = try? String(contentsOfFile: file, encoding: .utf8) {
+            print("pair match: \(PairRuns.run(forCommand: command).map { "\($0.id) \($0.state) \($0.brief)" } ?? "none")")
+            fflush(stdout)
+        }
+        if let png = env["TERMAPP_PAIR_SNAPSHOT"], let run = PairRuns.recent().first {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                MainActor.assumeIsolated {
+                    PairRunWindows.show(run)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        MainActor.assumeIsolated {
+                            guard let w = NSApp.windows.first(where: { $0.title.hasPrefix("Codex") || $0.title.hasPrefix("Claude") }),
+                                  let view = w.contentView else { return }
+                            view.layoutSubtreeIfNeeded()
+                            view.display()
+                            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+                            view.cacheDisplay(in: view.bounds, to: rep)
+                            let out = rep.copy() as! NSBitmapImageRep
+                            NSGraphicsContext.saveGraphicsState()
+                            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: out)
+                            w.backgroundColor.withAlphaComponent(1).setFill()
+                            NSRect(origin: .zero, size: out.size).fill()
+                            rep.draw(in: NSRect(origin: .zero, size: out.size), from: .zero, operation: .sourceOver, fraction: 1,
+                                     respectFlipped: false, hints: nil)
+                            NSGraphicsContext.restoreGraphicsState()
+                            try? out.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: png))
+                        }
+                    }
+                }
+            }
+        }
         if env["TERMAPP_READER"] != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak controller] in
                 MainActor.assumeIsolated {
@@ -161,7 +191,7 @@ enum DebugScript {
                     print("sidebar visible=\(m.visible)")
                     for t in m.tabs { print("  open: \(t.isKey ? "*" : " ") \(t.title) | \(t.command) | \(t.directory)") }
                     for j in m.jobs { print("  job: \(j.id) \(j.state) \(j.target) \(j.brief)") }
-                    for r in m.runs { print("  run: \(r.mode) \(r.from)->\(r.to) \(r.status) \(r.brief)") }
+                    for r in m.runs { print("  run: \(r.mode) \(r.from)->\(r.to) \(r.state) \(r.brief)") }
                     print("  sessions: \(m.sessions.count)  note: \(m.sessionsNote ?? "-")")
                     let t = c.session.terminal
                     print("integration: prompts=\(t.promptLines().count) cwd=\(c.session.currentDirectory ?? "-")")

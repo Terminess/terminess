@@ -14,6 +14,8 @@ final class ScreenModel: ObservableObject {
     @Published private(set) var title = ""
     @Published private(set) var command = ""
     @Published private(set) var connected = false
+    @Published private(set) var sizedElsewhere = false
+    @Published private(set) var fontScale: CGFloat = 1
     @Published private(set) var statusChips: [StatusChip] = []
     private let events = ScreenEvents()
     private var pendingInput: String?
@@ -93,6 +95,7 @@ final class ScreenModel: ObservableObject {
                     self.terminal.resize(columns: s.0, rows: s.1)
                 }
                 if self.terminalVisible { self.attachment?.resize(cols: self.terminal.columns, rows: self.terminal.rows) }
+                self.updateFit()
                 self.scheduleRender()
                 if let input = self.pendingInput {
                     self.pendingInput = nil
@@ -106,6 +109,14 @@ final class ScreenModel: ObservableObject {
                 self?.scheduleRender()
             }
         }
+        attachment.onSize = { [weak self] c, r in
+            MainActor.assumeIsolated {
+                guard let self, self.sizeAfterReplay == nil else { return }
+                if c != self.terminal.columns || r != self.terminal.rows { self.terminal.resize(columns: c, rows: r) }
+                self.updateFit()
+                self.scheduleRender()
+            }
+        }
         attachment.onForeground = { [weak self] fg in MainActor.assumeIsolated { self?.command = fg.command } }
         attachment.onExit = { [weak self] _ in MainActor.assumeIsolated { self?.ended = true; self?.connected = false; self?.status = "Session ended" } }
         attachment.onDisconnect = { [weak self] _ in
@@ -117,8 +128,25 @@ final class ScreenModel: ObservableObject {
         attachment.start()
     }
 
+    func fitToPhone() {
+        guard let g = viewGrid else { return }
+        terminal.resize(columns: g.cols, rows: g.rows)
+        attachment?.resize(cols: g.cols, rows: g.rows)
+        updateFit()
+        scheduleRender()
+    }
+
+    private func updateFit() {
+        guard let g = viewGrid else { sizedElsewhere = false; fontScale = 1; return }
+        sizedElsewhere = terminal.columns != g.cols || terminal.rows != g.rows
+        fontScale = terminal.columns > g.cols ? max(0.4, CGFloat(g.cols) / CGFloat(terminal.columns)) : 1
+    }
+
+    var displayFont: UIFont { fontScale == 1 ? font : UIFont.monospacedSystemFont(ofSize: 12 * fontScale, weight: .regular) }
+
     func resize(cols: Int, rows: Int) {
         viewGrid = (cols, rows)
+        defer { updateFit() }
         guard terminalVisible else { return }
         applySize(cols, rows)
     }
@@ -224,7 +252,7 @@ final class ScreenModel: ObservableObject {
         var r = AttributedString(s)
         r.foregroundColor = SwiftUI.Color(rgb: fg)
         if bg != p.background || cursor || a.flags.contains(.inverse) { r.backgroundColor = SwiftUI.Color(rgb: bg) }
-        if a.flags.contains(.bold) { r.font = .system(size: 12, weight: .bold, design: .monospaced) }
+        if a.flags.contains(.bold) { r.font = .system(size: 12 * fontScale, weight: .bold, design: .monospaced) }
         if a.flags.contains(.faint) { r.foregroundColor = SwiftUI.Color(rgb: fg).opacity(0.6) }
         if a.underline != .none { r.underlineStyle = .single }
         return r

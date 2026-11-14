@@ -407,8 +407,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func showRun(_ run: PairRun) {
-        guard FileManager.default.fileExists(atPath: run.resultFile) else { return }
-        open(tabbedWith: keyController?.window, command: "less -R \(shellQuote(run.resultFile))")
+        PairRunWindows.show(run)
     }
 
     private func promptForText(title: String, note: String, required: Bool) -> String? {

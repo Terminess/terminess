@@ -113,10 +113,13 @@ struct SidebarView: View {
                     .tag(SidebarID.job(job.id))
             }
             ForEach(model.runs) { run in
-                let ok = run.status == "ok"
-                Row(symbol: ok ? "checkmark.circle" : "exclamationmark.circle", tint: ok ? .secondary : .red,
-                    title: run.brief, subtitle: agent(run.to) + " · " + run.mode + " · " + run.repo)
+                Row(symbol: run.state == "done" ? "checkmark.circle" : run.state == "failed" ? "exclamationmark.circle" : "stop.circle",
+                    tint: run.state == "failed" ? .red : .secondary,
+                    title: run.brief,
+                    subtitle: agent(run.to) + " · " + run.mode + " · " + (run.state == "running" ? "working" : run.repo),
+                    busy: run.state == "running")
                     .tag(SidebarID.run(run.id))
+                    .help("Open to see what \(agent(run.to)) is doing: the brief, every command and its output, and its answer.")
             }
         } header: {
             HStack {
@@ -273,7 +276,7 @@ struct SidebarView: View {
             }
         case .run(let r):
             if let run = model.runs.first(where: { $0.id == r }) {
-                Button("Show Result") { model.actions?.showRun(run) }
+                Button("Show What It Did") { model.actions?.showRun(run) }
             }
         case .host(let h):
             if let s = model.background.first(where: { $0.id == h }) {

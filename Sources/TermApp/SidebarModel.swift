@@ -32,9 +32,11 @@ struct PairRun: Identifiable, Equatable {
     let to: String
     let mode: String
     let repo: String
-    let status: String
     let brief: String
-    let resultFile: String
+    let dir: String
+    let state: String
+    let started: Date
+    let transcript: String?
 }
 
 struct IssueItem: Identifiable, Equatable, Decodable {
@@ -271,26 +273,11 @@ final class SidebarModel: ObservableObject {
             if jobs.count >= 12 { break }
         }
 
-        var runs: [PairRun] = []
-        if let ledger = try? String(contentsOfFile: pairState + "/log.jsonl", encoding: .utf8) {
-            let cutoff = Date().addingTimeInterval(-24 * 3600)
-            for line in ledger.split(separator: "\n").suffix(40).reversed() {
-                guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-                      let mode = obj["mode"] as? String, mode != "parallel",
-                      let ts = obj["ts"] as? String else { continue }
-                if let date = SidebarModel.ledgerDate(ts), date < cutoff { continue }
-                runs.append(PairRun(id: ts + (obj["to"] as? String ?? ""), from: obj["from"] as? String ?? "?",
-                                    to: obj["to"] as? String ?? "?", mode: mode,
-                                    repo: (obj["repo"] as? String ?? "").split(separator: "/").last.map(String.init) ?? "",
-                                    status: obj["status"] as? String ?? "", brief: obj["brief_head"] as? String ?? "",
-                                    resultFile: obj["result_file"] as? String ?? ""))
-                if runs.count >= 6 { break }
-            }
-        }
+        let runs = PairRuns.recent().filter { $0.mode != "parallel" }
         return (jobs, runs)
     }
 
-    static func ledgerDate(_ ts: String) -> Date? {
+    nonisolated static func ledgerDate(_ ts: String) -> Date? {
         let f = DateFormatter()
         f.dateFormat = "yyyyMMdd'T'HHmmss"
         return f.date(from: ts)

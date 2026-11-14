@@ -54,10 +54,13 @@ struct SettingsView: View {
                 }
                 .listRowBackground(Theme.surface)
                 KeySection().listRowBackground(Theme.surface)
-                Section("Notifications") {
+                LockSection().listRowBackground(Theme.surface)
+                Section {
                     Label(push.token == nil ? "Off. Allow them in iOS Settings, Terminess." : "On. You'll hear when an agent finishes or needs you.",
                           systemImage: push.token == nil ? "bell.slash" : "bell")
                         .font(.callout)
+                } header: { Text("Notifications") } footer: {
+                    Text("They only say a session finished or needs you. What's in your sessions stays between this iPhone and your machines.")
                 }
                 .listRowBackground(Theme.surface)
             }
@@ -212,6 +215,26 @@ struct WelcomeView: View {
                         .background(RoundedRectangle(cornerRadius: 10).fill(Theme.surface))
                 }
             }
+        }
+    }
+}
+
+private struct LockSection: View {
+    @ObservedObject var lock = AppLock.shared
+
+    var body: some View {
+        Section {
+            Toggle("Require \(lock.biometryName)", isOn: Binding(get: { lock.enabled }, set: { lock.setEnabled($0) }))
+                .disabled(!AppLock.available)
+            if lock.enabled && AppLock.available {
+                Picker("Ask again", selection: $lock.delay) {
+                    ForEach(AppLock.Delay.allCases) { Text($0.label).tag($0) }
+                }
+            }
+        } header: { Text("Lock") } footer: {
+            Text(AppLock.available
+                 ? "Terminess can type into shells on your machines, so it asks before opening. Locking disconnects; your sessions keep running."
+                 : "Set a passcode on this iPhone to lock Terminess.")
         }
     }
 }

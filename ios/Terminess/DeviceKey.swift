@@ -7,7 +7,7 @@ enum DeviceKey {
     private static let service = "com.nsokin.terminal.devicekey"
 
     static func load() throws -> NIOSSHPrivateKey {
-        if let stored = read() {
+        if let stored = try read() {
             if stored.secureEnclave {
                 return NIOSSHPrivateKey(secureEnclaveP256Key: try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: stored.data))
             }
@@ -28,14 +28,16 @@ enum DeviceKey {
         return String(openSSHPublicKey: key.publicKey) + " terminess-iphone"
     }
 
-    static var usesSecureEnclave: Bool { read()?.secureEnclave ?? SecureEnclave.isAvailable }
+    static var usesSecureEnclave: Bool { ((try? read()) ?? nil)?.secureEnclave ?? SecureEnclave.isAvailable }
 
-    private static func read() -> (data: Data, secureEnclave: Bool)? {
+    private static func read() throws -> (data: Data, secureEnclave: Bool)? {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecReturnData as String: true, kSecReturnAttributes as String: true]
         var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let item = out as? [String: Any],
-              let data = item[kSecValueData as String] as? Data else { return nil }
+        let status = SecItemCopyMatching(q as CFDictionary, &out)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let item = out as? [String: Any],
+              let data = item[kSecValueData as String] as? Data else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
         return (data, (item[kSecAttrAccount as String] as? String) == "secure-enclave")
     }
 

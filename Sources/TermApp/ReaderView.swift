@@ -171,7 +171,7 @@ struct ReaderView: View {
     }
 }
 
-private struct ItemView: View {
+struct ItemView: View {
     let item: TranscriptItem
     @State private var expanded = false
 
@@ -222,11 +222,37 @@ private struct ItemView: View {
                     Text(name).font(.callout.weight(.medium))
                     Text(summary).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
                     if result == nil { ProgressView().controlSize(.mini) }
+                    if let command = pairCommand(name: name, detail: detail) {
+                        Spacer(minLength: 8)
+                        Button { ItemView.openPairRun(command) } label: {
+                            Label(command.contains("--to claude") ? "Watch Claude" : "Watch Codex", systemImage: "eye")
+                                .font(.caption.weight(.medium))
+                        }
+                        .buttonStyle(.borderless)
+                        .help("See what the other agent is doing: its commands, their output and its answer.")
+                    }
                 }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.25)))
+        }
+    }
+
+    private func pairCommand(name: String, detail: String) -> String? {
+        guard ["Bash", "Shell", "shell", "exec_command"].contains(name), detail.contains("pair") else { return nil }
+        let obj = (try? JSONSerialization.jsonObject(with: Data(detail.utf8))) as? [String: Any]
+        let command = (obj?["command"] as? String) ?? detail
+        guard command.firstMatch(of: #/(^|[\s;&|(])pair\s+(ask|review|handoff|parallel)\b/#) != nil else { return nil }
+        return command
+    }
+
+    static func openPairRun(_ command: String) {
+        Task.detached(priority: .userInitiated) {
+            let run = PairRuns.run(forCommand: command)
+            await MainActor.run {
+                if let run { PairRunWindows.show(run) } else { NSSound.beep() }
+            }
         }
     }
 

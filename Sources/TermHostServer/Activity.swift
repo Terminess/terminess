@@ -188,35 +188,78 @@ enum History {
 }
 
 final class PushRegistry {
-    struct Device: Codable { var token: String; var environment: String; var host: String?; var added: Double }
+    struct Device: Codable { var token: String; var environment: String; var host: String?; var added: Double; var credential: String?; var key: String? }
     private(set) var devices: [Device] = []
     private let file = HostPaths.stateDirectory + "/push.json"
+    private let queue: DispatchQueue
     let relay = ProcessInfo.processInfo.environment["TERMINESS_PUSH_RELAY"] ?? "https://push.terminess.com/v1/notify"
 
-    init() {
+    init(queue: DispatchQueue) {
+        self.queue = queue
         if let data = FileManager.default.contents(atPath: file),
            let saved = try? JSONDecoder().decode([Device].self, from: data) { devices = saved }
     }
 
-    func register(token: String, environment: String, host: String?) {
+    func register(token: String, environment: String, host: String?, credential: String?, key: String?) {
+        let old = devices.first { $0.token == token }
         devices.removeAll { $0.token == token }
-        devices.append(Device(token: token, environment: environment, host: host, added: Date().timeIntervalSince1970))
-        if let data = try? JSONEncoder().encode(devices) {
-            FileManager.default.createFile(atPath: file, contents: data, attributes: [.posixPermissions: 0o600])
+        devices.append(Device(token: token, environment: environment, host: host, added: Date().timeIntervalSince1970,
+                              credential: credential ?? old?.credential, key: key ?? old?.key))
+        save()
+    }
+
+    func revoke(key: String) {
+        guard let url = URL(string: relay.replacingOccurrences(of: "/notify", with: "/revoke")) else { return }
+        for d in devices where d.key == key && !key.isEmpty {
+            guard let credential = d.credential else { continue }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.timeoutInterval = 10
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["token": d.token, "environment": d.environment, "credential": credential])
+            URLSession.shared.dataTask(with: req) { _, _, _ in }.resume()
+        }
+        devices.removeAll { $0.key == nil || $0.key == key }
+        save()
+    }
+
+    func unregister(token: String) {
+        if token == "*" { devices = [] } else { devices.removeAll { $0.token == token } }
+        save()
+    }
+
+    private func save() {
+        guard let data = try? JSONEncoder().encode(devices) else { return }
+        try? FileManager.default.removeItem(atPath: file)
+        FileManager.default.createFile(atPath: file, contents: data, attributes: [.posixPermissions: 0o600])
+    }
+
+    enum Reason {
+        case finished, needsYou, failed
+        var text: String {
+            switch self {
+            case .finished: return "A session finished"
+            case .needsYou: return "A session needs you"
+            case .failed: return "A session stopped on an error"
+            }
         }
     }
 
-    func notify(title: String, body: String, session: String) {
+    func notify(_ reason: Reason, session: String) {
         guard !devices.isEmpty, let url = URL(string: relay) else { return }
         for d in devices {
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.timeoutInterval = 10
-            let payload: [String: String] = ["token": d.token, "environment": d.environment,
-                                             "title": title, "body": body, "session": session, "host": d.host ?? ""]
+            let payload: [String: String] = ["token": d.token, "environment": d.environment, "credential": d.credential ?? "",
+                                             "title": "Terminess", "body": reason.text, "session": session, "host": d.host ?? ""]
             req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-            URLSession.shared.dataTask(with: req) { _, _, _ in }.resume()
+            let token = d.token
+            URLSession.shared.dataTask(with: req) { [weak self] _, response, _ in
+                guard (response as? HTTPURLResponse)?.statusCode == 410 else { return }
+                self?.queue.async { self?.unregister(token: token) }
+            }.resume()
         }
     }
 }

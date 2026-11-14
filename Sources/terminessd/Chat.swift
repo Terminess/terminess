@@ -47,7 +47,9 @@ func chat(_ args: [String]) -> Never {
 
     func record(_ obj: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.withoutEscapingSlashes]) else { return }
-        if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
+        if !FileManager.default.fileExists(atPath: path) {
+            FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600])
+        }
         guard let h = FileHandle(forWritingAtPath: path) else { return }
         h.seekToEndOfFile()
         h.write(data + Data([0x0A]))
@@ -60,8 +62,11 @@ func chat(_ args: [String]) -> Never {
                                                                message: String(decoding: data, as: UTF8.self))).encoded())
         close(fd)
     }
-    record(["type": "meta", "model": model, "cwd": FileManager.default.currentDirectoryPath,
-            "started": Date().timeIntervalSince1970])
+    func startRecord() {
+        record(["type": "meta", "model": model, "cwd": FileManager.default.currentDirectoryPath,
+                "started": Date().timeIntervalSince1970])
+    }
+    startRecord()
 
     let dim = "\u{1B}[2m", bold = "\u{1B}[1m", red = "\u{1B}[31m", reset = "\u{1B}[0m"
     func out(_ s: String) { FileHandle.standardOutput.write(Data(s.utf8)) }
@@ -120,7 +125,9 @@ func chat(_ args: [String]) -> Never {
             continue
         case "/clear":
             messages = []
-            out("\(dim)Starting afresh; earlier messages are forgotten.\(reset)\n")
+            if let h = FileHandle(forWritingAtPath: path) { try? h.truncate(atOffset: 0); try? h.close() }
+            startRecord()
+            out("\(dim)Starting afresh; earlier messages are forgotten and deleted.\(reset)\n")
             continue
         default: break
         }

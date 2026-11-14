@@ -132,6 +132,8 @@ public struct Message: Codable, Equatable {
     public var projects: [ProjectInfo]?
     public var data: String?
     public var token: String?
+    public var credential: String?
+    public var key: String?
     public var history: [HistoryItem]?
 
     public init(op: String, version: Int? = nil, host: String? = nil, id: String? = nil, name: String? = nil,
@@ -139,13 +141,13 @@ public struct Message: Codable, Equatable {
                 code: Int? = nil, message: String? = nil, sessions: [SessionInfo]? = nil,
                 env: [String: String]? = nil, foreground: ForegroundInfo? = nil, signal: String? = nil,
                 items: [TranscriptItem]? = nil, projects: [ProjectInfo]? = nil, data: String? = nil, token: String? = nil,
-                history: [HistoryItem]? = nil) {
+                history: [HistoryItem]? = nil, credential: String? = nil, key: String? = nil) {
         self.op = op; self.version = version; self.host = host; self.id = id; self.name = name
         self.cwd = cwd; self.command = command; self.args = args; self.cols = cols; self.rows = rows
         self.code = code; self.message = message; self.sessions = sessions
         self.env = env; self.foreground = foreground; self.signal = signal
         self.items = items; self.projects = projects; self.data = data; self.token = token
-        self.history = history
+        self.history = history; self.credential = credential; self.key = key
     }
 }
 

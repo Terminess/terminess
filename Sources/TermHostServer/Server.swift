@@ -86,7 +86,7 @@ public final class HostServer: @unchecked Sendable {
     private var listenFD: Int32 = -1
     private var acceptSource: DispatchSourceRead?
     private var infoTimer: DispatchSourceTimer?
-    private let push = PushRegistry()
+    private lazy var push = PushRegistry(queue: queue)
     private var transcriptSubs: [ObjectIdentifier: (session: String, sent: [TranscriptItem], mtime: Date?)] = [:]
     private var clientSizes: [ObjectIdentifier: (cols: Int, rows: Int, at: Double)] = [:]
     private var owners: [String: ObjectIdentifier] = [:]
@@ -123,7 +123,7 @@ public final class HostServer: @unchecked Sendable {
     private func acceptClient() {
         let fd = accept(listenFD, nil, nil)
         guard fd >= 0 else { return }
-        let conn = Connection(readFD: fd, queue: queue)
+        let conn = Connection(readFD: fd, queue: queue, buffered: true)
         let key = ObjectIdentifier(conn)
         connections[key] = conn
         conn.onFrame = { [weak self, weak conn] frame in
@@ -250,7 +250,13 @@ public final class HostServer: @unchecked Sendable {
             upload(m, from: conn)
         case "register-push":
             guard let token = m.token, !token.isEmpty else { conn.send(Message(op: "error", message: "no token")); return }
-            push.register(token: token, environment: m.message ?? "production", host: m.name)
+            push.register(token: token, environment: m.message ?? "production", host: m.name, credential: m.credential, key: m.key)
+            conn.send(Message(op: "ok"))
+        case "revoke-push":
+            push.revoke(key: m.key ?? "")
+            conn.send(Message(op: "ok"))
+        case "unregister-push":
+            push.unregister(token: m.token ?? "")
             conn.send(Message(op: "ok"))
         case "detach":
             if let id = bindings.removeValue(forKey: key), let s = sessions[id] {
@@ -335,11 +341,11 @@ public final class HostServer: @unchecked Sendable {
                 if s.hooked && s.hookAgent == "claude" { continue }
                 let wasBusy = s.busy
                 s.busy = TitleState.busy(t)
-                if wasBusy && !s.busy && !s.hooked { raiseAttention(s, body: "Finished, or waiting for you") }
+                if wasBusy && !s.busy && !s.hooked { raiseAttention(s, .finished) }
             case .bell:
-                raiseAttention(s, body: "Needs your attention")
-            case .notify(let text):
-                raiseAttention(s, body: text.isEmpty ? "Needs your attention" : text)
+                raiseAttention(s, .needsYou)
+            case .notify:
+                raiseAttention(s, .needsYou)
             }
         }
         let frame = Wire.Frame(.output, bytes)
@@ -351,14 +357,25 @@ public final class HostServer: @unchecked Sendable {
         s.hookPid = s.process.foregroundPID
         s.hookAgent = "codex"
         s.busy = false
-        raiseAttention(s, body: firstLine(e["last-assistant-message"] as? String) ?? "Finished")
+        raiseAttention(s, .finished)
         pushTranscripts()
+    }
+
+    static func trustedTranscript(_ path: String) -> Bool {
+        let env = ProcessInfo.processInfo.environment
+        let home = env["HOME"] ?? NSHomeDirectory()
+        let roots = [(env["CLAUDE_CONFIG_DIR"] ?? home + "/.claude") + "/projects/",
+                     (env["CODEX_HOME"] ?? home + "/.codex") + "/sessions/",
+                     LocalChat.directory + "/"]
+        guard path.hasSuffix(".jsonl"), !path.split(separator: "/").contains(".."),
+              roots.contains(where: { path.hasPrefix($0) }) else { return false }
+        return UnixSocket.ownFile(path)?.type == .typeRegular
     }
 
     private func hook(_ e: [String: Any], in s: HostSession) {
         let pid = s.process.foregroundPID
         s.hookAgent = "claude"
-        if let path = e["transcript_path"] as? String, !path.isEmpty, FileManager.default.fileExists(atPath: path) {
+        if let path = e["transcript_path"] as? String, Self.trustedTranscript(path) {
             s.transcript = (s.command == "ollama" ? "ollama" : "claude", path, pid)
         }
         switch e["hook_event_name"] as? String {
@@ -372,16 +389,16 @@ public final class HostServer: @unchecked Sendable {
         case "Stop":
             s.hookPid = pid
             s.busy = false
-            raiseAttention(s, body: firstLine(e["last_assistant_message"] as? String) ?? lastReply(s) ?? "Finished")
+            raiseAttention(s, .finished)
         case "StopFailure":
             s.hookPid = pid
             s.busy = false
-            raiseAttention(s, body: "Stopped on an error")
+            raiseAttention(s, .failed)
         case "Notification":
             s.hookPid = pid
             let type = e["notification_type"] as? String ?? ""
             guard !["idle_prompt", "auth_success", "agent_completed"].contains(type) else { break }
-            raiseAttention(s, body: firstLine(e["message"] as? String) ?? "Needs your attention")
+            raiseAttention(s, .needsYou)
         case "SessionEnd":
             s.hookPid = nil
             s.busy = false
@@ -391,26 +408,12 @@ public final class HostServer: @unchecked Sendable {
         pushTranscripts()
     }
 
-    private func lastReply(_ s: HostSession) -> String? {
-        guard let t = s.transcript else { return nil }
-        for item in Transcript.parse(t.path, agent: t.agent).reversed() {
-            if case .assistant(let text) = item.kind { return firstLine(text) }
-        }
-        return nil
-    }
-
-    private func firstLine(_ text: String?) -> String? {
-        guard let line = text?.split(separator: "\n").first.map({ String($0).trimmingCharacters(in: .whitespaces) }),
-              !line.isEmpty else { return nil }
-        return line.count > 140 ? String(line.prefix(139)) + "…" : line
-    }
-
-    private func raiseAttention(_ s: HostSession, body: String) {
+    private func raiseAttention(_ s: HostSession, _ reason: PushRegistry.Reason) {
         s.attention = true
         let now = Date().timeIntervalSince1970
         guard now - s.lastPush > 20 else { return }
         s.lastPush = now
-        push.notify(title: s.readableTitle, body: body, session: s.id)
+        push.notify(reason, session: s.id)
     }
 
     private func transcriptPath(_ s: HostSession) -> (agent: String, path: String)? {
@@ -464,21 +467,23 @@ public final class HostServer: @unchecked Sendable {
         if uploads[key] == nil {
             let day = String(ISO8601DateFormatter().string(from: Date()).prefix(10))
             let dir = HostPaths.stateDirectory + "/uploads/" + day
-            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            guard (try? UnixSocket.checkPrivate(directory: dir)) != nil else { conn.send(Message(op: "error", message: "the upload folder isn't private")); return }
             let raw = (m.name ?? "file").replacingOccurrences(of: "/", with: "-")
             let safe = String(raw.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || ".-_ ".unicodeScalars.contains($0) })
             var name = safe.isEmpty ? "file" : safe
+            if name.hasPrefix(".") { name = "file" + name }
             var path = dir + "/" + name
             var n = 2
-            while FileManager.default.fileExists(atPath: path) {
-                let ext = (name as NSString).pathExtension, base = (safe as NSString).deletingPathExtension
-                name = ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)"
-                path = dir + "/" + name
+            var fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            while fd < 0 && errno == EEXIST && n < 1000 {
+                let ext = (name as NSString).pathExtension, base = (name as NSString).deletingPathExtension
+                path = dir + "/" + (ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)")
+                fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
                 n += 1
             }
-            FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600])
-            guard let h = FileHandle(forWritingAtPath: path) else { conn.send(Message(op: "error", message: "could not save the file")); return }
-            uploads[key] = (path, h)
+            guard fd >= 0 else { conn.send(Message(op: "error", message: "could not save the file")); return }
+            uploads[key] = (path, FileHandle(fileDescriptor: fd, closeOnDealloc: true))
         }
         guard let u = uploads[key] else { return }
         if let chunk = m.data, let bytes = Data(base64Encoded: chunk) { u.handle.write(bytes) }
@@ -520,7 +525,9 @@ public final class HostServer: @unchecked Sendable {
         } else {
             s.process.resize(columns: c, rows: r)
         }
+        let changed = s.cols != c || s.rows != r
         s.cols = c
         s.rows = r
+        if changed { for (_, conn) in s.clients { conn.send(Message(op: "size", id: s.id, cols: c, rows: r)) } }
     }
 }

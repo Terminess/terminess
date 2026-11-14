@@ -5,9 +5,14 @@ import FoundationNetworking
 
 public enum LocalModels {
     public static var base: String {
-        guard var h = ProcessInfo.processInfo.environment["OLLAMA_HOST"], !h.isEmpty else { return "http://127.0.0.1:11434" }
+        let env = ProcessInfo.processInfo.environment
+        let fallback = "http://127.0.0.1:11434"
+        guard var h = env["OLLAMA_HOST"], !h.isEmpty else { return fallback }
         if !h.hasPrefix("http") { h = "http://" + h }
-        return h.hasSuffix("/") ? String(h.dropLast()) : h
+        if h.hasSuffix("/") { h.removeLast() }
+        guard let host = URL(string: h)?.host else { return fallback }
+        let local = ["127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"].contains(host.lowercased())
+        return local || env["TERMINESS_OLLAMA_REMOTE"] == "1" ? h : fallback
     }
 
     public static func installed(timeout: Double = 2, completion: @escaping @Sendable ([String]?) -> Void) {

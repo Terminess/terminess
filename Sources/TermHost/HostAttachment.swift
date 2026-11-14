@@ -22,6 +22,7 @@ public final class HostAttachment: @unchecked Sendable {
     public var resizesAfterReplay = false
 
     public var onAttached: ((String, Int, Int) -> Void)?
+    public var onSize: ((Int, Int) -> Void)?
     public var onReplayed: (() -> Void)?
     public var onOutput: (([UInt8]) -> Void)?
     public var onForeground: ((ForegroundInfo) -> Void)?
@@ -118,6 +119,8 @@ public final class HostAttachment: @unchecked Sendable {
                 if let id = m.id { onAttached?(id, m.cols ?? 0, m.rows ?? 0) }
             case "replayed":
                 onReplayed?()
+            case "size":
+                if let c = m.cols, let r = m.rows, c > 0, r > 0 { onSize?(c, r) }
             case "info":
                 if let fg = m.foreground {
                     foreground = fg

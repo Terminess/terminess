@@ -9,7 +9,7 @@ struct TerminalScreen: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     Text(model.text)
-                        .font(Font(model.font))
+                        .font(Font(model.displayFont))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(6)
                         .id("screen")
@@ -25,6 +25,17 @@ struct TerminalScreen: View {
             .onChange(of: geo.size) { _, size in fit(size) }
         }
         .background(model.background)
+        .overlay(alignment: .topTrailing) {
+            if model.sizedElsewhere {
+                Button { model.fitToPhone() } label: {
+                    Label("Fit to phone", systemImage: "arrow.down.right.and.arrow.up.left")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(.thinMaterial, in: Capsule())
+                }
+                .padding(8)
+            }
+        }
     }
 
     private func fit(_ size: CGSize) {

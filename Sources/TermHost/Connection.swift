@@ -15,12 +15,33 @@ public final class Connection: @unchecked Sendable {
     private var closed = false
     public var onFrame: ((Wire.Frame) -> Void)?
     public var onClose: (() -> Void)?
+    private let buffered: Bool
+    public static let maxBacklog = 8 * 1024 * 1024
+    public static let hardBacklog = 128 * 1024 * 1024
+    public var stallTimeout: TimeInterval = 20
+    private var lastProgress = Date()
+    private var backlog: [UInt8] = []
+    private var backlogStart = 0
+    private var writer: DispatchSourceWrite?
 
-    public init(readFD: Int32, writeFD: Int32? = nil, queue: DispatchQueue) {
+    public init(readFD: Int32, writeFD: Int32? = nil, queue: DispatchQueue, buffered: Bool = false) {
         self.readFD = readFD
         self.writeFD = writeFD ?? readFD
         self.queue = queue
+        self.buffered = buffered
+        #if canImport(Darwin)
+        var on: Int32 = 1
+        for fd in Set([readFD, self.writeFD]) {
+            _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+        }
+        #endif
+        if buffered {
+            let flags = fcntl(self.writeFD, F_GETFL)
+            if flags >= 0 { _ = fcntl(self.writeFD, F_SETFL, flags | O_NONBLOCK) }
+        }
     }
+
+    public var backlogCount: Int { backlog.count - backlogStart }
 
     public func start() {
         let src = DispatchSource.makeReadSource(fileDescriptor: readFD, queue: queue)
@@ -44,7 +65,52 @@ public final class Connection: @unchecked Sendable {
 
     public func send(_ frame: Wire.Frame) {
         guard !closed else { return }
-        if !Connection.writeAll(writeFD, frame.encoded()) { close() }
+        guard buffered else {
+            if !Connection.writeAll(writeFD, frame.encoded()) { close() }
+            return
+        }
+        let bytes = frame.encoded()
+        if backlogCount == 0 {
+            lastProgress = Date()
+            let n = bytes.withUnsafeBytes { write(writeFD, $0.baseAddress!, bytes.count) }
+            if n == bytes.count { return }
+            if n < 0 && errno != EAGAIN && errno != EINTR { close(); return }
+            backlog = Array(bytes[max(n, 0)...])
+            backlogStart = 0
+        } else {
+            backlog.append(contentsOf: bytes)
+        }
+        if backlogCount > Connection.hardBacklog
+            || (backlogCount > Connection.maxBacklog && Date().timeIntervalSince(lastProgress) > stallTimeout) {
+            close()
+            return
+        }
+        if writer == nil {
+            let w = DispatchSource.makeWriteSource(fileDescriptor: writeFD, queue: queue)
+            w.setEventHandler { [weak self] in self?.drain() }
+            writer = w
+            w.resume()
+        }
+    }
+
+    private func drain() {
+        guard !closed else { return }
+        while backlogCount > 0 {
+            let n = backlog.withUnsafeBytes { write(writeFD, $0.baseAddress! + backlogStart, backlogCount) }
+            if n > 0 { backlogStart += n; lastProgress = Date(); continue }
+            if n < 0 && (errno == EAGAIN || errno == EINTR) { break }
+            close()
+            return
+        }
+        if backlogCount == 0 {
+            backlog = []
+            backlogStart = 0
+            writer?.cancel()
+            writer = nil
+        } else if backlogStart > 1 << 20 {
+            backlog.removeFirst(backlogStart)
+            backlogStart = 0
+        }
     }
 
     public func send(_ message: Message) { send(.control(message)) }
@@ -54,6 +120,10 @@ public final class Connection: @unchecked Sendable {
         closed = true
         source?.cancel()
         source = nil
+        writer?.cancel()
+        writer = nil
+        backlog = []
+        backlogStart = 0
         Darwin_close(readFD)
         if writeFD != readFD { Darwin_close(writeFD) }
         onClose?()
@@ -113,8 +183,27 @@ public enum UnixSocket {
         return fd
     }
 
+    public static func checkPrivate(directory dir: String) throws {
+        guard let a = ownFile(dir) else { throw HostError("\(dir) is missing or belongs to another user") }
+        guard a.type == .typeDirectory else { throw HostError("\(dir) isn't a plain folder") }
+        if a.mode & 0o077 != 0 {
+            guard chmod(dir, 0o700) == 0 else { throw HostError("couldn't make \(dir) private") }
+        }
+    }
+
+    public static func ownFile(_ path: String) -> (type: FileAttributeType, mode: Int)? {
+        guard let a = try? FileManager.default.attributesOfItem(atPath: path),
+              (a[.ownerAccountID] as? NSNumber)?.uint32Value == geteuid(),
+              let type = a[.type] as? FileAttributeType else { return nil }
+        return (type, (a[.posixPermissions] as? NSNumber)?.intValue ?? 0o777)
+    }
+
     public static func listen(_ path: String) throws -> Int32 {
         guard var addr = address(path) else { throw HostError("socket path too long: \(path)") }
+        try checkPrivate(directory: (path as NSString).deletingLastPathComponent)
+        if (try? FileManager.default.attributesOfItem(atPath: path)) != nil {
+            guard ownFile(path)?.type == .typeSocket else { throw HostError("\(path) exists and isn't our socket") }
+        }
         unlink(path)
         let fd = socket(AF_UNIX, Int32(SOCK_STREAM.rawValueCompat), 0)
         guard fd >= 0 else { throw HostError("socket: \(String(cString: strerror(errno)))") }
@@ -124,7 +213,7 @@ public enum UnixSocket {
             }
         }
         guard rc == 0 else { throw HostError("bind \(path): \(String(cString: strerror(errno)))") }
-        chmod(path, 0o600)
+        guard chmod(path, 0o600) == 0 else { Darwin_close(fd); throw HostError("couldn't make \(path) private") }
         guard sysListen(fd, 16) == 0 else { throw HostError("listen: \(String(cString: strerror(errno)))") }
         return fd
     }

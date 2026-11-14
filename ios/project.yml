@@ -57,4 +57,5 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: Terminess connects to your own machines over SSH, including ones on your local network.
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Terminess listens while the microphone button is on, so you can talk to your agents.
+        INFOPLIST_KEY_NSFaceIDUsageDescription: Terminess asks for Face ID before it opens, because it can type into shells on your machines.
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: Terminess turns what you say into text for your message, on this iPhone.

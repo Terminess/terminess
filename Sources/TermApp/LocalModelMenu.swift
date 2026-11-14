@@ -15,7 +15,12 @@ final class LocalModelMenu: NSObject, NSMenuDelegate {
         refresh()
     }
 
-    private var host: String { Settings.shared.localModelsHost.trimmingCharacters(in: .whitespaces) }
+    private var host: String {
+        let h = Settings.shared.localModelsHost.trimmingCharacters(in: .whitespaces)
+        let ok = !h.hasPrefix("-") && h.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) || "@._-:[]".unicodeScalars.contains($0) }
+        return ok ? h : ""
+    }
+    nonisolated static let sshOptions = ["-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes"]
     private var place: String { host.isEmpty ? "this Mac" : host }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -69,7 +74,7 @@ final class LocalModelMenu: NSObject, NSMenuDelegate {
         Task.detached(priority: .utility) {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            p.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host,
+            p.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"] + Self.sshOptions + ["--", host,
                            "curl -s --max-time 3 http://127.0.0.1:11434/api/tags"]
             let out = Pipe()
             p.standardOutput = out
@@ -91,7 +96,7 @@ final class LocalModelMenu: NSObject, NSMenuDelegate {
             command = LocalModels.chatCommand(terminessd: HostService.executable ?? "terminessd", model: model)
         } else {
             let run = LocalModels.chatCommand(terminessd: "~/.local/bin/terminessd", model: model)
-            command = "ssh -t \(shellQuote(host)) \(shellQuote(run))"
+            command = (["ssh", "-t"] + Self.sshOptions).joined(separator: " ") + " -- \(shellQuote(host)) \(shellQuote(run))"
         }
         let c = app.open(tabbedWith: NSApp.keyWindow, command: command)
         c.customTitle = model
