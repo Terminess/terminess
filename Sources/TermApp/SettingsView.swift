@@ -1,4 +1,5 @@
 import SwiftUI
+import TermTranscript
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
@@ -228,7 +229,7 @@ struct SettingsView: View {
     }
 
     private func abbreviate(_ path: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let home = Transcript.home
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
 

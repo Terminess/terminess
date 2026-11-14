@@ -240,6 +240,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             host.root = pane.view
         }
         focusPane(panes[0])
+        reader.folder = { [weak self] in self?.focused?.currentDirectory }
         reader.follow { [weak self] in self?.focused?.readerSource() }
         reader.activity = { [weak self] in self?.focused?.session.lastActivity }
         reader.onFound = { [weak self] pid, agent, path in

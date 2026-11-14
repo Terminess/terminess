@@ -1,4 +1,5 @@
 import AppKit
+import TermTranscript
 import TermCore
 import TermPTY
 import TermHost
@@ -48,7 +49,7 @@ final class TerminalSession {
     func start(workingDirectory: String?, cellWidth: Int, cellHeight: Int, attach: String? = nil, persistent: Bool = true,
                resumeIfGone: String? = nil) {
         self.resumeIfGone = resumeIfGone
-        let cwd = workingDirectory ?? FileManager.default.homeDirectoryForCurrentUser.path
+        let cwd = workingDirectory ?? Transcript.home
         let hosted = persistent && Settings.shared.keepSessions && HostService.ensureRunning()
         if hosted {
             startHost(attach.map { .attach(id: $0) } ?? createTarget(cwd: cwd), cwd: cwd, cellWidth: cellWidth, cellHeight: cellHeight)

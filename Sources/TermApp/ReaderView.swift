@@ -16,6 +16,7 @@ final class ReaderModel: ObservableObject {
     private var lastMTime: Date?
     private var timer: Timer?
     private var source: (() -> ReaderSource?)?
+    var folder: (() -> String?)?
     var onFound: ((Int32, String, String) -> Void)?
     var visible = false { didSet { visible ? start() : stop() } }
 
@@ -142,7 +143,7 @@ struct ReaderView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 16) {
                             ForEach(model.items) { item in
-                                ItemView(item: item).id(item.id)
+                                ItemView(item: item, folder: model.folder?()).id(item.id)
                             }
                             if model.working {
                                 HStack(spacing: 8) {
@@ -173,7 +174,15 @@ struct ReaderView: View {
 
 struct ItemView: View {
     let item: TranscriptItem
+    var folder: String? = nil
     @State private var expanded = false
+
+    private func short(_ s: String) -> String {
+        var out = s
+        if let f = folder, !f.isEmpty, f != "/" { out = out.replacingOccurrences(of: f + "/", with: "") }
+        for h in Set([Transcript.home, NSHomeDirectory()]) { out = out.replacingOccurrences(of: h + "/", with: "~/") }
+        return out
+    }
 
     var body: some View {
         switch item.kind {
@@ -220,7 +229,7 @@ struct ItemView: View {
                 HStack(spacing: 6) {
                     Image(systemName: symbol(name)).foregroundStyle(.secondary).frame(width: 16)
                     Text(name).font(.callout.weight(.medium))
-                    Text(summary).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(short(summary)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
                     if result == nil { ProgressView().controlSize(.mini) }
                     if let command = pairCommand(name: name, detail: detail) {
                         Spacer(minLength: 8)

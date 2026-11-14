@@ -1,4 +1,5 @@
 import AppKit
+import TermTranscript
 import UniformTypeIdentifiers
 
 enum Drops {
@@ -74,7 +75,7 @@ final class WindowLink {
 }
 
 enum Privacy {
-    static let home = FileManager.default.homeDirectoryForCurrentUser.path
+    static let home = Transcript.home
 
     static func isProtected(_ path: String) -> Bool {
         let guarded = ["/Desktop/", "/Documents/", "/Downloads/", "/Library/Mobile Documents/", "/Pictures/", "/Movies/"]

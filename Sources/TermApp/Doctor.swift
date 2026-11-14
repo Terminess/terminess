@@ -116,7 +116,7 @@ final class DoctorModel: ObservableObject {
             t.swapTotalGB = value("total")
             t.swapUsedGB = value("used")
         }
-        let settings = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
+        let settings = URL(fileURLWithPath: Transcript.home).appendingPathComponent(".claude/settings.json")
         if let data = try? Data(contentsOf: settings),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             t.claudeCleanupDays = obj["cleanupPeriodDays"] as? Int
@@ -129,7 +129,7 @@ final class DoctorModel: ObservableObject {
     static func buildChecks(tools t: ToolInfo, notifications: UNAuthorizationStatus) -> [Check] {
         var c: [Check] = []
         let fm = FileManager.default
-        let home = fm.homeDirectoryForCurrentUser.path
+        let home = Transcript.home
 
         c.append(t.claude.map { Check(title: "Claude Code", status: .ok, detail: $0) }
                  ?? Check(title: "Claude Code", status: .warning, detail: "Not found on your PATH. Install it to use Claude in a tab.",
@@ -228,10 +228,10 @@ final class DoctorModel: ObservableObject {
             c.append(Check(title: "GitHub CLI", status: .ok, detail: "\(t.gh!), signed in."))
         }
 
-        let pairOK = fm.isExecutableFile(atPath: home + "/.local/bin/pair")
-        let sessionsOK = fm.isExecutableFile(atPath: home + "/.local/bin/sessions")
-        c.append(Check(title: "pair and sessions tools", status: pairOK && sessionsOK ? .ok : .info,
-                       detail: pairOK && sessionsOK ? "Both installed in ~/.local/bin." : "Missing \(pairOK ? "" : "pair ")\(sessionsOK ? "" : "sessions"); the sidebar's Pair and Sessions sections need them."))
+        let jqOK = ["/usr/bin/jq", "/opt/homebrew/bin/jq", "/usr/local/bin/jq"].contains { fm.isExecutableFile(atPath: $0) }
+        c.append(Check(title: "Hand-off between agents (pair)", status: SidebarModel.pairTool != nil && jqOK ? .ok : .info,
+                       detail: SidebarModel.pairTool == nil ? "pair isn't bundled with this build."
+                           : (jqOK ? "Built in. Claude and Codex can hand work to each other." : "Needs jq, which comes with macOS 15 and later. On older macOS: brew install jq.")))
 
         if t.swapTotalGB > 0 {
             let ratio = t.swapUsedGB / t.swapTotalGB

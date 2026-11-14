@@ -169,6 +169,46 @@ enum DebugScript {
                 }
             }
         }
+        if let size = env["TERMAPP_WINDOW_SIZE"]?.split(separator: "x").compactMap({ Double($0) }), size.count == 2 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak controller] in
+                MainActor.assumeIsolated {
+                    guard let w = controller?.window, let screen = w.screen ?? NSScreen.main else { return }
+                    let f = NSRect(x: screen.visibleFrame.minX + 40, y: screen.visibleFrame.maxY - size[1] - 40, width: size[0], height: size[1])
+                    w.setFrame(f, display: true)
+                }
+            }
+        }
+        if let modes = env["TERMAPP_MODE_AT"] {
+            for step in modes.split(separator: "|") {
+                let parts = step.split(separator: ":")
+                guard parts.count == 2, let delay = Double(parts[0]), let raw = Int(parts[1]),
+                      let mode = TerminalWindowController.ViewMode(rawValue: raw) else { continue }
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak controller] in
+                    MainActor.assumeIsolated {
+                        let c = (NSApp.keyWindow?.windowController as? TerminalWindowController) ?? controller
+                        c?.setMode(mode)
+                    }
+                }
+            }
+        }
+        if let shots = env["TERMAPP_WINDOW_SHOTS"] {
+            for step in shots.split(separator: "|") {
+                guard let colon = step.firstIndex(of: ":"), let delay = Double(step[..<colon]) else { continue }
+                let path = String(step[step.index(after: colon)...])
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    MainActor.assumeIsolated {
+                        guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible }),
+                              let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber),
+                                                                  [.boundsIgnoreFraming, .bestResolution]) else {
+                            print("window shot failed: \(path)"); fflush(stdout); return
+                        }
+                        let rep = NSBitmapImageRep(cgImage: image)
+                        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                        print("window shot: \(path) \(image.width)x\(image.height)"); fflush(stdout)
+                    }
+                }
+            }
+        }
         if let path = env["TERMAPP_SNAPSHOT"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + last + 1.0) {
                 MainActor.assumeIsolated {

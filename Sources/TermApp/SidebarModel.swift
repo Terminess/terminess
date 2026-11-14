@@ -1,4 +1,5 @@
 import TermHost
+import TermTranscript
 import AppKit
 import Combine
 
@@ -114,15 +115,16 @@ final class SidebarModel: ObservableObject {
     private var slowTimer: Timer?
     private var loadingSessions = false
 
-    nonisolated static let home = FileManager.default.homeDirectoryForCurrentUser.path
-    nonisolated static let pairState = home + "/.local/state/pair"
-    static var sessionsTool: String? {
-        let p = home + "/.local/bin/sessions"
-        return FileManager.default.isExecutableFile(atPath: p) ? p : nil
+    nonisolated static let home = Transcript.home
+
+    nonisolated static func tilde(_ p: String) -> String {
+        for h in Set([home, NSHomeDirectory()]) where p == h || p.hasPrefix(h + "/") { return "~" + p.dropFirst(h.count) }
+        return p
     }
+    nonisolated static let pairState = home + "/.local/state/pair"
     static var pairTool: String? {
-        let p = home + "/.local/bin/pair"
-        return FileManager.default.isExecutableFile(atPath: p) ? p : nil
+        let candidates: [String?] = [Bundle.main.resourceURL?.appendingPathComponent("bin/pair").path, home + "/.local/bin/pair"]
+        return candidates.compactMap { $0 }.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     var filteredSessions: [SessionItem] {
@@ -211,19 +213,19 @@ final class SidebarModel: ObservableObject {
 
     func refreshSessions() {
         guard !loadingSessions else { return }
-        guard let tool = SidebarModel.sessionsTool else {
-            sessionsNote = "Install ~/.local/bin/sessions to list past sessions."
-            return
-        }
         loadingSessions = true
         Task.detached(priority: .utility) {
-            let data = SidebarModel.run(tool, ["json"])
-            let items = (try? JSONDecoder().decode([SessionItem].self, from: data)) ?? []
+            _ = await MainActor.run { HostService.ensureRunning() }
+            let reply = HostRequest.send(Message(op: "history"))
+            let items = (reply?.history ?? []).map { h in
+                SessionItem(tool: h.agent, id: h.id, cwd: h.cwd, repo: (h.cwd as NSString).lastPathComponent,
+                            title: h.title, mtime: h.used, linked: [], pair: nil)
+            }
             await MainActor.run {
                 let model = SidebarModel.shared
                 model.loadingSessions = false
                 if items != model.sessions { model.sessions = items }
-                model.sessionsNote = items.isEmpty ? "No sessions found." : nil
+                model.sessionsNote = reply == nil ? "Couldn't reach the Terminess service." : (items.isEmpty ? "No sessions yet." : nil)
             }
         }
     }

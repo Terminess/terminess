@@ -69,6 +69,14 @@ targets:
           - $(BUILT_PRODUCTS_DIR)/terminessd
         outputFiles:
           - $(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/terminessd
+      - name: Embed pair
+        script: |
+          mkdir -p "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/bin"
+          install -m 755 "$SRCROOT/scripts/pair" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/bin/pair"
+        inputFiles:
+          - $(SRCROOT)/scripts/pair
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/bin/pair
       - name: Copy icon
         script: cp "$SRCROOT/assets/AppIcon.icns" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/AppIcon.icns"
         outputFiles:

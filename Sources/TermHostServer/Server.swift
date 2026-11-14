@@ -301,6 +301,10 @@ public final class HostServer: @unchecked Sendable {
         for k in PTYProcess.agentSessionVariables { env[k] = nil }
         let id = String(UUID().uuidString.prefix(8)).lowercased()
         env["TERMINESS_SESSION"] = id
+        if let bin = Self.bundledBin {
+            let path = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+            if !path.split(separator: ":").contains(Substring(bin)) { env["PATH"] = path + ":" + bin }
+        }
         let process = try PTYProcess(executable: executable, arguments: args, argv0: argv0, environment: env,
                                      workingDirectory: cwd, columns: cols, rows: rows)
         let name = m.name?.isEmpty == false ? m.name! : "\(nextNumber)"
@@ -371,6 +375,12 @@ public final class HostServer: @unchecked Sendable {
               roots.contains(where: { path.hasPrefix($0) }) else { return false }
         return UnixSocket.ownFile(path)?.type == .typeRegular
     }
+
+    static let bundledBin: String? = {
+        let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        let bin = exe.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/bin").path
+        return FileManager.default.isExecutableFile(atPath: bin + "/pair") ? bin : nil
+    }()
 
     private func hook(_ e: [String: Any], in s: HostSession) {
         let pid = s.process.foregroundPID

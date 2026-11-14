@@ -96,8 +96,7 @@ struct SidebarView: View {
     }
 
     private func shortPath(_ p: String) -> String {
-        let home = SidebarModel.home
-        return p.hasPrefix(home) ? "~" + p.dropFirst(home.count) : p
+        SidebarModel.tilde(p)
     }
 
     private var pairSection: some View {

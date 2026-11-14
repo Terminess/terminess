@@ -245,3 +245,20 @@ public struct HostError: Error, CustomStringConvertible {
     public let description: String
     public init(_ d: String) { description = d }
 }
+
+public enum HostRequest {
+    public static func send(_ m: Message, socket: String = HostPaths.socket, timeout: Int32 = 5000) -> Message? {
+        guard let fd = UnixSocket.connect(socket) else { return nil }
+        defer { Darwin_close(fd) }
+        guard Connection.writeAll(fd, Wire.Frame.control(m).encoded()) else { return nil }
+        var decoder = Wire.Decoder()
+        var buf = [UInt8](repeating: 0, count: 65536)
+        while true {
+            var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            guard poll(&p, 1, timeout) > 0 else { return nil }
+            let n = read(fd, &buf, buf.count)
+            guard n > 0, let frames = try? decoder.feed(Array(buf[0..<n])) else { return nil }
+            if let reply = frames.compactMap(\.message).first { return reply }
+        }
+    }
+}

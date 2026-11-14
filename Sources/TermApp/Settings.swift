@@ -1,4 +1,5 @@
 import AppKit
+import TermTranscript
 import Combine
 import TermCore
 
@@ -122,7 +123,7 @@ final class Settings: ObservableObject {
 
     var startDirectory: String {
         if !startFolder.isEmpty, FileManager.default.fileExists(atPath: startFolder) { return startFolder }
-        return FileManager.default.homeDirectoryForCurrentUser.path
+        return Transcript.home
     }
 
     private func save(_ key: String, _ value: Any) {

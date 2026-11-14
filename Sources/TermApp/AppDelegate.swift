@@ -302,7 +302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             c.refreshTitle()
             c.refreshBusy()
             let dir = c.currentDirectory ?? ""
-            let shown = dir.hasPrefix(home) ? "~" + dir.dropFirst(home.count) : dir
+            let shown = SidebarModel.tilde(dir)
             return OpenTab(id: ObjectIdentifier(c), title: c.customTitle ?? c.displayTitle,
                            command: c.session.process?.foregroundCommand ?? "",
                            directory: shown, isKey: c.window?.isKeyWindow == true,
