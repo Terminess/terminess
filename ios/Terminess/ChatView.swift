@@ -52,12 +52,12 @@ private struct ChatItemView: View {
                 Text(text)
                     .textSelection(.enabled)
                     .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 16).fill(Color.accentColor.opacity(0.85)))
-                    .foregroundStyle(.white)
+                    .background(RoundedRectangle(cornerRadius: 16).fill(Theme.userBubble))
+                    .foregroundStyle(Theme.ink)
             }
         case .assistant(let text):
-            Text(markdown(text))
-                .textSelection(.enabled)
+            MarkdownView(text: text, codeSize: 13)
+                .padding(.horizontal, 10)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .thinking(let text):
             folded(icon: "brain", title: "Thinking", detail: text)
@@ -86,7 +86,7 @@ private struct ChatItemView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(.secondarySystemBackground)))
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Theme.surface))
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
@@ -103,9 +103,5 @@ private struct ChatItemView: View {
         case "task", "agent": return "person.2"
         default: return "wrench.and.screwdriver"
         }
-    }
-
-    private func markdown(_ s: String) -> AttributedString {
-        (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
     }
 }

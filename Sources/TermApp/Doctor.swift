@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import TermTranscript
 import UserNotifications
 
 @MainActor
@@ -42,6 +43,38 @@ final class DoctorModel: ObservableObject {
         var swapUsedGB: Double = 0
         var swapTotalGB: Double = 0
         var claudeCleanupDays: Int?
+        var formats: [(agent: String, version: String?, unknown: [String: Int])] = []
+    }
+
+    nonisolated static func surveyFormats() -> [(agent: String, version: String?, unknown: [String: Int])] {
+        let fm = FileManager.default
+        let home = Transcript.home
+        func newest(_ paths: [String], _ n: Int) -> [String] {
+            Array(paths.sorted { (Transcript.mtime($0) ?? .distantPast) > (Transcript.mtime($1) ?? .distantPast) }.prefix(n))
+        }
+        var claude: [String] = []
+        let projects = home + "/.claude/projects"
+        for dir in (try? fm.contentsOfDirectory(atPath: projects)) ?? [] {
+            for f in (try? fm.contentsOfDirectory(atPath: projects + "/" + dir)) ?? [] where f.hasSuffix(".jsonl") {
+                claude.append(projects + "/" + dir + "/" + f)
+            }
+        }
+        var codex: [String] = []
+        if let e = fm.enumerator(atPath: home + "/.codex/sessions") {
+            for case let f as String in e where f.hasSuffix(".jsonl") { codex.append(home + "/.codex/sessions/" + f) }
+        }
+        var out: [(agent: String, version: String?, unknown: [String: Int])] = []
+        for (agent, files) in [("claude", newest(claude, 5)), ("codex", newest(codex, 3))] where !files.isEmpty {
+            var version: String?
+            var unknown: [String: Int] = [:]
+            for f in files {
+                let s = Transcript.survey(f, agent: agent)
+                version = version ?? s.version
+                unknown.merge(s.unknown, uniquingKeysWith: +)
+            }
+            out.append((agent, version, unknown))
+        }
+        return out
     }
 
     nonisolated static func shell(_ command: String) -> String? {
@@ -88,6 +121,7 @@ final class DoctorModel: ObservableObject {
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             t.claudeCleanupDays = obj["cleanupPeriodDays"] as? Int
         }
+        t.formats = surveyFormats()
         return t
     }
 
@@ -120,6 +154,47 @@ final class DoctorModel: ObservableObject {
         } else {
             c.append(Check(title: "Claude transcript history", status: .warning,
                            detail: "Claude Code deletes transcripts after \(t.claudeCleanupDays ?? 30) days, so older sessions disappear from the sidebar. Set cleanupPeriodDays in ~/.claude/settings.json to keep them longer."))
+        }
+
+        for (agent, installed) in [(AgentEvents.AgentKind.claude, t.claude != nil), (.codex, t.codex != nil)] where installed {
+            let name = agent == .claude ? "Claude Code" : "Codex"
+            let turnOn: () -> Void = { do { try AgentEvents.set(agent, true) } catch { AgentEvents.report(error) } }
+            switch AgentEvents.state(agent) {
+            case .on:
+                c.append(Check(title: "\(name) status reports", status: .ok,
+                               detail: agent == .claude ? "On: Claude Code tells Terminess when it starts, finishes or needs you."
+                                                        : "On: Codex tells Terminess when a turn finishes."))
+            case .outdated:
+                c.append(Check(title: "\(name) status reports", status: .warning,
+                               detail: "Set up for a different copy of Terminess, so reports aren't arriving.", fix: ("Refresh", turnOn)))
+            case .taken:
+                c.append(Check(title: "\(name) status reports", status: .info,
+                               detail: "notify in ~/.codex/config.toml already runs another program, and Codex allows only one, so Terminess left it alone and estimates from the screen instead."))
+            case .off:
+                c.append(Check(title: "\(name) status reports", status: .info,
+                               detail: "Off. Terminess estimates from the screen when \(name) is busy or done. Turning this on edits \(agent == .claude ? "~/.claude/settings.json" : "~/.codex/config.toml") with an entry that only acts inside Terminess.",
+                               fix: ("Turn on", turnOn)))
+            }
+        }
+
+        for f in t.formats {
+            let name = f.agent == "claude" ? "Claude Code" : "Codex"
+            let who = [name, f.version].compactMap { $0 }.joined(separator: " ")
+            if f.unknown.isEmpty {
+                c.append(Check(title: "\(name) transcripts", status: .ok, detail: "Everything \(who) writes is understood, so Chat shows the whole conversation."))
+            } else {
+                let kinds = f.unknown.sorted { $0.value > $1.value }.prefix(6).map { "\($0.key) (\($0.value))" }.joined(separator: ", ")
+                c.append(Check(title: "\(name) transcripts", status: .warning,
+                               detail: "\(who) writes kinds of record this version of Terminess doesn't know: \(kinds). Messages with text in them still show in Chat; anything else is skipped until Terminess learns the new format."))
+            }
+        }
+
+        if Privacy.hasFullDiskAccess {
+            c.append(Check(title: "Full Disk Access", status: .ok, detail: "On: agents can read any file you drop in, including screenshot thumbnails."))
+        } else {
+            c.append(Check(title: "Full Disk Access", status: .warning,
+                           detail: "Off. macOS asks before Terminess opens Desktop, Documents or Downloads, but some places (screenshot thumbnails, Mail, other apps' data) need Full Disk Access. It applies once Terminess and its session service (terminessd) restart; open tabs keep the old access until then.",
+                           fix: ("Open Privacy Settings", { Privacy.openFullDiskAccessSettings() })))
         }
 
         let integration = Settings.shared.shellIntegration

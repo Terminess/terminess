@@ -57,10 +57,19 @@ public final class HostAttachment: @unchecked Sendable {
         connection.send(Wire.Frame(.input, bytes))
     }
 
+    public func respond(_ bytes: [UInt8]) {
+        guard !bytes.isEmpty else { return }
+        connection.send(Wire.Frame(.response, bytes))
+    }
+
     public func resize(cols: Int, rows: Int) {
         self.cols = cols
         self.rows = rows
         if sessionID != nil { connection.send(Message(op: "resize", cols: cols, rows: rows)) }
+    }
+
+    public func releaseSize() {
+        if sessionID != nil { connection.send(Message(op: "resize")) }
     }
 
     public func kill() {
@@ -83,7 +92,7 @@ public final class HostAttachment: @unchecked Sendable {
         switch frame.kind {
         case .output:
             onOutput?(frame.payload)
-        case .input:
+        case .input, .response:
             break
         case .control:
             guard let m = frame.message else { return }

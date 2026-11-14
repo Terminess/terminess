@@ -33,9 +33,9 @@ struct ModeSwitch: View {
             ForEach(ViewMode.allCases) { m in
                 Button { withAnimation(.easeOut(duration: 0.15)) { mode = m } } label: {
                     Image(systemName: m.symbol).font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(mode == m ? Color.black : Color.secondary)
+                        .foregroundStyle(mode == m ? Theme.onInk : Color.secondary)
                         .frame(width: 36, height: 32)
-                        .background(Capsule().fill(mode == m ? Color.white : Color.clear))
+                        .background(Capsule().fill(mode == m ? Theme.ink : Color.clear))
                 }
                 .buttonStyle(.plain)
             }
@@ -124,7 +124,11 @@ struct ConversationView: View {
             }
         }
         .background(Theme.background)
-        .task { await attach() }
+        .task {
+            await attach()
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if mode == nil { mode = .terminal }
+        }
         .onChange(of: model.sessionID) { _, id in
             if let id { Task { await chat.follow(session: id, on: connection) } }
         }
@@ -163,7 +167,9 @@ struct ConversationView: View {
     }
 
     @ViewBuilder private var content: some View {
-        switch mode ?? .terminal {
+        switch mode {
+        case nil:
+            Color.clear.frame(maxHeight: .infinity)
         case .terminal:
             TerminalScreen(model: model)
         case .chat:
@@ -285,7 +291,7 @@ struct NewChatView: View {
             TopBar(title: "", subtitle: nil) { EmptyView() }
             Spacer()
             VStack(spacing: 14) {
-                LogoMark(size: 64).foregroundStyle(.white.opacity(0.14))
+                LogoMark(size: 64).foregroundStyle(Theme.ink.opacity(0.14))
                 if let m = problem ?? store.pairing ?? connectionProblem {
                     Text(m).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 30)
                 }

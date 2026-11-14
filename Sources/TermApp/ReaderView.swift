@@ -47,7 +47,7 @@ final class ReaderModel: ObservableObject {
             show(agent: agent, path: path, live: live, force: force)
         case .find(let agent, let dir, let pid, let started, let args):
             Task.detached(priority: .utility) {
-                let path = Transcript.locate(agent: agent, directory: dir, started: started, arguments: args)
+                let path = Transcript.locate(agent: agent, directory: dir, started: started, arguments: args, pid: pid)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     if let path {
@@ -187,7 +187,7 @@ private struct ItemView: View {
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.12)))
 
         case .assistant(let text):
-            MarkdownView(text: text)
+            MarkdownView(text: text).padding(.horizontal, 12)
 
         case .thinking(let text):
             DisclosureGroup(isExpanded: $expanded) {
@@ -196,6 +196,9 @@ private struct ItemView: View {
             } label: {
                 Label("Thinking", systemImage: "brain").font(.callout).foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.25)))
 
         case .tool(let name, let summary, let detail, let result):
             DisclosureGroup(isExpanded: $expanded) {
@@ -221,7 +224,7 @@ private struct ItemView: View {
                     if result == nil { ProgressView().controlSize(.mini) }
                 }
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.25)))
         }

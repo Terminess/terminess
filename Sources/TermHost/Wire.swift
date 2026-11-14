@@ -9,6 +9,7 @@ public enum Wire {
         case control = 1
         case output = 2
         case input = 3
+        case response = 4
     }
 
     public struct Frame {

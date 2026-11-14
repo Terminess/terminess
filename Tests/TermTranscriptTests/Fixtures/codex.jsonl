@@ -1,0 +1,12 @@
+{"type": "session_meta", "payload": {"id": "0199", "cwd": "/tmp/project", "originator": "codex-tui", "cli_version": "0.169.0"}}
+{"type": "turn_context", "payload": {"cwd": "/tmp/project", "model": "gpt"}}
+{"type": "event_msg", "payload": {"type": "user_message", "message": "List the files", "images": []}}
+{"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "List the files"}]}}
+{"type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "{\"cmd\": [\"ls\", \"-la\"]}", "call_id": "c1"}}
+{"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1", "output": "file.txt"}}
+{"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "input": "echo hi", "call_id": "c2"}}
+{"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "c2", "output": [{"type": "output_text", "text": "hi"}]}}
+{"type": "event_msg", "payload": {"type": "agent_message", "message": "Done", "phase": "final_answer"}}
+{"type": "event_msg", "payload": {"type": "token_count", "info": {}}}
+{"type": "event_msg", "payload": {"type": "future_event", "message": "internal"}}
+{"type": "future_record", "payload": {}}

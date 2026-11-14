@@ -19,13 +19,27 @@ final class ScreenModel: ObservableObject {
     private var pendingInput: String?
     private var sizeAfterReplay: (Int, Int)?
     private var viewGrid: (cols: Int, rows: Int)?
+    var terminalVisible = false {
+        didSet {
+            guard terminalVisible != oldValue else { return }
+            if terminalVisible {
+                if let g = viewGrid, g.cols != terminal.columns || g.rows != terminal.rows {
+                    applySize(g.cols, g.rows)
+                } else if sizeAfterReplay == nil {
+                    attachment?.resize(cols: terminal.columns, rows: terminal.rows)
+                }
+            } else {
+                attachment?.releaseSize()
+            }
+        }
+    }
     private var renderPending = false
     let font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
 
     init() {
         terminal = Terminal(columns: 50, rows: 30, scrollback: 2000)
         terminal.softwareName = "Terminess"
-        terminal.setColorScheme(.dark)
+        terminal.setColorScheme(Theme.appearance.isDark ? .dark : .light)
         events.model = self
         terminal.delegate = events
     }
@@ -54,11 +68,11 @@ final class ScreenModel: ObservableObject {
         pendingInput = input
         status = nil
         terminal.fullReset()
-        terminal.setColorScheme(.dark)
+        terminal.setColorScheme(Theme.appearance.isDark ? .dark : .light)
         let size = viewGrid ?? (cols, rows)
         terminal.resize(columns: size.cols, rows: size.rows)
         attachment.resizesAfterReplay = true
-        terminal.onResponse = { [weak attachment] bytes in attachment?.write(bytes) }
+        terminal.onResponse = { [weak attachment] bytes in attachment?.respond(bytes) }
         attachment.onAttached = { [weak self] id, c, r in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -66,7 +80,7 @@ final class ScreenModel: ObservableObject {
                 self.connected = true
                 guard c > 0, r > 0 else { return }
                 if c != self.terminal.columns || r != self.terminal.rows {
-                    self.sizeAfterReplay = (self.terminal.columns, self.terminal.rows)
+                    if self.terminalVisible { self.sizeAfterReplay = (self.terminal.columns, self.terminal.rows) }
                     self.terminal.resize(columns: c, rows: r)
                 }
             }
@@ -78,7 +92,7 @@ final class ScreenModel: ObservableObject {
                     self.sizeAfterReplay = nil
                     self.terminal.resize(columns: s.0, rows: s.1)
                 }
-                self.attachment?.resize(cols: self.terminal.columns, rows: self.terminal.rows)
+                if self.terminalVisible { self.attachment?.resize(cols: self.terminal.columns, rows: self.terminal.rows) }
                 self.scheduleRender()
                 if let input = self.pendingInput {
                     self.pendingInput = nil
@@ -105,6 +119,11 @@ final class ScreenModel: ObservableObject {
 
     func resize(cols: Int, rows: Int) {
         viewGrid = (cols, rows)
+        guard terminalVisible else { return }
+        applySize(cols, rows)
+    }
+
+    private func applySize(_ cols: Int, _ rows: Int) {
         guard cols != terminal.columns || rows != terminal.rows else { return }
         if sizeAfterReplay != nil { sizeAfterReplay = (cols, rows); return }
         terminal.resize(columns: cols, rows: rows)

@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import TermCore
+import TermTranscript
 
 @MainActor
 final class Pane {
@@ -22,11 +23,33 @@ final class Pane {
         session.process?.foregroundDirectory ?? session.currentDirectory
     }
 
+    func resumeCommand() -> String? {
+        if let p = parked { return p.tool == "claude" ? "claude --resume \(shellQuote(p.id))" : "codex resume \(shellQuote(p.id))" }
+        guard let process = session.process, let agent = Agent.detect(process.foregroundCommand) else { return nil }
+        if agent.id == "claude" {
+            let path = Transcript.claudeSession(pid: process.foregroundPID) ?? (transcript?.pid == process.foregroundPID ? transcript?.path : nil)
+            guard let path else { return nil }
+            let id = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+            return "claude --resume \(shellQuote(id))"
+        }
+        if agent.id == "codex", let t = transcript, t.pid == process.foregroundPID {
+            let name = ((t.path as NSString).lastPathComponent as NSString).deletingPathExtension
+            let id = String(name.suffix(36))
+            guard UUID(uuidString: id) != nil else { return nil }
+            return "codex resume \(id)"
+        }
+        return nil
+    }
+
     func readerSource() -> ReaderSource {
         guard let process = session.process else { return .none }
         if let agent = Agent.detect(process.foregroundCommand), agent.id == "claude" || agent.id == "codex",
            let dir = currentDirectory {
             let pid = process.foregroundPID
+            if agent.id == "claude", let p = Transcript.claudeSession(pid: pid) {
+                transcript = (pid, "claude", p)
+                return .file(agent: "claude", path: p, live: true)
+            }
             if let t = transcript, t.pid == pid { return .file(agent: t.agent, path: t.path, live: true) }
             return .find(agent: agent.id, directory: dir, pid: pid,
                          started: Date(timeIntervalSince1970: process.foregroundStartTime ?? Date().timeIntervalSince1970),
@@ -44,7 +67,7 @@ enum ReaderSource {
 }
 
 indirect enum PaneLayout: Codable {
-    case pane(directory: String, history: String?, host: String? = nil)
+    case pane(directory: String, history: String?, host: String? = nil, resume: String? = nil)
     case split(vertical: Bool, children: [PaneLayout], fractions: [Double])
 }
 
@@ -397,7 +420,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     @objc func toggleReader(_ sender: Any?) { setMode(mode == .terminal ? .split : .terminal) }
 
 
-    private func makePane(directory: String?, command: String?, history: String? = nil, attach: String? = nil) -> Pane {
+    private func makePane(directory: String?, command: String?, history: String? = nil, attach: String? = nil,
+                          resumeIfGone: String? = nil) -> Pane {
         let pane = Pane(columns: 100, rows: 30)
         let view = pane.view, session = pane.session
         if attach == nil, let history, !history.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -435,7 +459,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         panes.append(pane)
         session.start(workingDirectory: directory,
                       cellWidth: Int(view.cellSize.width.rounded()), cellHeight: Int(view.cellSize.height.rounded()),
-                      attach: attach)
+                      attach: attach, resumeIfGone: resumeIfGone)
         if let command {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak session] in
                 MainActor.assumeIsolated { session?.send(Array((command + "\r").utf8)) }
@@ -577,6 +601,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     func layout() -> PaneLayout { encode(host.root) }
 
+    private static var resumed: Set<String> = []
+
     private func encode(_ view: NSView?) -> PaneLayout {
         if let sv = view as? NSSplitView {
             let sizes = sv.subviews.map { sv.isVertical ? $0.frame.width : $0.frame.height }
@@ -590,14 +616,17 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             history = lines.joined(separator: "\n")
         }
         return .pane(directory: pane?.currentDirectory ?? Settings.shared.startDirectory, history: history,
-                     host: pane?.session.process?.hostSessionID)
+                     host: pane?.session.process?.hostSessionID, resume: pane?.resumeCommand())
     }
 
     private func build(_ layout: PaneLayout) -> NSView {
         switch layout {
-        case .pane(let dir, let history, let host):
+        case .pane(let dir, let history, let host, let resume):
             let exists = FileManager.default.fileExists(atPath: dir)
-            return makePane(directory: exists ? dir : nil, command: nil, history: history, attach: host).view
+            var once: String?
+            if exists, let resume, !Self.resumed.contains(resume) { Self.resumed.insert(resume); once = resume }
+            return makePane(directory: exists ? dir : nil, command: nil, history: history, attach: host,
+                            resumeIfGone: once).view
         case .split(let vertical, let children, _):
             let sv = NSSplitView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
             sv.isVertical = vertical
@@ -668,6 +697,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         if found != agent {
             agent = found
             updateTabBadge()
+            if let id = found?.id { AgentEvents.started(id) }
         }
         updateInputHiding()
         displayTitle = title

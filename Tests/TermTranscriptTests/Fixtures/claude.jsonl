@@ -1,0 +1,17 @@
+{"type": "system", "subtype": "init", "content": "internal", "version": "2.1.325"}
+{"type": "user", "message": {"role": "user", "content": "Fix the build"}, "version": "2.1.325"}
+{"type": "user", "isMeta": true, "message": {"role": "user", "content": "Meta context the person never typed"}, "version": "2.1.325"}
+{"type": "user", "message": {"role": "user", "content": "<command-name>/clear</command-name>"}, "version": "2.1.325"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "Check the compiler output first."}, {"type": "text", "text": "Looking at the build."}, {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "swift build", "description": "Build"}}]}, "version": "2.1.325"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "Build complete"}]}, "version": "2.1.325"}
+{"type": "attachment", "attachment": {"type": "queued_command", "prompt": "Also check the tests", "commandMode": "prompt", "humanTurn": true}, "version": "2.1.325"}
+{"type": "attachment", "attachment": {"type": "queued_command", "prompt": [{"type": "text", "text": "[Image #1] this one"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}]}, "version": "2.1.325"}
+{"type": "attachment", "attachment": {"type": "total_tokens_reminder", "used": 1000}, "version": "2.1.325"}
+{"type": "queue-operation", "operation": "enqueue", "content": "Also check the tests", "version": "2.1.325"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "server_tool_use", "id": "s1", "name": "WebSearch", "input": {"query": "swift testing"}}, {"type": "tool_result", "tool_use_id": "s1", "content": [{"type": "text", "text": "3 results"}]}]}, "version": "2.1.325"}
+{"type": "future-thing", "data": {"x": 1}, "version": "2.1.325"}
+{"type": "attachment", "attachment": {"type": "future_attachment", "content": "internal note"}, "version": "2.1.325"}
+{"type": "attachment", "attachment": {"type": "voice_note", "content": "Spoken message", "humanTurn": true}, "version": "2.1.325"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "citation_text", "text": "Cited answer"}]}, "version": "2.1.325"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "audio", "source": {"data": "AAAA"}}]}, "version": "2.1.325"}
+not json at all

@@ -28,6 +28,9 @@ final class HostSession {
     var active = Date().timeIntervalSince1970
     var lastPush = 0.0
     var transcript: (agent: String, path: String, pid: Int32)?
+    var hookPid: Int32?
+    var hookAgent = "claude"
+    var hooked: Bool { hookPid != nil && hookPid == process.foregroundPID }
 
     init(id: String, name: String, process: PTYProcess, command: String, cols: Int, rows: Int) {
         self.id = id
@@ -80,6 +83,8 @@ public final class HostServer: @unchecked Sendable {
     private var infoTimer: DispatchSourceTimer?
     private let push = PushRegistry()
     private var transcriptSubs: [ObjectIdentifier: (session: String, sent: [TranscriptItem], mtime: Date?)] = [:]
+    private var clientSizes: [ObjectIdentifier: (cols: Int, rows: Int, at: Double)] = [:]
+    private var owners: [String: ObjectIdentifier] = [:]
     private var uploads: [ObjectIdentifier: (path: String, handle: FileHandle)] = [:]
     private var sessions: [String: HostSession] = [:]
     private var order: [String] = []
@@ -125,7 +130,12 @@ public final class HostServer: @unchecked Sendable {
     }
 
     private func dropConnection(_ key: ObjectIdentifier) {
-        if let id = bindings.removeValue(forKey: key) { sessions[id]?.clients[key] = nil }
+        if let id = bindings.removeValue(forKey: key), let s = sessions[id] {
+            s.clients[key] = nil
+            clientSizes[key] = nil
+            restoreSize(s)
+        }
+        clientSizes[key] = nil
         transcriptSubs[key] = nil
         if let u = uploads.removeValue(forKey: key) { try? u.handle.close(); unlink(u.path) }
         connections[key] = nil
@@ -136,9 +146,18 @@ public final class HostServer: @unchecked Sendable {
         switch frame.kind {
         case .input:
             if let id = bindings[key], let s = sessions[id] {
+                owners[id] = key
+                if let size = clientSizes[key], size.cols != s.cols || size.rows != s.rows {
+                    clientSizes[key]?.at = Date().timeIntervalSince1970
+                    resize(s, cols: size.cols, rows: size.rows, nudge: false)
+                }
                 s.process.write(frame.payload)
                 s.attention = false
                 s.active = Date().timeIntervalSince1970
+            }
+        case .response:
+            if let id = bindings[key], let s = sessions[id], owners[id] == nil || owners[id] == key || s.clients.count == 1 {
+                s.process.write(frame.payload)
             }
         case .output:
             break
@@ -176,9 +195,23 @@ public final class HostServer: @unchecked Sendable {
             let fg = s.foreground
             s.lastForeground = fg
             conn.send(Message(op: "info", id: s.id, foreground: fg))
-            if m.cols != nil || m.rows != nil { resize(s, cols: m.cols, rows: m.rows, nudge: true) }
+            if let c = m.cols, let r = m.rows {
+                clientSizes[key] = (c, r, Date().timeIntervalSince1970)
+                owners[s.id] = key
+                resize(s, cols: c, rows: r, nudge: true)
+            } else if owners[s.id] == nil || s.clients[owners[s.id]!] == nil {
+                owners[s.id] = key
+            }
         case "resize":
-            if let id = bindings[key], let s = sessions[id] { resize(s, cols: m.cols, rows: m.rows, nudge: false) }
+            guard let id = bindings[key], let s = sessions[id] else { break }
+            if let c = m.cols, let r = m.rows {
+                clientSizes[key] = (c, r, Date().timeIntervalSince1970)
+                owners[id] = key
+                resize(s, cols: c, rows: r, nudge: false)
+            } else {
+                clientSizes[key] = nil
+                if owners[id] == key { restoreSize(s) }
+            }
         case "signal":
             guard let id = m.id ?? bindings[key], let s = sessions[id] else {
                 conn.send(Message(op: "error", message: "no session"))
@@ -211,7 +244,15 @@ public final class HostServer: @unchecked Sendable {
             push.register(token: token, environment: m.message ?? "production", host: m.name)
             conn.send(Message(op: "ok"))
         case "detach":
-            if let id = bindings.removeValue(forKey: key) { sessions[id]?.clients[key] = nil }
+            if let id = bindings.removeValue(forKey: key), let s = sessions[id] {
+                s.clients[key] = nil
+                clientSizes[key] = nil
+                restoreSize(s)
+            }
+        case "hook":
+            guard let id = m.id, let s = sessions[id], let raw = m.message,
+                  let event = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] else { return }
+            if m.name == "codex" { codexHook(event, in: s) } else { hook(event, in: s) }
         case "kill":
             guard let id = m.id, let s = sessions[id] ?? sessions.values.first(where: { $0.name == m.id }) else {
                 conn.send(Message(op: "error", message: "no session \(m.id ?? "")"))
@@ -282,9 +323,10 @@ public final class HostServer: @unchecked Sendable {
             switch event {
             case .title(let t):
                 s.title = t
+                if s.hooked && s.hookAgent == "claude" { continue }
                 let wasBusy = s.busy
                 s.busy = TitleState.busy(t)
-                if wasBusy && !s.busy { raiseAttention(s, body: "Finished, or waiting for you") }
+                if wasBusy && !s.busy && !s.hooked { raiseAttention(s, body: "Finished, or waiting for you") }
             case .bell:
                 raiseAttention(s, body: "Needs your attention")
             case .notify(let text):
@@ -293,6 +335,65 @@ public final class HostServer: @unchecked Sendable {
         }
         let frame = Wire.Frame(.output, bytes)
         for c in s.clients.values { c.send(frame) }
+    }
+
+    private func codexHook(_ e: [String: Any], in s: HostSession) {
+        guard e["type"] as? String == "agent-turn-complete" else { return }
+        s.hookPid = s.process.foregroundPID
+        s.hookAgent = "codex"
+        s.busy = false
+        raiseAttention(s, body: firstLine(e["last-assistant-message"] as? String) ?? "Finished")
+        pushTranscripts()
+    }
+
+    private func hook(_ e: [String: Any], in s: HostSession) {
+        let pid = s.process.foregroundPID
+        s.hookAgent = "claude"
+        if let path = e["transcript_path"] as? String, !path.isEmpty, FileManager.default.fileExists(atPath: path) {
+            s.transcript = ("claude", path, pid)
+        }
+        switch e["hook_event_name"] as? String {
+        case "SessionStart":
+            s.hookPid = pid
+            s.busy = false
+        case "UserPromptSubmit":
+            s.hookPid = pid
+            s.busy = true
+            s.attention = false
+        case "Stop":
+            s.hookPid = pid
+            s.busy = false
+            raiseAttention(s, body: firstLine(e["last_assistant_message"] as? String) ?? lastReply(s) ?? "Finished")
+        case "StopFailure":
+            s.hookPid = pid
+            s.busy = false
+            raiseAttention(s, body: "Stopped on an error")
+        case "Notification":
+            s.hookPid = pid
+            let type = e["notification_type"] as? String ?? ""
+            guard !["idle_prompt", "auth_success", "agent_completed"].contains(type) else { break }
+            raiseAttention(s, body: firstLine(e["message"] as? String) ?? "Needs your attention")
+        case "SessionEnd":
+            s.hookPid = nil
+            s.busy = false
+        default:
+            break
+        }
+        pushTranscripts()
+    }
+
+    private func lastReply(_ s: HostSession) -> String? {
+        guard let t = s.transcript else { return nil }
+        for item in Transcript.parse(t.path, agent: t.agent).reversed() {
+            if case .assistant(let text) = item.kind { return firstLine(text) }
+        }
+        return nil
+    }
+
+    private func firstLine(_ text: String?) -> String? {
+        guard let line = text?.split(separator: "\n").first.map({ String($0).trimmingCharacters(in: .whitespaces) }),
+              !line.isEmpty else { return nil }
+        return line.count > 140 ? String(line.prefix(139)) + "…" : line
     }
 
     private func raiseAttention(_ s: HostSession, body: String) {
@@ -306,10 +407,15 @@ public final class HostServer: @unchecked Sendable {
     private func transcriptPath(_ s: HostSession) -> (agent: String, path: String)? {
         let fg = s.foreground
         if fg.command == "claude" || fg.command == "codex", !fg.cwd.isEmpty {
+            if s.hooked, let t = s.transcript, t.pid == fg.pid { return (t.agent, t.path) }
+            if fg.command == "claude", let path = Transcript.claudeSession(pid: fg.pid) {
+                s.transcript = (fg.command, path, fg.pid)
+                return (fg.command, path)
+            }
             if let pinned = s.transcript, pinned.agent == fg.command, pinned.pid == fg.pid { return (pinned.agent, pinned.path) }
             if let path = Transcript.locate(agent: fg.command, directory: fg.cwd,
                                             started: Date(timeIntervalSince1970: fg.started > 0 ? fg.started : s.created),
-                                            arguments: fg.args) {
+                                            arguments: fg.args, pid: fg.pid) {
                 s.transcript = (fg.command, path, fg.pid)
             }
         }
@@ -380,6 +486,17 @@ public final class HostServer: @unchecked Sendable {
             bindings[key] = nil
         }
         log("session \(id) ended (\(code))")
+    }
+
+    private func restoreSize(_ s: HostSession) {
+        let remaining = s.clients.keys.compactMap { k in clientSizes[k].map { (k, $0) } }
+        guard let best = remaining.max(by: { $0.1.at < $1.1.at }) else {
+            owners[s.id] = s.clients.keys.first
+            return
+        }
+        owners[s.id] = best.0
+        guard best.1.cols != s.cols || best.1.rows != s.rows else { return }
+        resize(s, cols: best.1.cols, rows: best.1.rows, nudge: false)
     }
 
     private func resize(_ s: HostSession, cols: Int?, rows: Int?, nudge: Bool) {

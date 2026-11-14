@@ -27,5 +27,7 @@ let package = Package(
         .target(name: "TermHostServer", dependencies: ["TermHost", "TermPTY"], swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(name: "terminessd", dependencies: ["TermHost", "TermHostServer"], swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "TermCoreTests", dependencies: ["TermCore"]),
+        .testTarget(name: "TermTranscriptTests", dependencies: ["TermTranscript"], resources: [.copy("Fixtures")]),
+        .testTarget(name: "TermHostTests", dependencies: ["TermHost"]),
     ]
 )

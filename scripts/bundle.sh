@@ -26,6 +26,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticTermination</key><false/>
   <key>NSLocalNetworkUsageDescription</key><string>Terminess listens on your network briefly while you pair your iPhone.</string>
+  <key>NSDesktopFolderUsageDescription</key><string>Shells and agents in Terminess read and write files on your Desktop when you ask them to.</string>
+  <key>NSDocumentsFolderUsageDescription</key><string>Shells and agents in Terminess read and write files in Documents when you ask them to.</string>
+  <key>NSDownloadsFolderUsageDescription</key><string>Shells and agents in Terminess read files in Downloads, such as screenshots you drop in.</string>
+  <key>NSRemovableVolumesUsageDescription</key><string>Shells and agents in Terminess read and write files on external drives when you ask them to.</string>
+  <key>NSNetworkVolumesUsageDescription</key><string>Shells and agents in Terminess read and write files on network drives when you ask them to.</string>
 </dict>
 </plist>
 PLIST

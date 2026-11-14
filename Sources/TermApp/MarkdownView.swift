@@ -13,13 +13,27 @@ struct MarkdownView: View {
         case rule
     }
 
+    var codeSize: CGFloat = 12
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(MarkdownView.blocks(text).enumerated()), id: \.offset) { _, block in
+        let blocks = MarkdownView.blocks(text)
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { i, block in
                 view(for: block)
+                    .padding(.top, i == 0 ? 0 : MarkdownView.gap(before: block, after: blocks[i - 1]))
             }
         }
+        .lineSpacing(3)
         .textSelection(.enabled)
+    }
+
+    static func gap(before block: Block, after previous: Block) -> CGFloat {
+        switch (previous, block) {
+        case (.bullet, .bullet): return 6
+        case (_, .heading): return 20
+        case (.heading, _): return 8
+        default: return 14
+        }
     }
 
     @ViewBuilder
@@ -27,7 +41,6 @@ struct MarkdownView: View {
         switch block {
         case .heading(let level, let s):
             inline(s).font(level <= 1 ? .title3.weight(.semibold) : level == 2 ? .headline : .subheadline.weight(.semibold))
-                .padding(.top, 4)
         case .paragraph(let s):
             inline(s).fixedSize(horizontal: false, vertical: true)
         case .bullet(let s, let ordered):
@@ -38,7 +51,7 @@ struct MarkdownView: View {
             .padding(.leading, 4)
         case .code(let s, _):
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(s).font(.system(size: 12, design: .monospaced)).padding(10)
+                Text(s).font(.system(size: codeSize, design: .monospaced)).padding(10)
             }
             .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.5)))
         case .table(let rows):
@@ -88,13 +101,13 @@ struct MarkdownView: View {
                     } else { l = nil }
                 }
                 out.append(.table(rows))
-            } else if let m = t.firstMatch(of: /^(#{1,6})\s+(.*)$/) {
+            } else if let m = t.firstMatch(of: #/^(#{1,6})\s+(.*)$/#) {
                 flush()
                 out.append(.heading(m.1.count, String(m.2)))
-            } else if let m = t.firstMatch(of: /^[-*+]\s+(.*)$/) {
+            } else if let m = t.firstMatch(of: #/^[-*+]\s+(.*)$/#) {
                 flush()
                 out.append(.bullet(String(m.1), ordered: nil))
-            } else if let m = t.firstMatch(of: /^(\d+)[.)]\s+(.*)$/) {
+            } else if let m = t.firstMatch(of: #/^(\d+)[.)]\s+(.*)$/#) {
                 flush()
                 out.append(.bullet(String(m.2), ordered: String(m.1)))
             } else if t.hasPrefix(">") {

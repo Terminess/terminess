@@ -11,6 +11,7 @@ protocol SessionBackend: AnyObject {
     var foregroundPID: Int32 { get }
     var hostSessionID: String? { get }
     func write(_ bytes: [UInt8])
+    func respond(_ bytes: [UInt8])
     func resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int)
     func hangUp()
     func detach()
@@ -19,6 +20,7 @@ protocol SessionBackend: AnyObject {
 
 extension PTYProcess: SessionBackend {
     var hostSessionID: String? { nil }
+    func respond(_ bytes: [UInt8]) { write(bytes) }
     func detach() {}
 }
 
@@ -41,6 +43,7 @@ final class HostBackend: SessionBackend {
     var hostSessionID: String? { attachment.sessionID }
 
     func write(_ bytes: [UInt8]) { attachment.write(bytes) }
+    func respond(_ bytes: [UInt8]) { attachment.respond(bytes) }
     func resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) { attachment.resize(cols: columns, rows: rows) }
     func hangUp() { attachment.kill() }
     func detach() { attachment.detach() }

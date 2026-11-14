@@ -7,10 +7,27 @@ struct SettingsView: View {
     @ObservedObject private var push = PushTokens.shared
     @State private var editing: SavedHost?
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("appearance") private var appearance = Appearance.dark.rawValue
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Picker("Appearance", selection: $appearance) {
+                        ForEach(Appearance.allCases) { a in
+                            HStack(spacing: 12) {
+                                Swatch(look: a)
+                                Text(a.name)
+                            }
+                            .tag(a.rawValue)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } header: {
+                    Text("Appearance")
+                }
+                .listRowBackground(Theme.surface)
                 Section {
                     ForEach(store.hosts) { h in
                         Button { editing = h } label: {
@@ -35,18 +52,25 @@ struct SettingsView: View {
                 } footer: {
                     Text("Quickest: run terminessd pair on the machine and scan the code it shows with the iPhone camera.")
                 }
-                KeySection()
+                .listRowBackground(Theme.surface)
+                KeySection().listRowBackground(Theme.surface)
                 Section("Notifications") {
                     Label(push.token == nil ? "Off. Allow them in iOS Settings, Terminess." : "On. You'll hear when an agent finishes or needs you.",
                           systemImage: push.token == nil ? "bell.slash" : "bell")
                         .font(.callout)
                 }
+                .listRowBackground(Theme.surface)
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.background)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .sheet(item: $editing) { HostEditor(host: $0) }
         }
+        .id(appearance)
+        .tint(Theme.ink)
+        .preferredColorScheme(appearance == Appearance.system.rawValue ? nil : (Theme.appearance.isDark ? .dark : .light))
     }
 
     @ViewBuilder private func status(_ s: HostConnection.State) -> some View {
@@ -56,6 +80,34 @@ struct SettingsView: View {
         case .failed: Image(systemName: "exclamationmark.circle").foregroundStyle(Theme.attention)
         case .idle: EmptyView()
         }
+    }
+}
+
+private struct Swatch: View {
+    let look: Appearance
+
+    var body: some View {
+        let saved = Theme.appearance
+        Theme.appearance = look == .system ? .dark : look
+        let bg = Theme.background, ink = Theme.ink, bubble = Theme.userBubble
+        Theme.appearance = saved
+        return RoundedRectangle(cornerRadius: 6)
+            .fill(bg)
+            .overlay(alignment: .leading) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Capsule().fill(ink).frame(width: 14, height: 2.5)
+                    Capsule().fill(bubble).frame(width: 10, height: 4)
+                }
+                .padding(.leading, 6)
+            }
+            .overlay {
+                if look == .system {
+                    RoundedRectangle(cornerRadius: 6).fill(Color.white)
+                        .mask(HStack(spacing: 0) { Color.clear; Color.black })
+                }
+            }
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.2), lineWidth: 0.5))
+            .frame(width: 34, height: 24)
     }
 }
 

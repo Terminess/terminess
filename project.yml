@@ -51,6 +51,12 @@ targets:
         NSHighResolutionCapable: true
         NSSupportsAutomaticTermination: false
         NSLocalNetworkUsageDescription: Terminess listens on your network briefly while you pair your iPhone.
+        # Without these, macOS refuses protected folders silently instead of asking.
+        NSDesktopFolderUsageDescription: Shells and agents in Terminess read and write files on your Desktop when you ask them to.
+        NSDocumentsFolderUsageDescription: Shells and agents in Terminess read and write files in Documents when you ask them to.
+        NSDownloadsFolderUsageDescription: Shells and agents in Terminess read files in Downloads, such as screenshots you drop in.
+        NSRemovableVolumesUsageDescription: Shells and agents in Terminess read and write files on external drives when you ask them to.
+        NSNetworkVolumesUsageDescription: Shells and agents in Terminess read and write files on network drives when you ask them to.
     postBuildScripts:
       - name: Embed terminessd
         script: |

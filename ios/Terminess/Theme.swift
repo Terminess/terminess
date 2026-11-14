@@ -1,9 +1,52 @@
 import SwiftUI
+import UIKit
+
+enum Appearance: String, CaseIterable, Identifiable {
+    case system, dark, offBlack, light, paper
+
+    var id: String { rawValue }
+    var name: String {
+        switch self {
+        case .system: return "System"
+        case .dark: return "Black"
+        case .offBlack: return "Off-black"
+        case .light: return "White"
+        case .paper: return "Paper"
+        }
+    }
+
+    func resolved(_ scheme: ColorScheme) -> Appearance {
+        self == .system ? (scheme == .dark ? .dark : .light) : self
+    }
+
+    var isDark: Bool { self == .dark || self == .offBlack || (self == .system && UITraitCollection.current.userInterfaceStyle == .dark) }
+}
 
 enum Theme {
-    static let background = Color.black
-    static let surface = Color(white: 0.12)
-    static let raised = Color(white: 0.18)
+    static var appearance: Appearance = .dark
+
+    private static func pick(dark: Color, offBlack: Color, light: Color, paper: Color) -> Color {
+        switch appearance {
+        case .dark, .system: return dark
+        case .offBlack: return offBlack
+        case .light: return light
+        case .paper: return paper
+        }
+    }
+
+    static var background: Color { pick(dark: .black, offBlack: Color(red: 0.086, green: 0.086, blue: 0.094),
+                                        light: .white, paper: Color(red: 0.976, green: 0.965, blue: 0.937)) }
+    static var surface: Color { pick(dark: Color(white: 0.12), offBlack: Color(red: 0.15, green: 0.15, blue: 0.16),
+                                     light: Color(white: 0.945), paper: Color(red: 0.93, green: 0.915, blue: 0.88)) }
+    static var raised: Color { pick(dark: Color(white: 0.18), offBlack: Color(red: 0.21, green: 0.21, blue: 0.22),
+                                    light: Color(white: 0.89), paper: Color(red: 0.88, green: 0.86, blue: 0.82)) }
+    static var ink: Color { pick(dark: .white, offBlack: Color(white: 0.93),
+                                 light: .black, paper: Color(red: 0.16, green: 0.145, blue: 0.12)) }
+    static var onInk: Color { background }
+    static var userBubble: Color { pick(dark: Color(red: 0.106, green: 0.133, blue: 0.196),
+                                        offBlack: Color(red: 0.13, green: 0.16, blue: 0.23),
+                                        light: Color(red: 0.89, green: 0.92, blue: 0.98),
+                                        paper: Color(red: 0.87, green: 0.89, blue: 0.93)) }
     static let attention = Color.orange
 }
 
@@ -32,7 +75,7 @@ struct DrawerButton: View {
                 Capsule().frame(width: 18, height: 2.2)
                 Capsule().frame(width: 18, height: 2.2)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(Theme.ink)
             .frame(width: 44, height: 44)
             .background(Circle().fill(Theme.surface))
         }
@@ -81,9 +124,9 @@ struct Chip: View {
             if let symbol { Image(systemName: symbol).font(.system(size: 11)) }
             Text(text).lineLimit(1)
             if let percent {
-                Capsule().fill(Color.white.opacity(0.15)).frame(width: 22, height: 4)
+                Capsule().fill(Theme.ink.opacity(0.15)).frame(width: 22, height: 4)
                     .overlay(alignment: .leading) {
-                        Capsule().fill(percent > 0.8 ? Theme.attention : Color.white.opacity(0.7))
+                        Capsule().fill(percent > 0.8 ? Theme.attention : Theme.ink.opacity(0.7))
                             .frame(width: 22 * percent, height: 4)
                     }
             }

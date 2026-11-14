@@ -15,7 +15,25 @@ public struct TranscriptItem: Identifiable, Equatable, Codable, Sendable {
 public enum Transcript {
     public static let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
 
-    public static func locate(agent: String, directory: String, started: Date, arguments: [String]) -> String? {
+    public static func claudeSession(pid: Int32, home: String = Transcript.home) -> String? {
+        guard pid > 0,
+              let data = FileManager.default.contents(atPath: home + "/.claude/sessions/\(pid).json"),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let id = obj["sessionId"] as? String, !id.isEmpty, !id.contains("/") else { return nil }
+        let projects = home + "/.claude/projects/"
+        if let cwd = obj["cwd"] as? String {
+            let p = projects + String(cwd.map { $0.isLetter || $0.isNumber ? $0 : "-" }) + "/" + id + ".jsonl"
+            if FileManager.default.fileExists(atPath: p) { return p }
+        }
+        for dir in (try? FileManager.default.contentsOfDirectory(atPath: projects)) ?? [] {
+            let p = projects + dir + "/" + id + ".jsonl"
+            if FileManager.default.fileExists(atPath: p) { return p }
+        }
+        return nil
+    }
+
+    public static func locate(agent: String, directory: String, started: Date, arguments: [String], pid: Int32 = 0) -> String? {
+        if agent == "claude", let p = claudeSession(pid: pid) { return p }
         let fm = FileManager.default
         func created(_ p: String) -> Date? { (try? fm.attributesOfItem(atPath: p))?[.creationDate] as? Date }
         var named: String?
@@ -113,15 +131,66 @@ public enum Transcript {
 
     public static func parse(_ path: String, agent: String) -> [TranscriptItem] {
         guard let data = FileManager.default.contents(atPath: path) else { return [] }
+        return parse(data: data, agent: agent).items
+    }
+
+    public struct Survey: Equatable, Sendable {
+        public var version: String?
+        public var unknown: [String: Int] = [:]
+        public init(version: String? = nil, unknown: [String: Int] = [:]) { self.version = version; self.unknown = unknown }
+    }
+
+    public static func survey(_ path: String, agent: String) -> Survey {
+        guard let data = FileManager.default.contents(atPath: path) else { return Survey() }
+        return parse(data: data, agent: agent).survey
+    }
+
+    public static func parse(data: Data, agent: String) -> (items: [TranscriptItem], survey: Survey) {
         var items: [TranscriptItem] = []
         var toolIndex: [String: Int] = [:]
+        var survey = Survey()
         for line in data.split(separator: UInt8(ascii: "\n")) {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
-            if agent == "claude" { parseClaude(obj, items: &items, toolIndex: &toolIndex) }
-            else { parseCodex(obj, items: &items, toolIndex: &toolIndex) }
+            if agent == "claude" {
+                if let v = obj["version"] as? String { survey.version = v }
+                parseClaude(obj, items: &items, toolIndex: &toolIndex, survey: &survey)
+            } else {
+                if let p = obj["payload"] as? [String: Any], let v = p["cli_version"] as? String { survey.version = v }
+                parseCodex(obj, items: &items, toolIndex: &toolIndex, survey: &survey)
+            }
         }
-        return items
+        return (items, survey)
     }
+
+    static let claudeRecords: Set<String> = [
+        "user", "assistant", "attachment", "system", "summary", "custom-title", "progress",
+        "atis-latch", "last-prompt", "mode", "permission-mode", "ai-title", "frame-link", "api-request",
+        "api-request-blob", "api-request-shape", "session-owner", "queue-operation", "file-history-snapshot",
+        "file-history-delta", "cost-state", "tools-used", "artifact-comment-monitor", "artifact-autoreact-ledger",
+    ]
+    static let claudeAttachments: Set<String> = [
+        "queued_command", "total_tokens_reminder", "deferred_tools_record", "deferred_tools_delta", "prompt_snapshot",
+        "environment", "date", "mcp_instructions_delta", "model", "session_context", "credential_org", "skill_listing",
+        "instructions", "agent_listing_delta", "remote_session_change", "auto_mode", "silent_turn_reminder",
+        "edited_text_file", "file", "compact_file_reference", "invoked_skills", "thinking_drop",
+        "command_permissions", "task_status",
+    ]
+    static let claudeUserParts: Set<String> = ["text", "tool_result", "image", "document"]
+    static let claudeAssistantParts: Set<String> = [
+        "text", "thinking", "redacted_thinking", "tool_use", "tool_result", "tool_addition", "tool_removal",
+        "image", "server_tool_use", "web_search_tool_result",
+    ]
+    static let codexRecords: Set<String> = [
+        "session_meta", "turn_context", "compacted", "world_state", "token_usage_record",
+        "inter_agent_communication_metadata",
+        "event_msg/user_message", "event_msg/agent_message", "event_msg/item_completed", "event_msg/token_count",
+        "event_msg/task_started", "event_msg/task_complete", "event_msg/thread_settings_applied",
+        "event_msg/context_compacted", "event_msg/turn_aborted", "event_msg/agent_reasoning",
+        "response_item/reasoning", "response_item/message", "response_item/agent_message",
+        "response_item/function_call", "response_item/function_call_output",
+        "response_item/custom_tool_call", "response_item/custom_tool_call_output",
+        "response_item/additional_tools", "response_item/compaction",
+    ]
 
     private static func text(_ content: Any?) -> String {
         if let s = content as? String { return s }
@@ -155,51 +224,81 @@ public enum Transcript {
         return String(decoding: d, as: UTF8.self)
     }
 
-    private static func parseClaude(_ obj: [String: Any], items: inout [TranscriptItem], toolIndex: inout [String: Int]) {
+    private static func parseClaude(_ obj: [String: Any], items: inout [TranscriptItem], toolIndex: inout [String: Int],
+                                    survey: inout Survey) {
         func add(_ k: TranscriptItem.Kind) { items.append(TranscriptItem(id: items.count, kind: k)) }
-        guard let type = obj["type"] as? String, obj["isMeta"] as? Bool != true,
-              let message = obj["message"] as? [String: Any] else { return }
+        func unknown(_ kind: String) { survey.unknown[kind, default: 0] += 1 }
+        func attachResult(_ part: [String: Any]) {
+            guard let id = part["tool_use_id"] as? String, let i = toolIndex[id],
+                  case .tool(let n, let sum, let det, _) = items[i].kind else { return }
+            var result = text(part["content"])
+            if result.count > 4_000 { result = String(result.prefix(4_000)) + "\n…" }
+            items[i].kind = .tool(name: n, summary: sum, detail: det, result: result)
+        }
+        guard let type = obj["type"] as? String else { return }
+        if !claudeRecords.contains(type) { unknown("record:" + type) }
+        if type == "attachment", let a = obj["attachment"] as? [String: Any] {
+            let kind = a["type"] as? String ?? "?"
+            if !claudeAttachments.contains(kind) { unknown("attachment:" + kind) }
+            if kind == "queued_command" || a["humanTurn"] as? Bool == true {
+                let s = text(a["prompt"] ?? a["content"])
+                if !s.isEmpty, !isNoise(s) { add(.user(s)) }
+            }
+            return
+        }
+        guard obj["isMeta"] as? Bool != true, let message = obj["message"] as? [String: Any] else { return }
         if type == "user" {
             if let s = message["content"] as? String {
                 if !isNoise(s) { add(.user(s)) }
                 return
             }
             for part in message["content"] as? [[String: Any]] ?? [] {
-                switch part["type"] as? String {
+                let kind = part["type"] as? String ?? "?"
+                switch kind {
                 case "text":
                     if let s = part["text"] as? String, !isNoise(s) { add(.user(s)) }
                 case "tool_result":
-                    if let id = part["tool_use_id"] as? String, let i = toolIndex[id],
-                       case .tool(let n, let sum, let det, _) = items[i].kind {
-                        var result = text(part["content"])
-                        if result.count > 4_000 { result = String(result.prefix(4_000)) + "\n…" }
-                        items[i].kind = .tool(name: n, summary: sum, detail: det, result: result)
+                    attachResult(part)
+                default:
+                    if !claudeUserParts.contains(kind) {
+                        unknown("part:" + kind)
+                        if let s = part["text"] as? String, !isNoise(s) { add(.user(s)) }
                     }
-                default: break
                 }
             }
         } else if type == "assistant" {
             for part in message["content"] as? [[String: Any]] ?? [] {
-                switch part["type"] as? String {
+                let kind = part["type"] as? String ?? "?"
+                switch kind {
                 case "text":
                     if let s = part["text"] as? String, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { add(.assistant(s)) }
                 case "thinking":
                     if let s = part["thinking"] as? String, !s.isEmpty { add(.thinking(s)) }
-                case "tool_use":
+                case "tool_use", "server_tool_use":
                     let name = part["name"] as? String ?? "tool"
                     let input = part["input"] as? [String: Any] ?? [:]
                     add(.tool(name: name, summary: toolSummary(name, input), detail: pretty(input), result: nil))
                     if let id = part["id"] as? String { toolIndex[id] = items.count - 1 }
-                default: break
+                case "tool_result", "web_search_tool_result":
+                    attachResult(part)
+                default:
+                    if !claudeAssistantParts.contains(kind) {
+                        unknown("part:" + kind)
+                        if let s = part["text"] as? String, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { add(.assistant(s)) }
+                    }
                 }
             }
         }
     }
 
-    private static func parseCodex(_ obj: [String: Any], items: inout [TranscriptItem], toolIndex: inout [String: Int]) {
+    private static func parseCodex(_ obj: [String: Any], items: inout [TranscriptItem], toolIndex: inout [String: Int],
+                                   survey: inout Survey) {
         func add(_ k: TranscriptItem.Kind) { items.append(TranscriptItem(id: items.count, kind: k)) }
-        guard let type = obj["type"] as? String, let p = obj["payload"] as? [String: Any] else { return }
+        guard let type = obj["type"] as? String else { return }
+        let p = obj["payload"] as? [String: Any] ?? [:]
         let ptype = p["type"] as? String
+        let kind = (type == "event_msg" || type == "response_item") ? type + "/" + (ptype ?? "?") : type
+        if !codexRecords.contains(kind) { survey.unknown["record:" + kind, default: 0] += 1 }
         if type == "event_msg" && ptype == "user_message", let s = p["message"] as? String, !isNoise(s) {
             add(.user(s))
         } else if type == "event_msg" && ptype == "agent_message", let s = p["message"] as? String, !s.isEmpty {

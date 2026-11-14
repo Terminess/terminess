@@ -8,6 +8,7 @@ final class AppState: ObservableObject {
     @Published private(set) var connections: [UUID: HostConnection] = [:]
     @Published var current: SessionTarget?
     @Published var drawerOpen = false
+    var rowSwiping = false
     @Published var showSettings = false
     @Published var newHost: UUID?
     @Published var newProject: String?
@@ -63,6 +64,11 @@ final class AppState: ObservableObject {
     func open(_ target: SessionTarget) {
         current = target
         withAnimation(.easeOut(duration: 0.22)) { drawerOpen = false }
+    }
+
+    func end(_ session: SessionInfo, on host: SavedHost) {
+        if current?.session == session.id { current = nil }
+        Task { await connection(host.id).kill(session.id) }
     }
 
     func newChat() {

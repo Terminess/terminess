@@ -17,7 +17,11 @@ struct TerminalScreen: View {
                 .defaultScrollAnchor(.bottom)
                 .onChange(of: model.text) { _, _ in proxy.scrollTo("screen", anchor: .bottom) }
             }
-            .onAppear { fit(geo.size) }
+            .onAppear {
+                model.terminalVisible = true
+                fit(geo.size)
+            }
+            .onDisappear { model.terminalVisible = false }
             .onChange(of: geo.size) { _, size in fit(size) }
         }
         .background(model.background)

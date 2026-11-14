@@ -145,6 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         sidebar.tabProvider = { [weak self] in self?.openTabs() ?? [] }
         sidebar.currentDirectory = { [weak self] in self?.keyController?.currentDirectory }
         sidebar.start()
+        AgentEvents.refreshIfConsented()
         let env = ProcessInfo.processInfo.environment
         let testing = env["TERMAPP_SCRIPT"] != nil && env["TERMAPP_ALLOW_RESTORE"] == nil
         if testing || !restoreSession() { newWindow(nil) }
@@ -206,7 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                     c.window?.setFrame(NSRect(x: saved.frame[0], y: saved.frame[1], width: saved.frame[2], height: saved.frame[3]),
                                        display: true)
                 }
-                host = host ?? c.window
+                host = c.window ?? host
                 opened.append(c)
             }
             if saved.selected < opened.count { opened[saved.selected].focus() }
@@ -284,9 +285,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         for c in controllers { c.setSidebar(visible: model.visible, animated: c.window?.isKeyWindow == true) }
     }
 
+    private var tabOrder: [TerminalWindowController] {
+        var seen = Set<ObjectIdentifier>(), out: [TerminalWindowController] = []
+        for c in controllers where !seen.contains(ObjectIdentifier(c)) {
+            let group = (c.window?.tabbedWindows ?? []).compactMap { $0.windowController as? TerminalWindowController }
+            for t in group.isEmpty ? [c] : group where !seen.contains(ObjectIdentifier(t)) {
+                seen.insert(ObjectIdentifier(t)); out.append(t)
+            }
+        }
+        return out
+    }
+
     private func openTabs() -> [OpenTab] {
         let home = SidebarModel.home
-        return controllers.map { c in
+        return tabOrder.map { c in
             c.refreshTitle()
             c.refreshBusy()
             let dir = c.currentDirectory ?? ""

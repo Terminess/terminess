@@ -18,6 +18,15 @@ final class TerminalSession {
     private var commandStarted: Date?
     private(set) var lastActivity = Date()
     private let events = SessionEvents()
+    private var resumeIfGone: String?
+
+    private func typeResume() {
+        guard let command = resumeIfGone else { return }
+        resumeIfGone = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            MainActor.assumeIsolated { self?.send(Array((command + "\r").utf8)) }
+        }
+    }
 
     var currentDirectory: String? {
         guard let s = terminal.workingDirectory else { return nil }
@@ -36,13 +45,17 @@ final class TerminalSession {
         terminal.delegate = events
     }
 
-    func start(workingDirectory: String?, cellWidth: Int, cellHeight: Int, attach: String? = nil, persistent: Bool = true) {
+    func start(workingDirectory: String?, cellWidth: Int, cellHeight: Int, attach: String? = nil, persistent: Bool = true,
+               resumeIfGone: String? = nil) {
+        self.resumeIfGone = resumeIfGone
         let cwd = workingDirectory ?? FileManager.default.homeDirectoryForCurrentUser.path
-        if persistent, Settings.shared.keepSessions, HostService.ensureRunning() {
+        let hosted = persistent && Settings.shared.keepSessions && HostService.ensureRunning()
+        if hosted {
             startHost(attach.map { .attach(id: $0) } ?? createTarget(cwd: cwd), cwd: cwd, cellWidth: cellWidth, cellHeight: cellHeight)
         } else {
             startLocal(cwd: cwd, cellWidth: cellWidth, cellHeight: cellHeight)
         }
+        if !hosted || attach == nil { typeResume() }
     }
 
     private func createTarget(cwd: String) -> HostAttachment.Target {
@@ -60,11 +73,12 @@ final class TerminalSession {
         let backend = HostBackend(attachment: a)
         process = backend
         var attached = false
-        terminal.onResponse = { [weak self] bytes in self?.process?.write(bytes) }
+        terminal.onResponse = { [weak self] bytes in self?.process?.respond(bytes) }
         let ref = WeakRef(self)
         a.onAttached = { _, cols, rows in
             MainActor.assumeIsolated {
                 attached = true
+                ref.value?.resumeIfGone = nil
                 guard let session = ref.value, cols > 0, rows > 0 else { return }
                 let t = session.terminal
                 if cols != t.columns || rows != t.rows {
@@ -99,6 +113,7 @@ final class TerminalSession {
                 }
                 if case .attach = target {
                     session.startHost(session.createTarget(cwd: cwd), cwd: cwd, cellWidth: cellWidth, cellHeight: cellHeight)
+                    session.typeResume()
                 } else {
                     session.startLocal(cwd: cwd, cellWidth: cellWidth, cellHeight: cellHeight)
                 }

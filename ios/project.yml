@@ -25,6 +25,8 @@ targets:
     platform: iOS
     sources:
       - path: Terminess
+      # The chat's Markdown renderer, shared with the Mac app.
+      - path: ../Sources/TermApp/MarkdownView.swift
     dependencies:
       - package: Terminal
         product: TermCore

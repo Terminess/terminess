@@ -119,7 +119,7 @@ func attach(_ target: String?) -> Never {
             case "exited": finish("[session \(m.id ?? "") ended]")
             default: break
             }
-        case .input:
+        case .input, .response:
             break
         }
     }
@@ -307,6 +307,14 @@ func pair() -> Never {
 }
 
 
+func selfPath() -> String {
+    #if os(Linux)
+    if let p = try? FileManager.default.destinationOfSymbolicLink(atPath: "/proc/self/exe") { return p }
+    #endif
+    return Bundle.main.executablePath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+        ?? URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
+}
+
 func value(after flag: String, in args: [String]) -> String? {
     guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
     return args[i + 1]
@@ -361,6 +369,48 @@ case "service":
 case "pair":
     pair()
 
+case "hook":
+    let env = ProcessInfo.processInfo.environment
+    guard let session = env["TERMINESS_SESSION"], !session.isEmpty,
+          let fd = UnixSocket.connect(HostPaths.socket) else { exit(0) }
+    let agent = rest.first ?? "claude"
+    let input = agent == "codex" ? (rest.count > 1 ? rest.last! : "{}")
+        : String(decoding: FileHandle.standardInput.readDataToEndOfFile().prefix(256 * 1024), as: UTF8.self)
+    let m = Message(op: "hook", id: session, name: agent, message: input)
+    _ = Connection.writeAll(fd, Wire.Frame.control(m).encoded())
+    close(fd)
+    exit(0)
+
+case "hooks":
+    let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+    var exe = selfPath()
+    #if os(Linux)
+    if FileManager.default.isExecutableFile(atPath: home + "/.local/bin/terminessd") { exe = home + "/.local/bin/terminessd" }
+    #endif
+    func describe(_ name: String, _ on: Bool, _ outdated: Bool, _ taken: Bool) -> String {
+        "\(name): " + (on ? "on" : outdated ? "outdated (terminessd hooks install to refresh)"
+            : taken ? "off (notify is already set to another program; left alone)" : "off (terminessd hooks install to turn on)")
+    }
+    switch rest.first {
+    case "install":
+        do { try ClaudeHooks.install(executable: exe) } catch { fail("\(error)") }
+        print("Claude Code hooks installed in \(ClaudeHooks.settingsPath).")
+        do {
+            try CodexNotify.install(executable: exe)
+            print("Codex notify set in \(CodexNotify.configPath).")
+        } catch { print("Codex: \(error)") }
+        print("Both only act inside Terminess sessions.")
+    case "uninstall":
+        do { try ClaudeHooks.uninstall(); try CodexNotify.uninstall() } catch { fail("\(error)") }
+        print("Removed from \(ClaudeHooks.settingsPath) and \(CodexNotify.configPath).")
+    case "status", nil:
+        let c = ClaudeHooks.status(executable: exe), x = CodexNotify.status(executable: exe)
+        print(describe("Claude Code", c == .on, c == .outdated, false))
+        print(describe("Codex", x == .on, x == .outdated, x == .taken))
+    default:
+        fail("usage: terminessd hooks install|uninstall|status")
+    }
+
 case "-h", "--help", "help":
     print("""
     terminessd: keeps shells and agents alive for Terminess clients.
@@ -374,6 +424,8 @@ case "-h", "--help", "help":
       terminessd pair [--address A]    print a link that adds this machine to Terminess on iPhone
       terminessd service install       run it as a systemd user service (Linux)
       terminessd service uninstall|status
+      terminessd hooks install         let Claude Code and Codex tell Terminess what they're doing
+      terminessd hooks uninstall|status
     """)
 
 default:
