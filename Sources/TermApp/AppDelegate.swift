@@ -3,6 +3,7 @@ import AppKit
 import SwiftUI
 import TermCore
 import TermHost
+import TermTranscript
 
 enum AppearanceSetting: Int {
     case system = 0, light = 1, dark = 2
@@ -100,6 +101,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             DoctorModel.sharedForWindow.run()
         }
         doctorWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func showAgentsDashboard(_ sender: Any?) { AgentsDashboardWindow.show() }
+
+    @objc func newAgentTab(_ sender: NSMenuItem) {
+        guard let model = sender.representedObject as? String, let exe = HostService.executable else { return }
+        if AgentKey.read() == nil {
+            alert("Add your Anthropic API key", "Terminess agent tabs use your own API key, billed to your Anthropic account. Add it in Settings, Windows and Tabs, then try again.")
+            return
+        }
+        let c = open(tabbedWith: keyController?.window, directory: keyController?.currentDirectory,
+                     command: "\(shellQuote(exe)) agent --model \(model)")
+        c.customTitle = "Terminess Agent"
+    }
+
+    @objc func showLibrary(_ sender: Any?) {
+        LibraryWindow.show(directory: keyController?.currentDirectory)
     }
 
     @objc func showSettings(_ sender: Any?) {
@@ -379,6 +397,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         open(tabbedWith: keyController?.window, directory: dir, command: cmd)
     }
 
+
+    func agentRequest(id: String, tool: String, args json: String, from controller: TerminalWindowController) {
+        let args = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+        if ProcessInfo.processInfo.environment["TERMAPP_SCRIPT"] != nil { print("agent request: \(tool) \(json)"); fflush(stdout) }
+        func reply(_ text: String, failed: Bool = false) {
+            HostAttachment.send(Message(op: "agent-reply", id: id, code: failed ? 1 : 0, message: text))
+        }
+        let here = controller.currentDirectory ?? SidebarModel.home
+        switch tool {
+        case "open_tab":
+            var dir = (args["directory"] as? String).map { ($0 as NSString).expandingTildeInPath } ?? here
+            if !dir.hasPrefix("/") { dir = (here as NSString).appendingPathComponent(dir) }
+            guard FileManager.default.fileExists(atPath: dir) else { reply("No folder at \(dir).", failed: true); return }
+            let command = (args["command"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let c = open(tabbedWith: controller.window, directory: dir, command: command)
+            if let title = args["title"] as? String, !title.isEmpty { c.customTitle = title }
+            controller.window?.makeKeyAndOrderFront(nil)
+            reply("Opened a tab in \(dir)" + (command.map { " running \($0)" } ?? "") + ".")
+        case "start_worktree":
+            guard let branch = (args["branch"] as? String)?.trimmingCharacters(in: .whitespaces), !branch.isEmpty else {
+                reply("Give a branch name.", failed: true); return
+            }
+            guard Git.root(of: here) != nil else { reply("\(here) isn't a git repository.", failed: true); return }
+            let task = (args["task"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let command: String?
+            switch args["agent"] as? String ?? "claude" {
+            case "shell": command = nil
+            case "codex": command = "codex" + (task.map { " " + shellQuote($0) } ?? "")
+            default: command = "claude" + (task.map { " " + shellQuote($0) } ?? "")
+            }
+            switch Worktrees.create(repo: here, branch: branch) {
+            case .failure(let error): reply("Couldn't create the worktree: \(error.message)", failed: true)
+            case .success(let info):
+                let c = open(tabbedWith: controller.window, directory: info.path, command: command)
+                c.worktree = info
+                reply("Started a worktree tab on branch \(info.branch) at \(info.path)" + (command.map { ", running \($0.split(separator: " ").first ?? "")" } ?? "") + ".")
+            }
+        default:
+            reply("Unknown request \(tool).", failed: true)
+        }
+    }
+
+
+    func fork(_ session: SessionItem, inWorktree: Bool) {
+        let cmd = session.tool == "claude" ? "claude --resume \(shellQuote(session.id)) --fork-session"
+                                           : "codex fork \(shellQuote(session.id))"
+        let dir = FileManager.default.fileExists(atPath: session.cwd) ? session.cwd : SidebarModel.home
+        guard inWorktree else {
+            let c = open(tabbedWith: keyController?.window, directory: dir, command: cmd)
+            c.customTitle = "Fork: " + session.title
+            return
+        }
+        guard Git.root(of: dir) != nil else {
+            alert("Not in a git repository", "\(dir) isn't a git repository, so the fork can't have its own worktree. Fork it in a new tab instead.")
+            return
+        }
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmm"
+        switch Worktrees.create(repo: dir, branch: "fork/\(f.string(from: Date()))") {
+        case .failure(let error):
+            alert("Could not create the worktree", error.message)
+        case .success(let info):
+            if session.tool == "claude" { Self.copyClaudeSession(session.id, from: session.cwd, to: info.path) }
+            let c = open(tabbedWith: keyController?.window, directory: info.path, command: cmd)
+            c.worktree = info
+            c.customTitle = "Fork: " + session.title
+        }
+    }
+
+    func forkTab(_ id: ObjectIdentifier, inWorktree: Bool) {
+        guard let c = controllers.first(where: { ObjectIdentifier($0) == id }),
+              case .file(let agent, let path, _) = c.focused?.readerSource() ?? .none, agent == "claude" else {
+            alert("No conversation to fork", "Fork works on a Claude Code conversation running in the tab.")
+            return
+        }
+        let sid = (path as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
+        let cwd = c.currentDirectory ?? SidebarModel.home
+        fork(SessionItem(tool: "claude", id: sid, cwd: cwd, repo: (cwd as NSString).lastPathComponent,
+                         title: c.customTitle ?? c.displayTitle, mtime: 0, linked: [], pair: nil), inWorktree: inWorktree)
+    }
+
+    static func copyClaudeSession(_ id: String, from: String, to: String) {
+        func folder(_ dir: String) -> String {
+            (ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"] ?? Transcript.home + "/.claude") + "/projects/"
+                + String(dir.map { $0.isLetter || $0.isNumber ? $0 : "-" })
+        }
+        let src = folder(from) + "/" + id + ".jsonl"
+        let dstDir = folder(to)
+        try? FileManager.default.createDirectory(atPath: dstDir, withIntermediateDirectories: true)
+        try? FileManager.default.copyItem(atPath: src, toPath: dstDir + "/" + id + ".jsonl")
+    }
+
     func startPair(mode: String, target: String) {
         guard let pair = SidebarModel.pairTool else { return }
         let host = keyController
@@ -468,6 +578,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let commit = NSMenuItem(title: "Commit Changes…", action: #selector(commitChanges(_:)), keyEquivalent: "c")
         commit.keyEquivalentModifierMask = [.command, .option]
         shell.addItem(commit)
+        let pr = NSMenuItem(title: "Open Pull Request…", action: #selector(openPullRequest(_:)), keyEquivalent: "p")
+        pr.keyEquivalentModifierMask = [.command, .option]
+        shell.addItem(pr)
+        let board = NSMenuItem(title: "Issues Board", action: #selector(showIssueBoard(_:)), keyEquivalent: "i")
+        board.keyEquivalentModifierMask = [.command, .option]
+        shell.addItem(board)
+        let agentItem = NSMenuItem(title: "New Agent Tab", action: nil, keyEquivalent: "")
+        let agentMenu = NSMenu(title: "New Agent Tab")
+        for (title, model) in [("Claude Opus 5.5", "claude-opus-5-5"), ("Claude Sonnet 5.5", "claude-sonnet-5-5"), ("Claude Haiku 5.5", "claude-haiku-5-5")] {
+            let item = agentMenu.addItem(withTitle: title, action: #selector(newAgentTab(_:)), keyEquivalent: "")
+            item.representedObject = model
+        }
+        agentMenu.addItem(.separator())
+        agentMenu.addItem(withTitle: "Uses your Anthropic API key (Settings). Type /model ollama:NAME for a local model.", action: nil, keyEquivalent: "")
+        agentItem.submenu = agentMenu
+        shell.addItem(agentItem)
         let localModel = NSMenuItem(title: "Local Model", action: nil, keyEquivalent: "")
         let localModelMenu = NSMenu(title: "Local Model")
         LocalModelMenu.shared.attach(to: localModelMenu)
@@ -545,6 +671,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let sidebarItem = NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleSidebar(_:)), keyEquivalent: "s")
         sidebarItem.keyEquivalentModifierMask = [.control, .command]
         view.addItem(sidebarItem)
+        let instructionsItem = NSMenuItem(title: "Project Instructions…", action: #selector(showProjectInstructions(_:)), keyEquivalent: "i")
+        instructionsItem.keyEquivalentModifierMask = [.command, .shift]
+        view.addItem(instructionsItem)
         view.addItem(.separator())
         let appearanceItem = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
         let appearanceMenu = NSMenu(title: "Appearance")
@@ -569,6 +698,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         window.addItem(withTitle: "Minimise", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         window.addItem(withTitle: "Show Previous Tab", action: #selector(NSWindow.selectPreviousTab(_:)), keyEquivalent: "{")
         window.addItem(withTitle: "Show Next Tab", action: #selector(NSWindow.selectNextTab(_:)), keyEquivalent: "}")
+        window.addItem(.separator())
+        window.addItem(withTitle: "Library…", action: #selector(showLibrary(_:)), keyEquivalent: "L")
+        let agents = window.addItem(withTitle: "Agents", action: #selector(showAgentsDashboard(_:)), keyEquivalent: "a")
+        agents.keyEquivalentModifierMask = [.command, .option]
         windowItem.submenu = window
         main.addItem(windowItem)
         NSApp.windowsMenu = window

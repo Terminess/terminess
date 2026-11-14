@@ -44,6 +44,7 @@ extension AppDelegate {
     }
 
     func worktreeAction(_ id: ObjectIdentifier, _ action: String) {
+        if action == "pr", let c = controllers.first(where: { ObjectIdentifier($0) == id }) { openPullRequest(for: c); return }
         guard let c = controllers.first(where: { ObjectIdentifier($0) == id }), let w = c.worktree else { return }
         switch action {
         case "merge": merge(c, w)
@@ -133,7 +134,12 @@ extension AppDelegate {
 
 
     func startIssue(_ issue: IssueItem, agent: String) {
-        guard let gh = Git.gh, let repo = SidebarModel.shared.issuesRepo, let dir = keyController?.currentDirectory else { return }
+        startIssue(issue, agent: agent, repo: nil, directory: nil)
+    }
+
+    func startIssue(_ issue: IssueItem, agent: String, repo: String?, directory: String?) {
+        guard let gh = Git.gh, let repo = repo ?? SidebarModel.shared.issuesRepo,
+              let dir = directory ?? keyController?.currentDirectory else { return }
         Task.detached {
             let r = Git.exec(gh, ["issue", "view", "\(issue.number)", "-R", repo, "--json", "title,body,comments,url"])
             var prompt = "Work on GitHub issue #\(issue.number): \(issue.title)\n"

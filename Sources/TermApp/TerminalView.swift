@@ -298,7 +298,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         return false
     }
 
-    func updateAgentScreen() {
+    func updateAgentScreen(force: Bool = false) {
         guard let t = terminal else { return }
         let input = detectInputBand(t)
         if hideAgentInput, let input {
@@ -314,7 +314,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         let text = status.map { $0.plainText() }.joined(separator: "\n")
         let visible = input != nil
         let busy = agentLooksBusy()
-        if text != lastStatusText || visible != lastInputVisible || busy != lastBusy {
+        if force || text != lastStatusText || visible != lastInputVisible || busy != lastBusy {
             lastStatusText = text
             lastInputVisible = visible
             lastBusy = busy

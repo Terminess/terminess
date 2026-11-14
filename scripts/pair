@@ -345,8 +345,18 @@ CLEAN_ENV=(env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESS
   -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN \
   -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_EFFORT)
 
+FINDINGS_SCHEMA='{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","line","title","detail","fix"],"properties":{"severity":{"type":"string","enum":["high","medium","low"]},"file":{"type":"string"},"line":{"type":"integer","description":"0 when not tied to a line"},"title":{"type":"string"},"detail":{"type":"string"},"fix":{"type":"string","description":"What to change, specific enough to hand to another agent"}}}}}}'
+STRUCTURED=0
+[ "$MODE" = "review" ] && [ $WRITE -eq 0 ] && STRUCTURED=1
+
+render_findings() {
+  jq -r '.summary + "\n" + (if (.findings | length) == 0 then "\nNo findings." else
+    "\n" + ([.findings[] | "- [\(.severity)] \(.file)\(if .line > 0 then ":\(.line)" else "" end): \(.title)\n  \(.detail)\n  Fix: \(.fix)"] | join("\n")) end)' "$1"
+}
+
 if [ "$TARGET" = "claude" ]; then
-  ARGS=(-p --output-format json)
+  ARGS=(-p --output-format stream-json --verbose)
+  [ $STRUCTURED -eq 1 ] && ARGS+=(--json-schema "$FINDINGS_SCHEMA")
   if [ $WRITE -eq 1 ]; then
     ARGS+=(--permission-mode auto)
   else
@@ -356,13 +366,19 @@ if [ "$TARGET" = "claude" ]; then
       "Bash(ls:*)" "Bash(cat:*)" "Bash(grep:*)" "Bash(rg:*)" "Bash(find:*)" "Bash(wc:*)" "Bash(head:*)" "Bash(tail:*)")
   fi
   [ -n "$RESUME_ID" ] && ARGS+=(--resume "$RESUME_ID")
-  if printf '%s' "$PROMPT" | "${CLEAN_ENV[@]}" claude "${ARGS[@]}" > "$RUN/out.json" 2> "$RUN/stderr.log"; then :; else STATUS="error"; fi
+  if printf '%s' "$PROMPT" | "${CLEAN_ENV[@]}" claude "${ARGS[@]}" > "$RUN/events.jsonl" 2> "$RUN/stderr.log"; then :; else STATUS="error"; fi
+  jq -c 'select(.type == "result")' "$RUN/events.jsonl" 2>/dev/null | tail -n 1 > "$RUN/out.json" || true
   if jq -e . "$RUN/out.json" >/dev/null 2>&1; then
-    jq -r '.result // empty' "$RUN/out.json" > "$RESULT"
     SESSION_ID="$(jq -r '.session_id // empty' "$RUN/out.json")"
     [ "$(jq -r '.is_error // false' "$RUN/out.json")" = "true" ] && STATUS="error"
+    if [ $STRUCTURED -eq 1 ] && jq -e '.structured_output.findings' "$RUN/out.json" >/dev/null 2>&1; then
+      jq '.structured_output' "$RUN/out.json" > "$RUN/findings.json"
+      render_findings "$RUN/findings.json" > "$RESULT"
+    else
+      jq -r '.result // empty' "$RUN/out.json" > "$RESULT"
+    fi
   else
-    cp "$RUN/out.json" "$RESULT" 2>/dev/null || true
+    tail -c 4000 "$RUN/events.jsonl" > "$RESULT" 2>/dev/null || true
   fi
 else
   if [ -n "$RESUME_ID" ]; then
@@ -372,10 +388,15 @@ else
   fi
   ARGS+=(--json -o "$RESULT" --skip-git-repo-check)
   if [ $WRITE -eq 1 ]; then ARGS+=(--approve-for-me); else ARGS+=(-s read-only); fi
+  if [ $STRUCTURED -eq 1 ]; then printf '%s' "$FINDINGS_SCHEMA" > "$RUN/schema.json"; ARGS+=(--output-schema "$RUN/schema.json"); fi
   ARGS+=(-)
   if printf '%s' "$PROMPT" | "${CLEAN_ENV[@]}" codex "${ARGS[@]}" > "$RUN/events.jsonl" 2> "$RUN/stderr.log"; then :; else STATUS="error"; fi
   SESSION_ID="$(jq -r 'select(.type=="thread.started") | .thread_id // empty' "$RUN/events.jsonl" 2>/dev/null | head -n1 || true)"
   [ -n "$SESSION_ID" ] || SESSION_ID="$RESUME_ID"
+  if [ $STRUCTURED -eq 1 ] && jq -e '.findings' "$RESULT" >/dev/null 2>&1; then
+    cp "$RESULT" "$RUN/findings.json"
+    render_findings "$RUN/findings.json" > "$RESULT"
+  fi
 fi
 
 if [ ! -s "$RESULT" ]; then

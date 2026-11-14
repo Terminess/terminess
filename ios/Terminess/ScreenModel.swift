@@ -46,7 +46,7 @@ final class ScreenModel: ObservableObject {
         terminal.delegate = events
     }
 
-    var isAgent: Bool { command == "claude" || command == "codex" || command == "ollama" }
+    var isAgent: Bool { command == "claude" || command == "codex" || command == "ollama" || command == "harness" }
     var busy: Bool {
         guard let first = title.unicodeScalars.first else { return false }
         return (0x25D0...0x25D3).contains(first.value) || (0x2800...0x28FF).contains(first.value)

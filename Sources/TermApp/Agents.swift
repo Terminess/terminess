@@ -20,6 +20,7 @@ struct Agent: Equatable {
     private static let catalog: [(String, Agent)] = [
         ("claude", .claude),
         ("codex", .codex),
+        ("harness", Agent(id: "harness", name: "Terminess Agent", tint: NSColor(srgbRed: 0.95, green: 0.69, blue: 0.18, alpha: 1))),
         ("gemini", Agent(id: "gemini", name: "Gemini", tint: other)),
         ("aider", Agent(id: "aider", name: "Aider", tint: other)),
         ("opencode", Agent(id: "opencode", name: "OpenCode", tint: other)),

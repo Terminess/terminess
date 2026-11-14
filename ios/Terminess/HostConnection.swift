@@ -19,12 +19,34 @@ final class HostConnection: ObservableObject {
 
     var host: SavedHost? { HostStore.shared.host(hostID) }
     var stdioCommand: String { RemotePath.shellQuoted(host?.terminessd ?? "~/.local/bin/terminessd") + " stdio" }
-    var isConnected: Bool { state == .connected && ssh != nil }
+    var isConnected: Bool { state == .connected && (ssh != nil || Self.demoSocket != nil) }
+
+    static var demoSocket: String? {
+        #if DEBUG && targetEnvironment(simulator)
+        return ProcessInfo.processInfo.environment["TERMINESS_DEMO_SOCKET"]
+        #else
+        return nil
+        #endif
+    }
+
+    private func channel() async throws -> Int32 {
+        if let path = Self.demoSocket {
+            guard let fd = UnixSocket.connect(path) else { throw SSHError.channel("no demo socket at \(path)") }
+            return fd
+        }
+        guard let ssh else { throw SSHError.channel("not connected") }
+        return try await ssh.exec(stdioCommand)
+    }
 
     func connect() async {
         guard let host, !AppLock.shared.locked else { return }
         if ssh != nil, control?.isOpen == true { await refresh(); return }
         if state == .connecting { return }
+        if Self.demoSocket != nil {
+            state = .connected
+            await refresh()
+            return
+        }
         ssh?.disconnect()
         ssh = nil
         control = nil
@@ -125,20 +147,28 @@ final class HostConnection: ObservableObject {
                                   key: DeviceKey.authorizedKeyLine().split(separator: " ").dropFirst().first.map(String.init)))
     }
 
+    func decide(session: String, requestID: String, answer: String) async {
+        _ = await request(Message(op: "decide", id: session, name: requestID, message: answer))
+        await refresh()
+    }
+
+    func answer(session: String, questionID: String, text: String) async {
+        _ = await request(Message(op: "answer", id: session, name: questionID, message: text))
+        await refresh()
+    }
+
     func unregisterPush() async {
         guard isConnected, let token = PushTokens.shared.token else { return }
         _ = await request(Message(op: "unregister-push", token: token))
     }
 
     func attachment(to target: HostAttachment.Target, cols: Int, rows: Int) async throws -> HostAttachment {
-        guard let ssh else { throw SSHError.channel("not connected") }
-        let fd = try await ssh.exec(stdioCommand)
+        let fd = try await channel()
         return HostAttachment(readFD: fd, writeFD: fd, target: target, cols: cols, rows: rows, queue: .main)
     }
 
     func transcriptChannel(for id: String) async throws -> Connection {
-        guard let ssh else { throw SSHError.channel("not connected") }
-        let fd = try await ssh.exec(stdioCommand)
+        let fd = try await channel()
         let conn = Connection(readFD: fd, queue: .main)
         conn.start()
         conn.send(Message(op: "transcript", id: id))
@@ -146,9 +176,9 @@ final class HostConnection: ObservableObject {
     }
 
     private func request(_ m: Message) async -> Message? {
-        guard let ssh else { return nil }
+        guard ssh != nil || Self.demoSocket != nil else { return nil }
         if control?.isOpen != true {
-            guard let fd = try? await ssh.exec(stdioCommand) else {
+            guard let fd = try? await channel() else {
                 state = .failed("Lost the connection to \(host?.name ?? "the machine").")
                 self.ssh = nil
                 return nil

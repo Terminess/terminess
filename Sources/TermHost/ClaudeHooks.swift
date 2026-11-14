@@ -1,7 +1,9 @@
 import Foundation
 
 public enum ClaudeHooks {
-    public static let events = ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "Notification", "SessionEnd"]
+    public static let events = ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "Notification", "SessionEnd",
+                                "PermissionRequest"]
+    static func timeout(_ event: String) -> Int { event == "PermissionRequest" ? 600 : 5 }
     static let marker = " hook claude"
 
     public static var settingsPath: String {
@@ -49,7 +51,7 @@ public enum ClaudeHooks {
         try edit(settingsPath) { hooks in
             for event in events {
                 var groups = strip(hooks[event])
-                groups.append(["hooks": [["type": "command", "command": command(executable: executable), "timeout": 5]]])
+                groups.append(["hooks": [["type": "command", "command": command(executable: executable), "timeout": timeout(event)]]])
                 hooks[event] = groups
             }
         }

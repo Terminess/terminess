@@ -24,6 +24,11 @@ public final class HostAttachment: @unchecked Sendable {
     public var onAttached: ((String, Int, Int) -> Void)?
     public var onSize: ((Int, Int) -> Void)?
     public var onReplayed: (() -> Void)?
+    public var onPermission: ((PermissionInfo?) -> Void)?
+    public var onQuestion: ((QuestionInfo?) -> Void)?
+    public var onNote: ((String) -> Void)?
+    public var onAgentRequest: ((String, String, String) -> Void)?
+    public var clientKind: String?
     public var onOutput: (([UInt8]) -> Void)?
     public var onForeground: ((ForegroundInfo) -> Void)?
     public var onExit: ((Int) -> Void)?
@@ -119,6 +124,14 @@ public final class HostAttachment: @unchecked Sendable {
                 if let id = m.id { onAttached?(id, m.cols ?? 0, m.rows ?? 0) }
             case "replayed":
                 onReplayed?()
+            case "permission":
+                onPermission?(m.permission)
+            case "question":
+                onQuestion?(m.question)
+            case "agent-note":
+                if let text = m.message { onNote?(text) }
+            case "agent-request":
+                if let id = m.id, let tool = m.name { onAgentRequest?(id, tool, m.message ?? "{}") }
             case "size":
                 if let c = m.cols, let r = m.rows, c > 0, r > 0 { onSize?(c, r) }
             case "info":
@@ -140,9 +153,9 @@ public final class HostAttachment: @unchecked Sendable {
 
     private func sendAttach(_ id: String) {
         if resizesAfterReplay {
-            connection.send(Message(op: "attach", id: id))
+            connection.send(Message(op: "attach", host: clientKind, id: id))
         } else {
-            connection.send(Message(op: "attach", id: id, cols: cols, rows: rows))
+            connection.send(Message(op: "attach", host: clientKind, id: id, cols: cols, rows: rows))
         }
     }
 

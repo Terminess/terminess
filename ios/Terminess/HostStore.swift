@@ -137,6 +137,10 @@ final class HostStore: ObservableObject {
         return nil
     }
 
+    #if DEBUG
+    func addForDemo(_ url: URL) { if let i = info(url) { _ = add(i) } }
+    #endif
+
     private func add(_ i: LinkInfo) -> UUID? {
         var host = existing(i) ?? SavedHost(name: i.address, address: i.address, port: i.port, user: i.user)
         host.name = i.name ?? host.name

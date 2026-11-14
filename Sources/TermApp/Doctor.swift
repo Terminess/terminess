@@ -228,6 +228,10 @@ final class DoctorModel: ObservableObject {
             c.append(Check(title: "GitHub CLI", status: .ok, detail: "\(t.gh!), signed in."))
         }
 
+        let skills = PairSkill.Agent.allCases.map { PairSkill.status($0) }
+        c.append(Check(title: "Agents know about hand-off", status: skills.allSatisfy { $0 != .missing } ? .ok : .info,
+                       detail: skills.allSatisfy { $0 != .missing } ? "Claude Code and Codex can hand work to each other."
+                           : "Turn on \"hand work to\" in Settings so Claude Code and Codex know they can ask each other."))
         let jqOK = ["/usr/bin/jq", "/opt/homebrew/bin/jq", "/usr/local/bin/jq"].contains { fm.isExecutableFile(atPath: $0) }
         c.append(Check(title: "Hand-off between agents (pair)", status: SidebarModel.pairTool != nil && jqOK ? .ok : .info,
                        detail: SidebarModel.pairTool == nil ? "pair isn't bundled with this build."

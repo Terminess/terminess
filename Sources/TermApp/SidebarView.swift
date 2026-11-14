@@ -249,9 +249,14 @@ struct SidebarView: View {
         case .tab(let t):
             Button("Show Tab") { model.actions?.focusTab(t) }
             Button("Rename…") { model.actions?.renameTab(t) }
+            if model.tabs.first(where: { $0.id == t })?.command == "claude" {
+                Button("Fork Conversation in New Tab") { model.actions?.forkTab(t, inWorktree: false) }
+                Button("Fork Conversation in a Worktree Tab") { model.actions?.forkTab(t, inWorktree: true) }
+            }
             if let tab = model.tabs.first(where: { $0.id == t }), let branch = tab.branch {
                 Divider()
                 Button("Commit and Merge \(branch)…") { model.actions?.worktreeAction(t, "merge") }
+                Button("Open Pull Request…") { model.actions?.worktreeAction(t, "pr") }
                 Button("Remove Worktree, Keep Branch") { model.actions?.worktreeAction(t, "remove") }
                 Button("Discard Worktree…") { model.actions?.worktreeAction(t, "discard") }
                 Divider()
@@ -293,10 +298,13 @@ struct SidebarView: View {
                         NSWorkspace.shared.open(url)
                     }
                 }
+                Button("Open Issues Board") { NSApp.sendAction(#selector(AppDelegate.showIssueBoard(_:)), to: nil, from: nil) }
             }
         case .session(let s):
             if let item = model.sessions.first(where: { $0.id == s }) {
                 Button("Resume in New Tab") { model.actions?.resume(item) }
+                Button("Fork in New Tab") { model.actions?.fork(item, inWorktree: false) }
+                Button("Fork in a Worktree Tab") { model.actions?.fork(item, inWorktree: true) }
                 Divider()
                 Button("Copy Session ID") {
                     NSPasteboard.general.clearContents()

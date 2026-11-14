@@ -73,6 +73,8 @@ protocol SidebarActions: AnyObject {
     func worktreeAction(_ id: ObjectIdentifier, _ action: String)
     func startIssue(_ issue: IssueItem, agent: String)
     func resume(_ session: SessionItem)
+    func fork(_ session: SessionItem, inWorktree: Bool)
+    func forkTab(_ id: ObjectIdentifier, inWorktree: Bool)
     func startPair(mode: String, target: String)
     func jobAction(_ job: PairJob, _ action: String)
     func showRun(_ run: PairRun)

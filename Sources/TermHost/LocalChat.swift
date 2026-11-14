@@ -24,4 +24,10 @@ public enum LocalChat {
     public static func isChat(command: String?, args: [String]) -> Bool {
         command == "terminessd" && args.dropFirst().first == "chat"
     }
+
+    public static func isAgent(command: String?, args: [String]) -> Bool {
+        command == "terminessd" && args.dropFirst().first == "agent"
+    }
+
+    public static func usesChatFile(_ command: String?) -> Bool { command == "ollama" || command == "harness" }
 }

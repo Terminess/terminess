@@ -82,6 +82,14 @@ enum DebugScript {
             print("pair match: \(PairRuns.run(forCommand: command).map { "\($0.id) \($0.state) \($0.brief)" } ?? "none")")
             fflush(stdout)
         }
+        if let at = env["TERMAPP_PAIR_OPEN_AT"].flatMap(Double.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) {
+                MainActor.assumeIsolated {
+                    if let run = PairRuns.recent().first { PairRunWindows.show(run) }
+                    else { print("pair open: no run yet"); fflush(stdout) }
+                }
+            }
+        }
         if let png = env["TERMAPP_PAIR_SNAPSHOT"], let run = PairRuns.recent().first {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 MainActor.assumeIsolated {
@@ -191,20 +199,42 @@ enum DebugScript {
                 }
             }
         }
+        if let at = env["TERMAPP_AGENTS_AT"].flatMap(Double.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { MainActor.assumeIsolated { AgentsDashboardWindow.show() } }
+        }
+        if let spec = env["TERMAPP_ANSWER_AT"], let colon = spec.firstIndex(of: ":"), let delay = Double(spec[..<colon]) {
+            let answer = String(spec[spec.index(after: colon)...])
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak controller] in
+                MainActor.assumeIsolated {
+                    if let c = controller, let qp = c.panes.first(where: { $0.session.question != nil }) {
+                        print("answer: \(answer) to question \(qp.session.question!.text)"); fflush(stdout)
+                        qp.session.answerQuestion(answer)
+                        c.updateApproval()
+                        return
+                    }
+                    guard let c = controller, let pane = c.panes.first(where: { $0.session.permission != nil }) else {
+                        print("answer: nothing waiting"); fflush(stdout); return
+                    }
+                    print("answer: \(answer) to \(pane.session.permission!.tool) \(pane.session.permission!.summary)"); fflush(stdout)
+                    pane.session.answerPermission(answer)
+                    c.updateApproval()
+                }
+            }
+        }
         if let shots = env["TERMAPP_WINDOW_SHOTS"] {
             for step in shots.split(separator: "|") {
                 guard let colon = step.firstIndex(of: ":"), let delay = Double(step[..<colon]) else { continue }
                 let path = String(step[step.index(after: colon)...])
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     MainActor.assumeIsolated {
-                        guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible }),
+                        guard let window = NSApp.orderedWindows.first(where: { $0.isVisible }) ?? NSApp.keyWindow,
                               let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber),
                                                                   [.boundsIgnoreFraming, .bestResolution]) else {
                             print("window shot failed: \(path)"); fflush(stdout); return
                         }
                         let rep = NSBitmapImageRep(cgImage: image)
                         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
-                        print("window shot: \(path) \(image.width)x\(image.height)"); fflush(stdout)
+                        print("window shot: \(path) \(image.width)x\(image.height) [\(window.title)] modal=\(NSApp.modalWindow?.title ?? "none")"); fflush(stdout)
                     }
                 }
             }

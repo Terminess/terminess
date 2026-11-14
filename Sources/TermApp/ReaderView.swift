@@ -85,13 +85,13 @@ final class ReaderModel: ObservableObject {
         path = nil
         lastMTime = nil
         agentID = agent ?? ""
-        agentName = agent == "claude" ? "Claude Code" : agent == "codex" ? "Codex" : agent == "ollama" ? "Local model" : ""
+        agentName = agent == "claude" ? "Claude Code" : agent == "codex" ? "Codex" : agent == "ollama" ? "Local model" : agent == "harness" ? "Terminess Agent" : ""
         live = false
     }
 
     private func show(agent: String, path: String, live: Bool, force: Bool) {
         agentID = agent
-        agentName = agent == "claude" ? "Claude Code" : agent == "ollama" ? "Local model" : "Codex"
+        agentName = agent == "claude" ? "Claude Code" : agent == "ollama" ? "Local model" : agent == "harness" ? "Terminess Agent" : "Codex"
         self.live = live
         let mtime = Transcript.mtime(path)
         guard force || path != self.path || mtime != lastMTime else { return }
@@ -180,7 +180,10 @@ struct ItemView: View {
     private func short(_ s: String) -> String {
         var out = s
         if let f = folder, !f.isEmpty, f != "/" { out = out.replacingOccurrences(of: f + "/", with: "") }
-        for h in Set([Transcript.home, NSHomeDirectory()]) { out = out.replacingOccurrences(of: h + "/", with: "~/") }
+        for h in Set([Transcript.home, NSHomeDirectory()]) where h.count > 1 {
+            out = out.replacingOccurrences(of: h + "/", with: "~/")
+            out = out.replacingOccurrences(of: #"\#(NSRegularExpression.escapedPattern(for: h))(?![\w.-])"#, with: "~", options: .regularExpression)
+        }
         return out
     }
 
@@ -194,9 +197,11 @@ struct ItemView: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.12)))
+            .modifier(RememberMenu(text: text, folder: folder))
 
         case .assistant(let text):
             MarkdownView(text: text).padding(.horizontal, 12)
+                .modifier(RememberMenu(text: text, folder: folder))
 
         case .thinking(let text):
             DisclosureGroup(isExpanded: $expanded) {

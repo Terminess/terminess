@@ -71,6 +71,7 @@ final class TerminalSession {
             return
         }
         a.resizesAfterReplay = true
+        a.clientKind = "mac"
         let backend = HostBackend(attachment: a)
         process = backend
         var attached = false
@@ -102,6 +103,10 @@ final class TerminalSession {
             }
         }
         a.onOutput = { bytes in MainActor.assumeIsolated { ref.value?.receive(bytes) } }
+        a.onPermission = { p in MainActor.assumeIsolated { ref.value?.permissionChanged(p) } }
+        a.onQuestion = { q in MainActor.assumeIsolated { ref.value?.questionChanged(q) } }
+        a.onNote = { text in MainActor.assumeIsolated { ref.value?.onAgentNote?(text) } }
+        a.onAgentRequest = { id, tool, args in MainActor.assumeIsolated { ref.value?.onAgentRequest?(id, tool, args) } }
         a.onSize = { cols, rows in
             MainActor.assumeIsolated {
                 guard let session = ref.value, session.sizeAfterReplay == nil else { return }
@@ -186,6 +191,28 @@ final class TerminalSession {
     fileprivate func title(_ t: String) { onTitle?(t) }
     fileprivate func bell() { onBell?() }
     fileprivate func notify(_ title: String, _ body: String) { onNotify?(title, body) }
+
+    private(set) var permission: PermissionInfo?
+    var onPermission: ((PermissionInfo?) -> Void)?
+    fileprivate func permissionChanged(_ p: PermissionInfo?) { permission = p; onPermission?(p) }
+
+    private(set) var question: QuestionInfo?
+    var onQuestion: ((QuestionInfo?) -> Void)?
+    var onAgentNote: ((String) -> Void)?
+    var onAgentRequest: ((String, String, String) -> Void)?
+    fileprivate func questionChanged(_ q: QuestionInfo?) { question = q; onQuestion?(q) }
+
+    func answerQuestion(_ text: String) {
+        guard let q = question, let id = process?.hostSessionID else { return }
+        questionChanged(nil)
+        HostAttachment.send(Message(op: "answer", id: id, name: q.id, message: text))
+    }
+
+    func answerPermission(_ answer: String) {
+        guard let p = permission, let id = process?.hostSessionID else { return }
+        permissionChanged(nil)
+        HostAttachment.send(Message(op: "decide", id: id, name: p.id, message: answer))
+    }
 
     fileprivate func mark(_ kind: Character, _ params: [String]) {
         switch kind {

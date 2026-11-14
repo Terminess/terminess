@@ -25,6 +25,11 @@ final class HostSession {
     var title = ""
     var busy = false
     var attention = false
+    var asking = false
+    var permission: PermissionInfo?
+    var permissionWaiter: Connection?
+    var question: QuestionInfo?
+    var questionWaiter: Connection?
     var active = Date().timeIntervalSince1970
     var lastPush = 0.0
     var transcript: (agent: String, path: String, pid: Int32)?
@@ -51,6 +56,7 @@ final class HostSession {
 
     var command: String {
         let c = process.foregroundCommand ?? initialCommand
+        if c == "terminessd" && LocalChat.isAgent(command: c, args: process.foregroundArguments) { return "harness" }
         return c == "terminessd" && LocalChat.isChat(command: c, args: process.foregroundArguments) ? "ollama" : c
     }
 
@@ -68,6 +74,9 @@ final class HostSession {
         i.title = title.isEmpty ? nil : title
         i.busy = busy
         i.attention = attention
+        i.asking = asking
+        i.permission = permission
+        i.question = question
         i.active = active
         return i
     }
@@ -95,6 +104,8 @@ public final class HostServer: @unchecked Sendable {
     private var order: [String] = []
     private var connections: [ObjectIdentifier: Connection] = [:]
     private var bindings: [ObjectIdentifier: String] = [:]
+    private var clientKinds: [ObjectIdentifier: String] = [:]
+    private var toolWaiters: [String: Connection] = [:]
     private var nextNumber = 1
     public let socketPath: String
     public var log: (String) -> Void = { _ in }
@@ -114,6 +125,7 @@ public final class HostServer: @unchecked Sendable {
         t.setEventHandler { [weak self] in
             self?.pushForeground()
             self?.pushTranscripts()
+            self?.runDueSchedules()
         }
         infoTimer = t
         t.resume()
@@ -134,7 +146,48 @@ public final class HostServer: @unchecked Sendable {
         conn.start()
     }
 
+    private func clearQuestion(_ s: HostSession) {
+        s.question = nil
+        s.questionWaiter = nil
+        s.asking = false
+        for (_, c) in s.clients { c.send(Message(op: "question", id: s.id)) }
+    }
+
+    private func answerPermission(_ s: HostSession, _ answer: String) {
+        s.permissionWaiter?.send(Message(op: "decision", message: answer))
+        s.permissionWaiter = nil
+        s.permission = nil
+        s.asking = false
+        for (_, c) in s.clients { c.send(Message(op: "permission", id: s.id)) }
+    }
+
+    static func permissionSummary(_ tool: String, _ input: [String: Any], cwd: String?) -> String {
+        func rel(_ p: String) -> String {
+            if let c = cwd, p.hasPrefix(c + "/") { return String(p.dropFirst(c.count + 1)) }
+            return p
+        }
+        let command = (input["command"] as? String) ?? (input["command"] as? [String])?.joined(separator: " ")
+        let text: String
+        if let command { text = Transcript.shellCommand(command) }
+        else if let path = (input["file_path"] as? String) ?? (input["notebook_path"] as? String) ?? (input["path"] as? String) { text = rel(path) }
+        else if let url = input["url"] as? String { text = url }
+        else if let q = input["query"] as? String { text = q }
+        else if let data = try? JSONSerialization.data(withJSONObject: input, options: [.sortedKeys]) { text = String(decoding: data, as: UTF8.self) }
+        else { text = "" }
+        let line = text.replacingOccurrences(of: "\n", with: " ")
+        return line.count > 300 ? String(line.prefix(299)) + "…" : line
+    }
+
     private func dropConnection(_ key: ObjectIdentifier) {
+        clientKinds[key] = nil
+        for (req, w) in toolWaiters where ObjectIdentifier(w) == key { toolWaiters[req] = nil }
+        for s in sessions.values where s.questionWaiter.map(ObjectIdentifier.init) == key { clearQuestion(s) }
+        for s in sessions.values where s.permissionWaiter.map(ObjectIdentifier.init) == key {
+            s.permissionWaiter = nil
+            s.permission = nil
+            s.asking = false
+            for (_, c) in s.clients { c.send(Message(op: "permission", id: s.id)) }
+        }
         if let id = bindings.removeValue(forKey: key), let s = sessions[id] {
             s.clients[key] = nil
             clientSizes[key] = nil
@@ -157,7 +210,9 @@ public final class HostServer: @unchecked Sendable {
                     resize(s, cols: size.cols, rows: size.rows, nudge: false)
                 }
                 s.process.write(frame.payload)
+                if s.permission != nil { answerPermission(s, "") }
                 s.attention = false
+                s.asking = false
                 s.active = Date().timeIntervalSince1970
             }
         case .response:
@@ -194,12 +249,15 @@ public final class HostServer: @unchecked Sendable {
             if let old = bindings[key] { sessions[old]?.clients[key] = nil }
             bindings[key] = s.id
             s.clients[key] = conn
+            if let kind = m.host { clientKinds[key] = kind }
             conn.send(Message(op: "attached", id: s.id, cols: s.cols, rows: s.rows))
             if !s.replay.isEmpty { conn.send(Wire.Frame(.output, s.replay)) }
             conn.send(Message(op: "replayed", id: s.id))
             let fg = s.foreground
             s.lastForeground = fg
             conn.send(Message(op: "info", id: s.id, foreground: fg))
+            if let p = s.permission { conn.send(Message(op: "permission", id: s.id, permission: p)) }
+            if let q = s.question { conn.send(Message(op: "question", id: s.id, question: q)) }
             if let c = m.cols, let r = m.rows {
                 clientSizes[key] = (c, r, Date().timeIntervalSince1970)
                 owners[s.id] = key
@@ -268,6 +326,69 @@ public final class HostServer: @unchecked Sendable {
             guard let id = m.id, let s = sessions[id], let raw = m.message,
                   let event = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] else { return }
             if m.name == "codex" { codexHook(event, in: s) } else { hook(event, in: s) }
+        case "permission":
+            guard let id = m.id, let s = sessions[id], let raw = m.message,
+                  let e = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
+                  let tool = e["tool_name"] as? String else {
+                conn.send(Message(op: "decision", message: "")); return
+            }
+            guard !s.clients.isEmpty || !push.devices.isEmpty else { conn.send(Message(op: "decision", message: "")); return }
+            if s.permission != nil { answerPermission(s, "") }
+            let input = e["tool_input"] as? [String: Any] ?? [:]
+            let req = PermissionInfo(id: String(UUID().uuidString.prefix(8)).lowercased(), tool: tool,
+                                     summary: Self.permissionSummary(tool, input, cwd: e["cwd"] as? String),
+                                     canAlways: !((e["permission_suggestions"] as? [Any]) ?? []).isEmpty)
+            s.permission = req
+            s.permissionWaiter = conn
+            for (_, c) in s.clients { c.send(Message(op: "permission", id: s.id, permission: req)) }
+            raiseAttention(s, .approval)
+        case "agent-tool":
+            func done(_ text: String, failed: Bool = false) { conn.send(Message(op: "agent-result", code: failed ? 1 : 0, message: text)) }
+            guard let id = m.id, let s = sessions[id], let tool = m.name else { done("No such Terminess session.", failed: true); return }
+            let args = (m.message.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]) ?? [:]
+            switch tool {
+            case "notify":
+                let text = String(((args["message"] as? String) ?? "").prefix(500))
+                guard !text.isEmpty else { done("Give a message.", failed: true); return }
+                for (k, c) in s.clients where clientKinds[k] == "mac" { c.send(Message(op: "agent-note", id: s.id, message: text)) }
+                raiseAttention(s, .needsYou)
+                done("Sent to the person's Mac and phone.")
+            case "ask_user":
+                let text = String(((args["question"] as? String) ?? "").prefix(1000))
+                guard !text.isEmpty else { done("Give a question.", failed: true); return }
+                let choices = ((args["choices"] as? [String]) ?? []).prefix(5).map { String($0.prefix(80)) }
+                if let w = s.questionWaiter { w.send(Message(op: "agent-result", code: 1, message: "Replaced by a newer question.")) }
+                let q = QuestionInfo(id: String(UUID().uuidString.prefix(8)).lowercased(), text: text, choices: Array(choices))
+                s.question = q
+                s.questionWaiter = conn
+                for (_, c) in s.clients { c.send(Message(op: "question", id: s.id, question: q)) }
+                raiseAttention(s, .needsYou)
+            case "open_tab", "start_worktree":
+                guard let mac = s.clients.first(where: { clientKinds[$0.key] == "mac" })?.value else {
+                    done("That needs the Terminess app on the Mac to be showing this session.", failed: true); return
+                }
+                let req = String(UUID().uuidString.prefix(8)).lowercased()
+                toolWaiters[req] = conn
+                mac.send(Message(op: "agent-request", id: req, name: tool, message: m.message))
+            default:
+                done("Unknown tool \(tool).", failed: true)
+            }
+        case "agent-reply":
+            if let req = m.id, let w = toolWaiters.removeValue(forKey: req) {
+                w.send(Message(op: "agent-result", code: m.code ?? 0, message: m.message ?? ""))
+            }
+        case "answer":
+            guard let id = m.id, let s = sessions[id], let q = s.question, q.id == m.name else { conn.send(Message(op: "ok")); return }
+            s.questionWaiter?.send(Message(op: "agent-result", code: 0, message: "The person answered: " + (m.message ?? "")))
+            clearQuestion(s)
+            conn.send(Message(op: "ok"))
+        case "decide":
+            guard let id = m.id, let s = sessions[id], let p = s.permission, p.id == m.name,
+                  let answer = m.message, ["allow", "always", "deny"].contains(answer) else {
+                conn.send(Message(op: "ok")); return
+            }
+            answerPermission(s, answer)
+            conn.send(Message(op: "ok"))
         case "kill":
             guard let id = m.id, let s = sessions[id] ?? sessions.values.first(where: { $0.name == m.id }) else {
                 conn.send(Message(op: "error", message: "no session \(m.id ?? "")"))
@@ -278,6 +399,29 @@ public final class HostServer: @unchecked Sendable {
         default:
             conn.send(Message(op: "error", message: "unknown op \(m.op)"))
         }
+    }
+
+    private var scheduleTick = 0
+
+    private func runDueSchedules() {
+        scheduleTick += 1
+        guard scheduleTick % 60 == 0 else { return }
+        var list = AgentSchedules.load()
+        guard !list.isEmpty else { return }
+        let now = Date()
+        var changed = false
+        let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
+        for i in list.indices where list[i].next <= now.timeIntervalSince1970 {
+            let s = list[i]
+            let title = "Scheduled: " + String(s.task.prefix(40))
+            _ = try? createSession(Message(op: "create", name: title, cwd: s.cwd, command: exe,
+                                           args: ["agent", "--once", "--model", s.model, "--auto", s.auto, s.task]))
+            list[i].lastRun = now.timeIntervalSince1970
+            list[i].next = AgentSchedules.next(after: now, every: s.everyMinutes, at: s.at).timeIntervalSince1970
+            changed = true
+            log("started scheduled run \(s.id)")
+        }
+        if changed { AgentSchedules.save(list) }
     }
 
     private func createSession(_ m: Message) throws -> HostSession {
@@ -386,17 +530,20 @@ public final class HostServer: @unchecked Sendable {
         let pid = s.process.foregroundPID
         s.hookAgent = "claude"
         if let path = e["transcript_path"] as? String, Self.trustedTranscript(path) {
-            s.transcript = (s.command == "ollama" ? "ollama" : "claude", path, pid)
+            s.transcript = (LocalChat.usesChatFile(s.command) ? s.command : "claude", path, pid)
         }
         switch e["hook_event_name"] as? String {
         case "SessionStart":
             s.hookPid = pid
             s.busy = false
         case "UserPromptSubmit":
+            if s.permission != nil { answerPermission(s, "") }
             s.hookPid = pid
             s.busy = true
             s.attention = false
+            s.asking = false
         case "Stop":
+            if s.permission != nil { answerPermission(s, "") }
             s.hookPid = pid
             s.busy = false
             raiseAttention(s, .finished)
@@ -420,6 +567,7 @@ public final class HostServer: @unchecked Sendable {
 
     private func raiseAttention(_ s: HostSession, _ reason: PushRegistry.Reason) {
         s.attention = true
+        s.asking = reason == .needsYou || reason == .approval
         let now = Date().timeIntervalSince1970
         guard now - s.lastPush > 20 else { return }
         s.lastPush = now
@@ -428,9 +576,9 @@ public final class HostServer: @unchecked Sendable {
 
     private func transcriptPath(_ s: HostSession) -> (agent: String, path: String)? {
         let fg = s.foreground
-        if fg.command == "ollama", let path = LocalChat.latest(for: s.id) {
-            s.transcript = ("ollama", path, fg.pid)
-            return ("ollama", path)
+        if LocalChat.usesChatFile(fg.command), let path = LocalChat.latest(for: s.id) {
+            s.transcript = (fg.command, path, fg.pid)
+            return (fg.command, path)
         }
         if fg.command == "claude" || fg.command == "codex", !fg.cwd.isEmpty {
             if s.hooked, let t = s.transcript, t.pid == fg.pid { return (t.agent, t.path) }

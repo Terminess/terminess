@@ -15,8 +15,12 @@ enum AgentEvents {
         case .claude:
             switch ClaudeHooks.status(executable: exe) { case .off: return .off; case .on: return .on; case .outdated: return .outdated }
         case .codex:
+            let hooks = CodexHooks.status(executable: exe)
             switch CodexNotify.status(executable: exe) {
-            case .off: return .off; case .on: return .on; case .outdated: return .outdated; case .taken: return .taken
+            case .off: return hooks == .off ? .off : .outdated
+            case .on: return hooks == .on ? .on : .outdated
+            case .outdated: return .outdated
+            case .taken: return .taken
             }
         }
     }
@@ -51,18 +55,21 @@ enum AgentEvents {
             alert.messageText = "Let Claude Code tell Terminess what it's doing?"
             alert.informativeText = """
                 Terminess then knows exactly when Claude is working, has finished, or is waiting for you, so Chat, the busy \
-                indicators and iPhone notifications are accurate instead of estimated.
+                indicators and iPhone notifications are accurate instead of estimated, and you can approve or deny what \
+                Claude asks permission for from Terminess or your iPhone.
 
                 This adds a small entry to Claude Code's settings (~/.claude/settings.json) that only acts inside Terminess. \
                 Your other settings stay as they are, and you can turn it off in Settings, Windows and Tabs.
                 """
         } else {
-            alert.messageText = "Let Codex tell Terminess when it finishes?"
+            alert.messageText = "Let Codex tell Terminess when it finishes or needs approval?"
             alert.informativeText = """
-                Terminess then knows the moment a Codex turn ends, and your iPhone notification shows what Codex replied.
+                Terminess then knows the moment a Codex turn ends, and you can approve or deny Codex's commands from \
+                Terminess or your iPhone.
 
-                This sets notify in Codex's settings (~/.codex/config.toml) to a Terminess command that only acts inside \
-                Terminess. Your other settings stay as they are, and you can turn it off in Settings, Windows and Tabs.
+                This sets notify in Codex's settings (~/.codex/config.toml) and adds a hook (~/.codex/hooks.json), both \
+                Terminess commands that only act inside Terminess. Codex asks you once to trust the hook: type /hooks in \
+                Codex. Your other settings stay as they are, and you can turn it off in Settings, Windows and Tabs.
                 """
         }
         alert.addButton(withTitle: "Turn On")
@@ -78,8 +85,12 @@ enum AgentEvents {
         switch (a, on) {
         case (.claude, true): try ClaudeHooks.install(executable: exe)
         case (.claude, false): try ClaudeHooks.uninstall()
-        case (.codex, true): try CodexNotify.install(executable: exe)
-        case (.codex, false): try CodexNotify.uninstall()
+        case (.codex, true):
+            try CodexNotify.install(executable: exe)
+            try CodexHooks.install(executable: exe)
+        case (.codex, false):
+            try CodexNotify.uninstall()
+            try CodexHooks.uninstall()
         }
     }
 
@@ -98,7 +109,7 @@ struct AgentEventsToggle: View {
 
     var body: some View {
         Toggle(agent == .claude ? "Let Claude Code report when it's working, finished or needs you"
-                                : "Let Codex report when it finishes" + (taken ? " (notify is set to another program)" : ""),
+                                : "Let Codex report when it finishes or needs approval" + (taken ? " (notify is set to another program)" : ""),
                isOn: Binding(get: { on }, set: { value in
                    do { try AgentEvents.set(agent, value); on = value } catch { AgentEvents.report(error) }
                }))

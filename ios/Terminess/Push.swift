@@ -66,8 +66,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         signal(SIGPIPE, SIG_IGN)
+        #if DEBUG
+        DispatchQueue.main.async { MainActor.assumeIsolated { DemoScript.run() } }
+        #endif
         let center = UNUserNotificationCenter.current()
         center.delegate = self
+        let allow = UNNotificationAction(identifier: "ALLOW", title: "Allow", options: [.authenticationRequired, .foreground])
+        let deny = UNNotificationAction(identifier: "DENY", title: "Deny", options: [.authenticationRequired, .destructive, .foreground])
+        center.setNotificationCategories([UNNotificationCategory(identifier: "APPROVAL", actions: [allow, deny], intentIdentifiers: [])])
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["TERMINESS_DEMO_ADD"] != nil { return true }
+        #endif
         center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
             guard granted else { return }
             DispatchQueue.main.async { application.registerForRemoteNotifications() }
@@ -100,9 +109,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
         let host = (info["host"] as? String).flatMap(UUID.init(uuidString:))
         let session = info["session"] as? String
+        let action = response.actionIdentifier
         Task { @MainActor in
             if let host, let session {
-                AppLock.shared.whenUnlocked { AppState.shared.open(SessionTarget(host: host, session: session, title: "Session")) }
+                AppLock.shared.whenUnlocked {
+                    AppState.shared.open(SessionTarget(host: host, session: session, title: "Session"))
+                    guard action == "ALLOW" || action == "DENY" else { return }
+                    Task {
+                        let c = AppState.shared.connection(host)
+                        await c.connect()
+                        if let p = c.sessions.first(where: { $0.id == session })?.permission {
+                            await c.decide(session: session, requestID: p.id, answer: action == "ALLOW" ? "allow" : "deny")
+                        }
+                    }
+                }
             }
             completionHandler()
         }

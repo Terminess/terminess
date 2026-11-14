@@ -47,6 +47,18 @@ import Testing
         #expect(survey.unknown == ["record:event_msg/future_event": 1, "record:future_record": 1])
     }
 
+    @Test func codexItems() throws {
+        let (items, survey) = Transcript.parse(data: try fixture("codex-items"), agent: "codex")
+        #expect(items.map(\.kind.line) == [
+            "user: Add paging",
+            "assistant: Checking the store.",
+            "tool: Shell | ls | store.py",
+            "tool: Edit | /tmp/demo/store.py | Success",
+            "assistant: Paging added.",
+        ])
+        #expect(survey.unknown == ["item:FutureItem": 1])
+    }
+
     @Test func localModelChat() throws {
         let (items, survey) = Transcript.parse(data: try fixture("localchat"), agent: "ollama")
         #expect(items.map(\.kind.line) == [

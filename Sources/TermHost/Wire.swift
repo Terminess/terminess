@@ -65,6 +65,23 @@ public enum Wire {
     }
 }
 
+public struct PermissionInfo: Codable, Equatable, Sendable {
+    public var id: String
+    public var tool: String
+    public var summary: String
+    public var canAlways: Bool
+    public init(id: String, tool: String, summary: String, canAlways: Bool) {
+        self.id = id; self.tool = tool; self.summary = summary; self.canAlways = canAlways
+    }
+}
+
+public struct QuestionInfo: Codable, Equatable, Sendable {
+    public var id: String
+    public var text: String
+    public var choices: [String]
+    public init(id: String, text: String, choices: [String]) { self.id = id; self.text = text; self.choices = choices }
+}
+
 public struct SessionInfo: Codable, Equatable {
     public var id: String
     public var name: String
@@ -76,6 +93,9 @@ public struct SessionInfo: Codable, Equatable {
     public var busy: Bool?
     public var attention: Bool?
     public var active: Double?
+    public var asking: Bool?
+    public var permission: PermissionInfo?
+    public var question: QuestionInfo?
 
     public init(id: String, name: String, command: String, cwd: String, created: Double, clients: Int) {
         self.id = id; self.name = name; self.command = command; self.cwd = cwd; self.created = created; self.clients = clients
@@ -134,6 +154,8 @@ public struct Message: Codable, Equatable {
     public var token: String?
     public var credential: String?
     public var key: String?
+    public var permission: PermissionInfo?
+    public var question: QuestionInfo?
     public var history: [HistoryItem]?
 
     public init(op: String, version: Int? = nil, host: String? = nil, id: String? = nil, name: String? = nil,
@@ -141,13 +163,14 @@ public struct Message: Codable, Equatable {
                 code: Int? = nil, message: String? = nil, sessions: [SessionInfo]? = nil,
                 env: [String: String]? = nil, foreground: ForegroundInfo? = nil, signal: String? = nil,
                 items: [TranscriptItem]? = nil, projects: [ProjectInfo]? = nil, data: String? = nil, token: String? = nil,
-                history: [HistoryItem]? = nil, credential: String? = nil, key: String? = nil) {
+                history: [HistoryItem]? = nil, credential: String? = nil, key: String? = nil,
+                permission: PermissionInfo? = nil, question: QuestionInfo? = nil) {
         self.op = op; self.version = version; self.host = host; self.id = id; self.name = name
         self.cwd = cwd; self.command = command; self.args = args; self.cols = cols; self.rows = rows
         self.code = code; self.message = message; self.sessions = sessions
         self.env = env; self.foreground = foreground; self.signal = signal
         self.items = items; self.projects = projects; self.data = data; self.token = token
-        self.history = history; self.credential = credential; self.key = key
+        self.history = history; self.credential = credential; self.key = key; self.permission = permission; self.question = question
     }
 }
 

@@ -44,8 +44,8 @@ final class Pane {
 
     func readerSource() -> ReaderSource {
         guard let process = session.process else { return .none }
-        if process.foregroundCommand == "ollama", let id = process.hostSessionID, let p = LocalChat.latest(for: id) {
-            return .file(agent: "ollama", path: p, live: true)
+        if LocalChat.usesChatFile(process.foregroundCommand), let id = process.hostSessionID, let p = LocalChat.latest(for: id) {
+            return .file(agent: process.foregroundCommand ?? "ollama", path: p, live: true)
         }
         if let agent = Agent.detect(process.foregroundCommand), agent.id == "claude" || agent.id == "codex",
            let dir = currentDirectory {
@@ -120,6 +120,13 @@ final class ContentContainer: NSView {
             needsLayout = true
         }
     }
+    var approval: NSView? {
+        didSet {
+            oldValue?.removeFromSuperview()
+            if let approval { addSubview(approval) }
+            needsLayout = true
+        }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -150,6 +157,11 @@ final class ContentContainer: NSView {
             let sh = strip.intrinsicContentSize.height
             strip.frame = NSRect(x: 0, y: h, width: bounds.width, height: sh)
             h += sh
+        }
+        if let approval {
+            let ah = approval.fittingSize.height
+            approval.frame = NSRect(x: 0, y: h, width: bounds.width, height: ah)
+            h += ah
         }
         split.frame = NSRect(x: 0, y: h, width: bounds.width, height: bounds.height - h)
     }
@@ -280,7 +292,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             setComposer(visible: true)
             container.showStrip = true
         }
-        updateInputHiding()
+        updateInputHiding(report: true)
         container.needsLayout = true
         if m == .terminal { focus() }
     }
@@ -334,6 +346,26 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         }
     }
 
+    func updateApproval() {
+        if let pane = ([focused] + panes).compactMap({ $0 }).first(where: { $0.session.permission == nil && $0.session.question != nil }),
+           !panes.contains(where: { $0.session.permission != nil }), let q = pane.session.question {
+            let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
+            container.approval = NSHostingView(rootView: QuestionBar(question: q, agent: agent) { [weak self, weak pane] text in
+                pane?.session.answerQuestion(text)
+                self?.updateApproval()
+            })
+            return
+        }
+        let pane = ([focused] + panes).compactMap { $0 }.first { $0.session.permission != nil }
+        guard let pane, let request = pane.session.permission else { container.approval = nil; return }
+        let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
+        let bar = NSHostingView(rootView: ApprovalBar(request: request, agent: agent) { [weak self, weak pane] answer in
+            pane?.session.answerPermission(answer)
+            self?.updateApproval()
+        })
+        container.approval = bar
+    }
+
     var readerVisible: Bool { readerHost != nil }
     var composerVisible: Bool { container.composer != nil }
 
@@ -361,7 +393,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         reader.visible = visible
     }
 
-    func updateInputHiding() {
+    func updateInputHiding(report: Bool = false) {
         let on = mode != .terminal && Settings.shared.composerHidesAgentInput
         for p in panes {
             let agent = Agent.detect(p.session.process?.foregroundCommand)?.id
@@ -373,7 +405,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
                 self?.agentScreenChanged(inputVisible: visible, status: status)
             } : nil
         }
-        focused?.view.updateAgentScreen()
+        focused?.view.updateAgentScreen(force: report)
     }
 
     func setComposer(visible: Bool) {
@@ -441,6 +473,32 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         session.onBell = { [weak self, weak pane] in
             guard let self, let pane else { return }
             AttentionCenter.shared.alert(controller: self, pane: pane, title: self.displayTitle, body: "Bell")
+        }
+        session.onPermission = { [weak self, weak pane] request in
+            guard let self, let pane else { return }
+            self.updateApproval()
+            if let request, self.window?.isKeyWindow != true || NSApp.isActive == false {
+                let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
+                AttentionCenter.shared.alert(controller: self, pane: pane, title: "\(agent) needs your approval",
+                                             body: request.summary.isEmpty ? request.tool : request.summary, always: true)
+            }
+        }
+        session.onQuestion = { [weak self, weak pane] q in
+            guard let self, let pane else { return }
+            self.updateApproval()
+            if let q, self.window?.isKeyWindow != true || NSApp.isActive == false {
+                let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
+                AttentionCenter.shared.alert(controller: self, pane: pane, title: "\(agent) asks", body: q.text, always: true)
+            }
+        }
+        session.onAgentNote = { [weak self, weak pane] text in
+            guard let self, let pane else { return }
+            let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
+            AttentionCenter.shared.alert(controller: self, pane: pane, title: agent, body: text, always: true)
+        }
+        session.onAgentRequest = { [weak self] id, tool, args in
+            guard let self, let app = NSApp.delegate as? AppDelegate else { return }
+            app.agentRequest(id: id, tool: tool, args: args, from: self)
         }
         session.onNotify = { [weak self, weak pane] title, body in
             guard let self, let pane else { return }

@@ -235,12 +235,13 @@ final class PushRegistry {
     }
 
     enum Reason {
-        case finished, needsYou, failed
+        case finished, needsYou, failed, approval
         var text: String {
             switch self {
             case .finished: return "A session finished"
             case .needsYou: return "A session needs you"
             case .failed: return "A session stopped on an error"
+            case .approval: return "A session needs your approval"
             }
         }
     }

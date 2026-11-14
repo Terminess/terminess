@@ -51,7 +51,8 @@ LIMIT_OVERALL = 1200
 MAX_TRACKED = 50_000
 MAX_CONCURRENT = 32
 READ_TIMEOUT = 10
-BODIES = {"A session finished", "A session needs you", "A session stopped on an error"}
+BODIES = {"A session finished", "A session needs you", "A session stopped on an error", "A session needs your approval"}
+APPROVAL_BODY = "A session needs your approval"
 DEFAULT_BODY = "A session needs you"
 
 SECRET = os.environ.get("RELAY_SECRET", "").encode()
@@ -289,7 +290,8 @@ def send(req: dict, sender: str = "") -> tuple[int, str]:
     title = "Terminess"
     body = body if body in BODIES else DEFAULT_BODY
     payload = {
-        "aps": {"alert": {"title": title, "body": body}, "sound": "default", "thread-id": session or "terminess"},
+        "aps": {"alert": {"title": title, "body": body}, "sound": "default", "thread-id": session or "terminess",
+                **({"category": "APPROVAL"} if body == APPROVAL_BODY else {})},
         "session": session,
         "host": host,
     }

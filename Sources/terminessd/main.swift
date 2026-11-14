@@ -372,6 +372,56 @@ case "pair":
 case "chat":
     chat(rest)
 
+case "schedule":
+    var list = AgentSchedules.load()
+    switch rest.first {
+    case "add":
+        var every = "1d", at: String?, cwd = FileManager.default.currentDirectoryPath, model = "claude-opus-5-5", auto = "edits"
+        var task: [String] = []
+        var j = 1, afterDashes = false
+        let a = Array(rest)
+        while j < a.count {
+            if afterDashes { task.append(a[j]) }
+            else {
+                switch a[j] {
+                case "--every": j += 1; if j < a.count { every = a[j] }
+                case "--at": j += 1; if j < a.count { at = a[j] }
+                case "--cwd": j += 1; if j < a.count { cwd = (a[j] as NSString).expandingTildeInPath }
+                case "--model": j += 1; if j < a.count { model = a[j] }
+                case "--auto": j += 1; if j < a.count { auto = a[j] }
+                case "--": afterDashes = true
+                default: task.append(a[j])
+                }
+            }
+            j += 1
+        }
+        guard let minutes = AgentSchedules.minutes(every), !task.isEmpty, ["edits", "all"].contains(auto) else {
+            fail("usage: terminessd schedule add [--every 30m|2h|1d|1w] [--at HH:MM] [--cwd DIR] [--model M] [--auto edits|all] -- TASK")
+        }
+        let id = String(UUID().uuidString.prefix(6)).lowercased()
+        let next = AgentSchedules.next(after: Date(), every: minutes, at: at)
+        list.append(AgentSchedule(id: id, task: task.joined(separator: " "), cwd: cwd, model: model, auto: auto,
+                                  everyMinutes: minutes, at: at, next: next.timeIntervalSince1970))
+        AgentSchedules.save(list)
+        print("Scheduled \(id): every \(every)\(at.map { " at \($0)" } ?? ""), next \(next.formatted(date: .abbreviated, time: .shortened)).")
+    case "remove":
+        guard rest.count > 1 else { fail("usage: terminessd schedule remove ID") }
+        let before = list.count
+        list.removeAll { $0.id == rest[rest.index(after: rest.startIndex)] }
+        AgentSchedules.save(list)
+        print(list.count < before ? "Removed." : "No schedule with that id.")
+    case "list", nil:
+        if list.isEmpty { print("No schedules. Add one with: terminessd schedule add --every 1d --at 09:00 -- \"task\"") }
+        for s in list {
+            print("\(s.id)  every \(s.everyMinutes)m\(s.at.map { " at \($0)" } ?? "")  next \(Date(timeIntervalSince1970: s.next).formatted(date: .abbreviated, time: .shortened))  \(s.model)  \(s.cwd)\n        \(s.task)")
+        }
+    default:
+        fail("usage: terminessd schedule add|list|remove")
+    }
+
+case "agent":
+    agent(rest)
+
 case "models":
     let reply = request(Message(op: "models"))
     if reply.code != 1 { print("Ollama isn't running here.") }
@@ -383,12 +433,44 @@ case "hook":
     guard let session = env["TERMINESS_SESSION"], !session.isEmpty,
           let fd = UnixSocket.connect(HostPaths.socket) else { exit(0) }
     let agent = rest.first ?? "claude"
-    let input = agent == "codex" ? (rest.count > 1 ? rest.last! : "{}")
+    let input = rest.count > 1 ? rest.last!
         : String(decoding: FileHandle.standardInput.readDataToEndOfFile().prefix(256 * 1024), as: UTF8.self)
-    let m = Message(op: "hook", id: session, name: agent, message: input)
-    _ = Connection.writeAll(fd, Wire.Frame.control(m).encoded())
+    let event = (try? JSONSerialization.jsonObject(with: Data(input.utf8))) as? [String: Any] ?? [:]
+    guard event["hook_event_name"] as? String == "PermissionRequest" else {
+        let m = Message(op: "hook", id: session, name: agent, message: input)
+        _ = Connection.writeAll(fd, Wire.Frame.control(m).encoded())
+        close(fd)
+        exit(0)
+    }
+    _ = Connection.writeAll(fd, Wire.Frame.control(Message(op: "permission", id: session, name: agent, message: input)).encoded())
+    var decoder = Wire.Decoder()
+    var buf = [UInt8](repeating: 0, count: 16384)
+    let deadline = Date().addingTimeInterval(570)
+    var answer = ""
+    wait: while Date() < deadline {
+        var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        guard poll(&p, 1, 1000) >= 0 else { break }
+        guard p.revents != 0 else { continue }
+        let n = read(fd, &buf, buf.count)
+        guard n > 0, let frames = try? decoder.feed(Array(buf[0..<n])) else { break }
+        for f in frames where f.message?.op == "decision" { answer = f.message?.message ?? ""; break wait }
+    }
     close(fd)
+    var decision: [String: Any]
+    switch answer {
+    case "allow": decision = ["behavior": "allow"]
+    case "always":
+        decision = ["behavior": "allow"]
+        if let rules = event["permission_suggestions"] as? [Any], !rules.isEmpty { decision["updatedPermissions"] = rules }
+    case "deny": decision = ["behavior": "deny", "message": "The user declined this in Terminess."]
+    default: exit(0)
+    }
+    let out: [String: Any] = ["hookSpecificOutput": ["hookEventName": "PermissionRequest", "decision": decision]]
+    if let data = try? JSONSerialization.data(withJSONObject: out) { FileHandle.standardOutput.write(data) }
     exit(0)
+
+case "mcp":
+    MCPServer.run()
 
 case "hooks":
     let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
@@ -407,10 +489,12 @@ case "hooks":
         do {
             try CodexNotify.install(executable: exe)
             print("Codex notify set in \(CodexNotify.configPath).")
+            try CodexHooks.install(executable: exe)
+            print("Codex approval hook added to \(CodexHooks.hooksPath); trust it once with /hooks in Codex.")
         } catch { print("Codex: \(error)") }
-        print("Both only act inside Terminess sessions.")
+        print("They only act inside Terminess sessions.")
     case "uninstall":
-        do { try ClaudeHooks.uninstall(); try CodexNotify.uninstall() } catch { fail("\(error)") }
+        do { try ClaudeHooks.uninstall(); try CodexNotify.uninstall(); try CodexHooks.uninstall() } catch { fail("\(error)") }
         print("Removed from \(ClaudeHooks.settingsPath) and \(CodexNotify.configPath).")
     case "status", nil:
         let c = ClaudeHooks.status(executable: exe), x = CodexNotify.status(executable: exe)
@@ -437,6 +521,9 @@ case "-h", "--help", "help":
       terminessd chat MODEL [message]  chat with a local model (Ollama), saved for Chat view
       terminessd hooks install         let Claude Code and Codex tell Terminess what they're doing
       terminessd hooks uninstall|status
+      terminessd agent [--model M] [task]  harness mode: Terminess runs the agent on your API key or a local model
+      terminessd schedule add|list|remove  agent runs on a schedule (your API key)
+      terminessd mcp                   an MCP server giving agents Terminess tools (tabs, worktrees, notify, ask)
     """)
 
 default:

@@ -155,7 +155,7 @@ public enum Transcript {
             if agent == "claude" {
                 if let v = obj["version"] as? String { survey.version = v }
                 parseClaude(obj, items: &items, toolIndex: &toolIndex, survey: &survey)
-            } else if agent == "ollama" {
+            } else if agent == "ollama" || agent == "harness" {
                 parseLocalChat(obj, items: &items, partial: &partial, survey: &survey)
             } else if agent == "codex-exec" {
                 parseCodexExec(obj, items: &items, toolIndex: &toolIndex, survey: &survey)
@@ -314,6 +314,9 @@ public enum Transcript {
             if let s = obj["text"] as? String, !s.isEmpty { add(.user(s)) }
         case "assistant", "partial":
             reply()
+        case "tool":
+            let summary = obj["summary"] as? String ?? ""
+            add(.tool(name: obj["name"] as? String ?? "tool", summary: summary, detail: summary, result: obj["result"] as? String))
         case let other:
             survey.unknown["record:" + (other ?? "?"), default: 0] += 1
         }
@@ -384,7 +387,7 @@ public enum Transcript {
         }
     }
 
-    static func shellCommand(_ s: String) -> String {
+    public static func shellCommand(_ s: String) -> String {
         guard let m = s.firstMatch(of: #/^\S*/(?:ba|z)?sh -lc (.*)$/#.dotMatchesNewlines()) else { return s }
         var inner = String(m.1)
         if inner.count >= 2, let q = inner.first, q == "'" || q == "\"", inner.last == q {
@@ -402,13 +405,41 @@ public enum Transcript {
         let ptype = p["type"] as? String
         let kind = (type == "event_msg" || type == "response_item") ? type + "/" + (ptype ?? "?") : type
         if !codexRecords.contains(kind) { survey.unknown["record:" + kind, default: 0] += 1 }
+        func recent(_ k: TranscriptItem.Kind) -> Bool { items.suffix(4).contains { $0.kind == k } }
         if type == "event_msg" && ptype == "user_message", let s = p["message"] as? String, !isNoise(s) {
-            add(.user(s))
+            if !recent(.user(s)) { add(.user(s)) }
         } else if type == "event_msg" && ptype == "agent_message", let s = p["message"] as? String, !s.isEmpty {
-            add(.assistant(s))
+            if !recent(.assistant(s)) { add(.assistant(s)) }
+        } else if type == "event_msg" && ptype == "item_completed", let it = p["item"] as? [String: Any] {
+            let itemType = it["type"] as? String ?? "?"
+            let words = ((it["content"] as? [[String: Any]]) ?? []).compactMap { $0["text"] as? String }.joined()
+            switch itemType {
+            case "UserMessage":
+                if !isNoise(words), !recent(.user(words)) { add(.user(words)) }
+            case "AgentMessage":
+                let s = words.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !s.isEmpty, !recent(.assistant(s)) { add(.assistant(s)) }
+            case "CommandExecution":
+                let raw = (it["command"] as? [String])?.joined(separator: " ") ?? (it["command"] as? String) ?? ""
+                let cmd = shellCommand((it["command"] as? [String]).map { $0.count == 3 ? "\($0[0]) \($0[1]) \($0[2])" : raw } ?? raw)
+                var out = it["aggregated_output"] as? String ?? ""
+                if out.count > 4_000 { out = String(out.prefix(4_000)) + "\n…" }
+                add(.tool(name: "Shell", summary: cmd, detail: cmd, result: out))
+            case "FileChange":
+                let changes = it["changes"] as? [String: Any] ?? [:]
+                let paths = changes.keys.sorted()
+                let diffs = paths.compactMap { path in ((changes[path] as? [String: Any])?["unified_diff"] as? String).map { "\(path)\n\($0)" } }
+                add(.tool(name: "Edit", summary: paths.joined(separator: ", "), detail: diffs.joined(separator: "\n\n"),
+                          result: it["stdout"] as? String ?? ""))
+            case "Reasoning", "Plan", "TodoList":
+                break
+            default:
+                survey.unknown["item:" + itemType, default: 0] += 1
+            }
         } else if type == "response_item" && (ptype == "function_call" || ptype == "custom_tool_call") {
             let name = p["name"] as? String ?? "tool"
             let rawArgs = (p["arguments"] as? String) ?? (p["input"] as? String) ?? ""
+            if name == "exec", rawArgs.hasPrefix("text(await tools.") || rawArgs.contains("await tools.") { return }
             let args = (try? JSONSerialization.jsonObject(with: Data(rawArgs.utf8))) as? [String: Any] ?? [:]
             var summary = toolSummary(name, args)
             if summary.isEmpty, let cmd = args["cmd"] as? [String] { summary = cmd.joined(separator: " ") }

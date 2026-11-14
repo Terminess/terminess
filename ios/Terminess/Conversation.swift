@@ -88,6 +88,10 @@ struct ConversationView: View {
     private var connection: HostConnection { app.connection(target.host) }
     private var host: SavedHost? { HostStore.shared.host(target.host) }
     private var agentName: String { SessionText.agentName(model.command) ?? "" }
+    private var asking: Bool { connection.sessions.first(where: { $0.id == model.sessionID })?.asking == true }
+    private var question: QuestionInfo? { connection.sessions.first(where: { $0.id == model.sessionID })?.question }
+    private var permission: PermissionInfo? { connection.sessions.first(where: { $0.id == model.sessionID })?.permission }
+    private var sessionFolder: String? { target.cwd ?? connection.sessions.first(where: { $0.id == model.sessionID })?.cwd }
 
     private var title: String {
         if model.isAgent { return model.topic.isEmpty || model.topic == agentName ? agentName : model.topic }
@@ -133,7 +137,7 @@ struct ConversationView: View {
             if let id { Task { await chat.follow(session: id, on: connection) } }
         }
         .onAppear {
-            if mode == nil, let input = target.input, input.hasPrefix("claude") || input.hasPrefix("codex") || input.contains(" chat ") { mode = .chat }
+            if mode == nil, let input = target.input, input.hasPrefix("claude") || input.hasPrefix("codex") || input.contains(" chat ") || input.contains(" agent ") { mode = .chat }
         }
         .onChange(of: model.command) { _, _ in
             guard !modeChosen, !model.command.isEmpty else { return }
@@ -156,6 +160,11 @@ struct ConversationView: View {
             photoItem = nil
             Task { await sendPhoto(item) }
         }
+        #if DEBUG
+        .onReceive(NotificationCenter.default.publisher(for: DemoScript.modeChange)) { n in
+            if let m = n.object as? ViewMode { mode = m; modeChosen = true }
+        }
+        #endif
         .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item]) { result in
             if case .success(let url) = result { Task { await sendFile(url) } }
@@ -173,12 +182,40 @@ struct ConversationView: View {
         case .terminal:
             TerminalScreen(model: model)
         case .chat:
-            ChatView(chat: chat, agentName: agentName, working: model.busy)
+            ChatView(chat: chat, agentName: agentName, working: model.busy && !asking, folder: sessionFolder)
+                .safeAreaInset(edge: .bottom) {
+                    if let q = question {
+                        QuestionCard(question: q, agent: agentName.isEmpty ? "The agent" : agentName) { text in
+                            guard let id = model.sessionID else { return }
+                            Task { await connection.answer(session: id, questionID: q.id, text: text) }
+                        }
+                    } else if let p = permission {
+                        ApprovalCard(request: p, agent: agentName.isEmpty ? "The agent" : agentName) { answer in
+                            guard let id = model.sessionID else { return }
+                            Task { await connection.decide(session: id, requestID: p.id, answer: answer) }
+                        }
+                    } else if asking {
+                        HStack(spacing: 10) {
+                            Image(systemName: "questionmark.bubble.fill").foregroundStyle(.orange)
+                            Text("\(agentName.isEmpty ? "The agent" : agentName) is asking you something.")
+                                .font(.callout)
+                            Spacer(minLength: 8)
+                            Button { mode = .split; modeChosen = true } label: {
+                                Text("Answer").font(.callout.weight(.semibold)).foregroundStyle(Theme.onInk)
+                                    .padding(.horizontal, 14).padding(.vertical, 7)
+                                    .background(Capsule().fill(Theme.ink))
+                            }
+                        }
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.raised))
+                        .padding(.horizontal, 12).padding(.bottom, 6)
+                    }
+                }
         case .split:
             VStack(spacing: 0) {
                 TerminalScreen(model: model).frame(maxHeight: .infinity)
                 Divider()
-                ChatView(chat: chat, agentName: agentName, working: model.busy).frame(maxHeight: .infinity)
+                ChatView(chat: chat, agentName: agentName, working: model.busy, folder: sessionFolder).frame(maxHeight: .infinity)
             }
         }
     }
@@ -318,6 +355,7 @@ struct NewChatView: View {
                 Menu {
                     Button("Claude Code") { app.newAgent = "claude" }
                     Button("Codex") { app.newAgent = "codex" }
+                    Button("Terminess Agent (your API key)") { app.newAgent = "harness" }
                     Button("Shell") { app.newAgent = "shell" }
                     Section("Local model") {
                         if let models = connection?.models, !models.isEmpty {
@@ -394,7 +432,84 @@ struct NewChatView: View {
                                    input: LocalModels.chatCommand(terminessd: exe, model: model, message: message)))
             return
         }
+        if app.newAgent == "harness" {
+            let exe = store.host(hostID)?.terminessd ?? "~/.local/bin/terminessd"
+            app.open(SessionTarget(host: hostID, session: nil, title: "Terminess Agent", cwd: app.newProject,
+                                   input: "\(exe) agent \(quoted)"))
+            return
+        }
         let input = app.newAgent == "shell" ? message : "\(app.newAgent) \(quoted)"
         app.open(SessionTarget(host: hostID, session: nil, title: agentName, cwd: app.newProject, input: input))
+    }
+}
+
+
+struct ApprovalCard: View {
+    let request: PermissionInfo
+    let agent: String
+    let answer: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
+                Text("\(agent) needs your approval").font(.callout.weight(.semibold))
+            }
+            Text(request.summary.isEmpty ? request.tool : "\(request.tool): \(request.summary)")
+                .font(.system(.footnote, design: .monospaced)).foregroundStyle(.secondary).lineLimit(4)
+            HStack(spacing: 10) {
+                Button { answer("deny") } label: {
+                    Text("Deny").frame(maxWidth: .infinity).padding(.vertical, 8)
+                        .background(Capsule().strokeBorder(Theme.ink.opacity(0.3)))
+                }
+                if request.canAlways {
+                    Button { answer("always") } label: {
+                        Text("Always").frame(maxWidth: .infinity).padding(.vertical, 8)
+                            .background(Capsule().strokeBorder(Theme.ink.opacity(0.3)))
+                    }
+                }
+                Button { answer("allow") } label: {
+                    Text("Allow").font(.callout.weight(.semibold)).foregroundStyle(Theme.onInk)
+                        .frame(maxWidth: .infinity).padding(.vertical, 8).background(Capsule().fill(Theme.ink))
+                }
+            }
+            .font(.callout).foregroundStyle(Theme.ink)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Theme.raised))
+        .padding(.horizontal, 12).padding(.bottom, 6)
+    }
+}
+
+
+struct QuestionCard: View {
+    let question: QuestionInfo
+    let agent: String
+    let answer: (String) -> Void
+    @State private var text = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "questionmark.bubble.fill").foregroundStyle(.blue)
+                Text("\(agent) asks").font(.callout.weight(.semibold))
+            }
+            Text(question.text).font(.callout)
+            ForEach(question.choices, id: \.self) { c in
+                Button { answer(c) } label: {
+                    Text(c).frame(maxWidth: .infinity).padding(.vertical, 8)
+                        .background(Capsule().strokeBorder(Theme.ink.opacity(0.3)))
+                }
+                .foregroundStyle(Theme.ink)
+            }
+            HStack {
+                TextField(question.choices.isEmpty ? "Your answer" : "Or write an answer", text: $text)
+                    .textFieldStyle(.roundedBorder).onSubmit { if !text.isEmpty { answer(text) } }
+                Button("Send") { answer(text) }.disabled(text.isEmpty)
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Theme.raised))
+        .padding(.horizontal, 12).padding(.bottom, 6)
     }
 }

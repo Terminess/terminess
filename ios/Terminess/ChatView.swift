@@ -5,6 +5,7 @@ struct ChatView: View {
     @ObservedObject var chat: ChatModel
     let agentName: String
     let working: Bool
+    var folder: String? = nil
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -21,7 +22,7 @@ struct ChatView: View {
                         .frame(maxWidth: .infinity).padding(.top, 60)
                     }
                     ForEach(chat.items) { item in
-                        ChatItemView(item: item).id(item.id)
+                        ChatItemView(item: item, folder: folder).id(item.id)
                     }
                     if working {
                         HStack(spacing: 8) {
@@ -42,7 +43,14 @@ struct ChatView: View {
 
 private struct ChatItemView: View {
     let item: TranscriptItem
+    var folder: String?
     @State private var open = false
+
+    private func short(_ s: String) -> String {
+        var out = s
+        if let f = folder, f.count > 1 { out = out.replacingOccurrences(of: f + "/", with: "") }
+        return out.replacingOccurrences(of: #"/(Users|home)/[^/\s'"]+"#, with: "~", options: .regularExpression)
+    }
 
     var body: some View {
         switch item.kind {
@@ -62,7 +70,7 @@ private struct ChatItemView: View {
         case .thinking(let text):
             folded(icon: "brain", title: "Thinking", detail: text)
         case .tool(let name, let summary, let detail, let result):
-            folded(icon: icon(for: name), title: name + (summary.isEmpty ? "" : "  " + summary),
+            folded(icon: icon(for: name), title: name + (summary.isEmpty ? "" : "  " + short(summary)),
                    detail: [detail, result.map { "Result:\n" + $0 }].compactMap { $0 }.joined(separator: "\n\n"))
         }
     }

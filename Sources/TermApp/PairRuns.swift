@@ -52,6 +52,7 @@ enum PairRuns {
             let tail = String(decoding: h.readDataToEndOfFile(), as: UTF8.self)
             if tail.contains("\"type\":\"turn.completed\"") { return "done" }
             if tail.contains("\"type\":\"turn.failed\"") { return "failed" }
+            if tail.contains("\"type\":\"result\"") { return tail.contains("\"is_error\":true") ? "failed" : "done" }
         }
         if FileManager.default.fileExists(atPath: dir + "/result.md") { return "done" }
         if let m = Transcript.mtime(events), Date().timeIntervalSince(m) < 600 { return "running" }
@@ -84,6 +85,7 @@ final class PairRunModel: ObservableObject {
     @Published var run: PairRun
     @Published var items: [TranscriptItem] = []
     @Published var brief = ""
+    @Published var findings: ReviewFindings?
     private var timer: Timer?
     private var lastSize: UInt64 = 0
 
@@ -103,7 +105,10 @@ final class PairRunModel: ObservableObject {
         let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? UInt64) ?? 0
         if size != lastSize, let data = FileManager.default.contents(atPath: path) {
             lastSize = size
-            items = Array(Transcript.parse(data: data, agent: "codex-exec").items.suffix(400))
+            items = Array(Transcript.parse(data: data, agent: run.to == "claude" ? "claude" : "codex-exec").items.suffix(400))
+        }
+        if findings == nil, let data = FileManager.default.contents(atPath: run.dir + "/findings.json") {
+            findings = try? JSONDecoder().decode(ReviewFindings.self, from: data)
         }
         let state = PairRuns.state(run.dir)
         if state != run.state, let updated = PairRuns.read(run.dir) { run = updated }
@@ -149,10 +154,11 @@ struct PairRunView: View {
                         }
                         .padding(.horizontal, 12).padding(.vertical, 6)
                         .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.25)))
+                        if let f = model.findings { FindingsView(findings: f, run: model.run, who: who) }
                         if model.items.isEmpty {
                             Text(model.run.state == "running" ? "\(who) is starting…" : "Nothing recorded.").foregroundStyle(.secondary)
                         }
-                        ForEach(model.items) { ItemView(item: $0).id($0.id) }
+                        ForEach(model.items) { ItemView(item: $0, folder: model.run.repo).id($0.id) }
                         if model.run.state == "running" && !model.items.isEmpty {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
@@ -164,7 +170,7 @@ struct PairRunView: View {
                     .padding(16)
                 }
                 .onChange(of: model.items.count) { _, _ in withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) } }
-                .onAppear { proxy.scrollTo("end", anchor: .bottom) }
+                .onAppear { if model.findings == nil { proxy.scrollTo("end", anchor: .bottom) } }
             }
         }
         .frame(minWidth: 520, minHeight: 420)
@@ -191,5 +197,87 @@ enum PairRunWindows {
         }
         w.center()
         w.makeKeyAndOrderFront(nil)
+    }
+}
+
+
+struct ReviewFindings: Decodable, Equatable {
+    struct Finding: Decodable, Equatable, Identifiable {
+        var id: String { file + ":\(line):" + title }
+        let severity: String
+        let file: String
+        let line: Int
+        let title: String
+        let detail: String
+        let fix: String
+    }
+    let summary: String
+    let findings: [Finding]
+}
+
+struct FindingsView: View {
+    let findings: ReviewFindings
+    let run: PairRun
+    let who: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(findings.findings.isEmpty ? "No findings" : "\(findings.findings.count) finding\(findings.findings.count == 1 ? "" : "s")",
+                  systemImage: findings.findings.isEmpty ? "checkmark.seal" : "list.bullet.clipboard")
+                .font(.headline)
+            Text(findings.summary).foregroundStyle(.secondary).textSelection(.enabled)
+            ForEach(findings.findings) { f in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(f.severity.uppercased()).font(.caption2.weight(.bold))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Capsule().fill(color(f.severity).opacity(0.18)))
+                            .foregroundStyle(color(f.severity))
+                        Text(f.title).font(.callout.weight(.semibold))
+                    }
+                    Text(f.file + (f.line > 0 ? ":\(f.line)" : "")).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                    Text(f.detail).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    Text("Fix: " + f.fix).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Button("Apply Fix") { apply(f) }
+                            .help("\(who) makes this change in a new tab, where you can watch it.")
+                        Button("Open File") { open(f) }
+                    }
+                    .controlSize(.small)
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.25)))
+            }
+        }
+    }
+
+    private func color(_ severity: String) -> Color {
+        severity == "high" ? .red : severity == "medium" ? .orange : .secondary
+    }
+
+    private var repoPath: String {
+        run.repo.hasPrefix("/") ? run.repo : (Git.root(of: FileManager.default.currentDirectoryPath) ?? run.repo)
+    }
+
+    private func open(_ f: ReviewFindings.Finding) {
+        NSWorkspace.shared.open(URL(fileURLWithPath: (repoPath as NSString).appendingPathComponent(f.file)))
+    }
+
+    private func apply(_ f: ReviewFindings.Finding) {
+        guard let pair = SidebarModel.pairTool, let app = NSApp.delegate as? AppDelegate else { return }
+        let brief = """
+            Goal: apply one fix from a code review of this repo.
+            File: \(f.file)\(f.line > 0 ? " (around line \(f.line))" : "")
+            Problem: \(f.title). \(f.detail)
+            Fix: \(f.fix)
+            Done when: the fix is made, nothing unrelated is changed, and the relevant tests pass.
+            """
+        let file = NSTemporaryDirectory() + "terminess-fix-\(UUID().uuidString.prefix(8)).md"
+        guard (try? brief.write(toFile: file, atomically: true, encoding: .utf8)) != nil else { return }
+        let target = run.to == "claude" ? "claude" : "codex"
+        let c = app.open(tabbedWith: NSApp.keyWindow, directory: repoPath,
+                         command: "\(shellQuote(pair)) handoff \(target) --from user --brief-file \(shellQuote(file))")
+        c.customTitle = "Fix: " + f.title
     }
 }

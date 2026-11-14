@@ -1,0 +1,13 @@
+{"timestamp":"2026-11-14T19:50:13.000Z","type":"session_meta","payload":{"id":"01a1db9c-0000-7000-8000-000000000000","cwd":"/tmp/demo","cli_version":"0.180.0","source":"cli"}}
+{"timestamp":"2026-11-14T19:50:14.000Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"You are Codex."}]}}
+{"timestamp":"2026-11-14T19:50:14.100Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Add paging"}]}}
+{"timestamp":"2026-11-14T19:50:14.200Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"Add paging","text_elements":[]}]}}}
+{"timestamp":"2026-11-14T19:50:15.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"m1","content":[{"type":"Text","text":"Checking the store.\n"}],"phase":"commentary"}}}
+{"timestamp":"2026-11-14T19:50:16.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"text(await tools.exec_command({cmd:\"ls\"}))"}}
+{"timestamp":"2026-11-14T19:50:16.500Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"Script completed"}]}}
+{"timestamp":"2026-11-14T19:50:16.600Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e1","command":["/bin/zsh","-lc","ls"],"cwd":"file:///tmp/demo","status":"completed","aggregated_output":"store.py"}}}
+{"timestamp":"2026-11-14T19:50:17.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"Reasoning","id":"r1","summary_text":[],"raw_content":[]}}}
+{"timestamp":"2026-11-14T19:50:18.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","id":"f1","changes":{"/tmp/demo/store.py":{"type":"update","unified_diff":"@@ -1 +1 @@\n-a\n+b"}},"status":"completed","stdout":"Success","stderr":""}}}
+{"timestamp":"2026-11-14T19:50:19.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"FutureItem","id":"x1"}}}
+{"timestamp":"2026-11-14T19:50:20.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Paging added."}}
+{"timestamp":"2026-11-14T19:50:20.100Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"m2","content":[{"type":"Text","text":"Paging added."}],"phase":"final_answer"}}}
