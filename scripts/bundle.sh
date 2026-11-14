@@ -25,6 +25,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticTermination</key><false/>
+  <key>NSLocalNetworkUsageDescription</key><string>Terminess listens on your network briefly while you pair your iPhone.</string>
 </dict>
 </plist>
 PLIST

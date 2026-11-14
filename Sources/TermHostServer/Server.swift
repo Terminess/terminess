@@ -202,6 +202,8 @@ public final class HostServer: @unchecked Sendable {
             transcriptSubs[key] = nil
         case "projects":
             conn.send(Message(op: "projects", projects: Projects.recent()))
+        case "history":
+            conn.send(Message(op: "history", history: History.recent()))
         case "upload":
             upload(m, from: conn)
         case "register-push":

@@ -87,6 +87,17 @@ public struct ProjectInfo: Codable, Equatable, Sendable {
     public init(path: String, used: Double) { self.path = path; self.used = used }
 }
 
+public struct HistoryItem: Codable, Equatable, Sendable {
+    public var id: String
+    public var agent: String
+    public var cwd: String
+    public var title: String
+    public var used: Double
+    public init(id: String, agent: String, cwd: String, title: String, used: Double) {
+        self.id = id; self.agent = agent; self.cwd = cwd; self.title = title; self.used = used
+    }
+}
+
 public struct ForegroundInfo: Codable, Equatable {
     public var command: String
     public var cwd: String
@@ -120,17 +131,20 @@ public struct Message: Codable, Equatable {
     public var projects: [ProjectInfo]?
     public var data: String?
     public var token: String?
+    public var history: [HistoryItem]?
 
     public init(op: String, version: Int? = nil, host: String? = nil, id: String? = nil, name: String? = nil,
                 cwd: String? = nil, command: String? = nil, args: [String]? = nil, cols: Int? = nil, rows: Int? = nil,
                 code: Int? = nil, message: String? = nil, sessions: [SessionInfo]? = nil,
                 env: [String: String]? = nil, foreground: ForegroundInfo? = nil, signal: String? = nil,
-                items: [TranscriptItem]? = nil, projects: [ProjectInfo]? = nil, data: String? = nil, token: String? = nil) {
+                items: [TranscriptItem]? = nil, projects: [ProjectInfo]? = nil, data: String? = nil, token: String? = nil,
+                history: [HistoryItem]? = nil) {
         self.op = op; self.version = version; self.host = host; self.id = id; self.name = name
         self.cwd = cwd; self.command = command; self.args = args; self.cols = cols; self.rows = rows
         self.code = code; self.message = message; self.sessions = sessions
         self.env = env; self.foreground = foreground; self.signal = signal
         self.items = items; self.projects = projects; self.data = data; self.token = token
+        self.history = history
     }
 }
 

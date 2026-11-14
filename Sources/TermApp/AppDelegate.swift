@@ -73,6 +73,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     private var settingsWindow: NSWindow?
     private var doctorWindow: NSWindow?
+    private var pairWindow: NSWindow?
+
+    @objc func showPairPhone(_ sender: Any?) {
+        if pairWindow == nil {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: PairPhoneView()))
+            w.title = "Pair iPhone"
+            w.styleMask = [.titled, .closable]
+            w.isReleasedWhenClosed = false
+            w.center()
+            pairWindow = w
+        }
+        pairWindow?.makeKeyAndOrderFront(nil)
+        PairModel.shared.start()
+    }
 
     @objc func showDoctor(_ sender: Any?) {
         if doctorWindow == nil {
@@ -425,6 +439,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
+        appMenu.addItem(withTitle: "Pair iPhone…", action: #selector(showPairPhone(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())

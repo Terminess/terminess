@@ -20,18 +20,6 @@ final class PushTokens: ObservableObject {
     }
 }
 
-@MainActor
-final class Router: ObservableObject {
-    static let shared = Router()
-    @Published var path: [UUID] = []
-    @Published var pendingSession: (host: UUID, session: String)?
-
-    func open(host: UUID, session: String?) {
-        path = [host]
-        if let session { pendingSession = (host, session) }
-    }
-}
-
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -61,7 +49,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let host = (info["host"] as? String).flatMap(UUID.init(uuidString:))
         let session = info["session"] as? String
         Task { @MainActor in
-            if let host { Router.shared.open(host: host, session: session) }
+            if let host, let session {
+                AppState.shared.open(SessionTarget(host: host, session: session, title: "Session"))
+            }
             completionHandler()
         }
     }

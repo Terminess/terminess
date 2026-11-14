@@ -6,11 +6,10 @@ struct TerminessApp: App {
 
     var body: some Scene {
         WindowGroup {
-            HostsView()
+            RootView()
                 .preferredColorScheme(.dark)
-                .onOpenURL { url in
-                    if let name = HostStore.shared.add(from: url) { HostStore.shared.justAdded = name }
-                }
+                .tint(.white)
+                .onOpenURL { url in HostStore.shared.open(url) }
         }
     }
 }

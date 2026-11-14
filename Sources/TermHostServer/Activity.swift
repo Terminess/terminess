@@ -117,6 +117,76 @@ enum Projects {
     }
 }
 
+enum History {
+    static func recent(limit: Int = 60) -> [HistoryItem] {
+        let fm = FileManager.default
+        let home = Transcript.home
+        var files: [(path: String, agent: String, mtime: Double)] = []
+        let claude = home + "/.claude/projects"
+        for dir in (try? fm.contentsOfDirectory(atPath: claude)) ?? [] {
+            let full = claude + "/" + dir
+            for f in (try? fm.contentsOfDirectory(atPath: full)) ?? [] where f.hasSuffix(".jsonl") {
+                let p = full + "/" + f
+                files.append((p, "claude", Transcript.mtime(p)?.timeIntervalSince1970 ?? 0))
+            }
+        }
+        let cal = Calendar.current
+        for back in 0..<30 {
+            guard let day = cal.date(byAdding: .day, value: -back, to: Date()) else { continue }
+            let c = cal.dateComponents([.year, .month, .day], from: day)
+            let dir = String(format: "%@/.codex/sessions/%04d/%02d/%02d", home, c.year ?? 0, c.month ?? 0, c.day ?? 0)
+            for f in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where f.hasPrefix("rollout-") && f.hasSuffix(".jsonl") {
+                let p = dir + "/" + f
+                files.append((p, "codex", Transcript.mtime(p)?.timeIntervalSince1970 ?? 0))
+            }
+        }
+        var out: [HistoryItem] = []
+        for file in files.sorted(by: { $0.mtime > $1.mtime }) {
+            guard out.count < limit, let item = describe(file.path, agent: file.agent, used: file.mtime) else { continue }
+            out.append(item)
+        }
+        return out
+    }
+
+    private static func describe(_ path: String, agent: String, used: Double) -> HistoryItem? {
+        guard let h = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? h.close() }
+        let data = h.readData(ofLength: 256 * 1024)
+        var id = (path as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
+        var cwd = "", summary = "", first = ""
+        for line in data.split(separator: UInt8(ascii: "\n")) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+            if agent == "claude" {
+                if cwd.isEmpty, let c = obj["cwd"] as? String { cwd = c }
+                if obj["type"] as? String == "summary", let s = obj["summary"] as? String { summary = s }
+                if first.isEmpty, obj["type"] as? String == "user", obj["isMeta"] as? Bool != true,
+                   let m = obj["message"] as? [String: Any] {
+                    if let s = m["content"] as? String { first = s }
+                    else if let parts = m["content"] as? [[String: Any]] {
+                        first = parts.first { $0["type"] as? String == "text" }?["text"] as? String ?? ""
+                    }
+                    if first.hasPrefix("<") || first.hasPrefix("Caveat:") { first = "" }
+                }
+            } else {
+                let p = obj["payload"] as? [String: Any] ?? [:]
+                if obj["type"] as? String == "session_meta" {
+                    guard let source = p["source"] as? String, source == "cli" || source == "vscode" else { return nil }
+                    cwd = p["cwd"] as? String ?? ""
+                    if let sid = p["id"] as? String { id = sid }
+                }
+                if first.isEmpty, obj["type"] as? String == "event_msg", p["type"] as? String == "user_message",
+                   let s = p["message"] as? String, !s.hasPrefix("<") { first = s }
+            }
+            if !cwd.isEmpty, !first.isEmpty, agent == "codex" { break }
+        }
+        let raw = summary.isEmpty ? first : summary
+        let title = raw.split(separator: "\n").first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
+        var isDir: ObjCBool = false
+        guard !title.isEmpty, !cwd.isEmpty, FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else { return nil }
+        return HistoryItem(id: id, agent: agent, cwd: cwd, title: title.count > 80 ? String(title.prefix(79)) + "…" : title, used: used)
+    }
+}
+
 final class PushRegistry {
     struct Device: Codable { var token: String; var environment: String; var host: String?; var added: Double }
     private(set) var devices: [Device] = []

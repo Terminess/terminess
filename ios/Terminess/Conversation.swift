@@ -1,0 +1,376 @@
+import PhotosUI
+import SwiftUI
+import TermCore
+import TermHost
+import UniformTypeIdentifiers
+
+struct SessionTarget: Identifiable {
+    let id = UUID()
+    var host: UUID
+    var session: String?
+    var title: String
+    var cwd: String?
+    var input: String?
+}
+
+enum ViewMode: String, CaseIterable, Identifiable {
+    case chat, split, terminal
+    var id: String { rawValue }
+    var symbol: String {
+        switch self {
+        case .chat: return "bubble.left"
+        case .split: return "rectangle.split.1x2"
+        case .terminal: return "apple.terminal"
+        }
+    }
+}
+
+struct ModeSwitch: View {
+    @Binding var mode: ViewMode
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(ViewMode.allCases) { m in
+                Button { withAnimation(.easeOut(duration: 0.15)) { mode = m } } label: {
+                    Image(systemName: m.symbol).font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(mode == m ? Color.black : Color.secondary)
+                        .frame(width: 36, height: 32)
+                        .background(Capsule().fill(mode == m ? Color.white : Color.clear))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(Capsule().fill(Theme.surface))
+    }
+}
+
+struct TopBar<Trailing: View>: View {
+    let title: String
+    let subtitle: String?
+    @ViewBuilder let trailing: () -> Trailing
+
+    var body: some View {
+        HStack(spacing: 12) {
+            DrawerButton {
+                withAnimation(.easeOut(duration: 0.22)) { AppState.shared.drawerOpen = true }
+            }
+            if !title.isEmpty || subtitle != nil {
+                VStack(alignment: .leading, spacing: 1) {
+                    if !title.isEmpty { Text(title).font(.system(size: 17, weight: .semibold)).lineLimit(1) }
+                    if let subtitle { Text(subtitle).font(.footnote).foregroundStyle(.secondary).lineLimit(1) }
+                }
+            }
+            Spacer(minLength: 4)
+            trailing()
+        }
+        .padding(.horizontal, 14).padding(.top, 4).padding(.bottom, 6)
+    }
+}
+
+struct ConversationView: View {
+    let target: SessionTarget
+    @ObservedObject private var app = AppState.shared
+    @StateObject private var model = ScreenModel()
+    @StateObject private var chat = ChatModel()
+    @State private var mode: ViewMode?
+    @State private var modeChosen = false
+    @State private var draft = ""
+    @State private var error: String?
+    @State private var attaching = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var showPhotos = false
+    @State private var showFiles = false
+    @State private var uploading: Double?
+    @FocusState private var composing: Bool
+    @Environment(\.scenePhase) private var phase
+
+    private var connection: HostConnection { app.connection(target.host) }
+    private var host: SavedHost? { HostStore.shared.host(target.host) }
+    private var agentName: String { SessionText.agentName(model.command) ?? "" }
+
+    private var title: String {
+        if model.isAgent { return model.topic.isEmpty || model.topic == agentName ? agentName : model.topic }
+        return model.command.isEmpty ? target.title : (["zsh", "bash", "fish", "sh"].contains(model.command) ? "Shell" : model.command)
+    }
+
+    private var subtitle: String? {
+        if let e = error ?? model.status { return e }
+        var parts: [String] = []
+        if let cwd = target.cwd ?? connection.sessions.first(where: { $0.id == model.sessionID })?.cwd {
+            parts.append(SessionText.folderName(cwd))
+        }
+        if HostStore.shared.hosts.count > 1, let host { parts.append(host.name) }
+        if model.busy { parts.append("working") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TopBar(title: title, subtitle: subtitle) {
+                ModeSwitch(mode: Binding(get: { mode ?? .terminal }, set: { mode = $0; modeChosen = true }))
+            }
+            content
+            if (mode ?? .terminal) != .chat { keyRow }
+            if let uploading {
+                ProgressView(value: uploading) { Text("Sending to \(host?.name ?? "the machine")…").font(.caption) }
+                    .padding(.horizontal, 20).padding(.bottom, 4)
+            }
+            Composer(text: $draft, placeholder: model.isAgent ? "Message \(agentName)" : "Type a command",
+                     busy: model.busy, disabled: model.ended, focus: $composing,
+                     onSend: send, onStop: { model.key(.escape) },
+                     onPhoto: { showPhotos = true }, onFile: { showFiles = true }) {
+                ForEach(model.statusChips) { c in Chip(text: c.text, symbol: c.symbol, percent: c.percent) }
+            }
+        }
+        .background(Theme.background)
+        .task { await attach() }
+        .onChange(of: model.sessionID) { _, id in
+            if let id { Task { await chat.follow(session: id, on: connection) } }
+        }
+        .onAppear {
+            if mode == nil, let input = target.input, input.hasPrefix("claude") || input.hasPrefix("codex") { mode = .chat }
+        }
+        .onChange(of: model.command) { _, _ in
+            guard !modeChosen, !model.command.isEmpty else { return }
+            if model.isAgent { mode = .chat } else if mode == nil { mode = .terminal }
+        }
+        .onChange(of: model.connected) { _, connected in
+            if !connected, !model.ended, phase == .active {
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    await attach()
+                }
+            }
+        }
+        .onChange(of: phase) { _, p in
+            if p == .active { Task { await attach() } }
+            if p == .background { keepAliveBriefly() }
+        }
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            photoItem = nil
+            Task { await sendPhoto(item) }
+        }
+        .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
+        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item]) { result in
+            if case .success(let url) = result { Task { await sendFile(url) } }
+        }
+        .onDisappear {
+            model.detach()
+            chat.stop()
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch mode ?? .terminal {
+        case .terminal:
+            TerminalScreen(model: model)
+        case .chat:
+            ChatView(chat: chat, agentName: agentName, working: model.busy)
+        case .split:
+            VStack(spacing: 0) {
+                TerminalScreen(model: model).frame(maxHeight: .infinity)
+                Divider()
+                ChatView(chat: chat, agentName: agentName, working: model.busy).frame(maxHeight: .infinity)
+            }
+        }
+    }
+
+    private var keyRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                key("esc") { model.key(.escape) }
+                key("tab") { model.key(.tab) }
+                key("^C") { model.send([0x03]) }
+                key("↑") { model.key(.up) }
+                key("↓") { model.key(.down) }
+                key("←") { model.key(.left) }
+                key("→") { model.key(.right) }
+                key("⏎") { model.send([0x0D]) }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+        }
+    }
+
+    private func key(_ label: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label).font(.system(size: 14, weight: .medium, design: .monospaced))
+                .padding(.horizontal, 11).padding(.vertical, 7)
+                .background(Capsule().fill(Theme.surface))
+        }
+        .buttonStyle(.plain)
+        .disabled(model.ended)
+    }
+
+    private func send() {
+        let text = draft
+        draft = ""
+        model.sendLine(text)
+    }
+
+    private func attach() async {
+        guard !model.connected, !model.ended, !attaching else { return }
+        attaching = true
+        defer { attaching = false }
+        await connection.connect()
+        guard connection.isConnected else {
+            if case .failed(let m) = connection.state { error = m }
+            return
+        }
+        error = nil
+        let screen = UIScreen.main.bounds.size
+        let g = model.grid(for: CGSize(width: screen.width, height: screen.height * 0.55))
+        let existing = model.sessionID ?? target.session
+        let t: HostAttachment.Target = existing.map { .attach(id: $0) }
+            ?? .create(cwd: target.cwd, command: nil, args: [], env: nil, name: nil)
+        do {
+            let a = try await connection.attachment(to: t, cols: g.cols, rows: g.rows)
+            model.start(a, cols: g.cols, rows: g.rows, input: existing == nil ? target.input : nil)
+            if let id = existing { await chat.follow(session: id, on: connection) }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func keepAliveBriefly() {
+        var task: UIBackgroundTaskIdentifier = .invalid
+        task = UIApplication.shared.beginBackgroundTask { UIApplication.shared.endBackgroundTask(task) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 25) { UIApplication.shared.endBackgroundTask(task) }
+    }
+
+    private func sendPhoto(_ item: PhotosPickerItem) async {
+        guard let data = try? await item.loadTransferable(type: Data.self) else { error = "Couldn't read that photo."; return }
+        let jpeg = ImageShrinker.jpeg(data) ?? data
+        await upload(jpeg, name: "photo-\(Int(Date().timeIntervalSince1970)).jpg")
+    }
+
+    private func sendFile(_ url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else { error = "Couldn't read that file."; return }
+        await upload(data, name: url.lastPathComponent)
+    }
+
+    private func upload(_ data: Data, name: String) async {
+        uploading = 0
+        defer { uploading = nil }
+        do {
+            let path = try await connection.upload(data, name: name) { p in uploading = p }
+            draft += (draft.isEmpty || draft.hasSuffix(" ") ? "" : " ") + path.replacingOccurrences(of: " ", with: "\\ ") + " "
+            composing = true
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+struct NewChatView: View {
+    @ObservedObject private var app = AppState.shared
+    @ObservedObject private var store = HostStore.shared
+    @State private var draft = ""
+    @State private var showPhotos = false
+    @State private var showFiles = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var uploading: Double?
+    @State private var problem: String?
+    @FocusState private var composing: Bool
+
+    private var hostID: UUID? { app.newHost ?? store.hosts.first?.id }
+    private var connection: HostConnection? { hostID.map { app.connection($0) } }
+    private var agentName: String { SessionText.agentName(app.newAgent) ?? "Shell" }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TopBar(title: "", subtitle: nil) { EmptyView() }
+            Spacer()
+            VStack(spacing: 14) {
+                LogoMark(size: 64).foregroundStyle(.white.opacity(0.14))
+                if let m = problem ?? store.pairing ?? connectionProblem {
+                    Text(m).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 30)
+                }
+            }
+            Spacer()
+            if let uploading {
+                ProgressView(value: uploading) { Text("Sending to \(store.host(hostID ?? UUID())?.name ?? "the machine")…").font(.caption) }
+                    .padding(.horizontal, 20).padding(.bottom, 4)
+            }
+            Composer(text: $draft, placeholder: app.newAgent == "shell" ? "Type a command" : "Message \(agentName)",
+                     disabled: connection?.isConnected != true, focus: $composing, onSend: start,
+                     onPhoto: { showPhotos = true }, onFile: { showFiles = true }) {
+                if store.hosts.count > 1 {
+                    Menu {
+                        ForEach(store.hosts) { h in Button(h.name) { app.newHost = h.id; app.newProject = nil } }
+                    } label: { Chip(text: store.host(hostID ?? UUID())?.name ?? "Machine", symbol: "desktopcomputer", menu: true) }
+                }
+                Menu {
+                    Button("Home folder") { app.newProject = nil }
+                    ForEach(connection?.projects ?? [], id: \.path) { p in
+                        Button(SessionText.folderName(p.path)) { app.newProject = p.path }
+                    }
+                } label: { Chip(text: app.newProject.map(SessionText.folderName) ?? "Home folder", symbol: "folder", menu: true) }
+                Menu {
+                    Button("Claude Code") { app.newAgent = "claude" }
+                    Button("Codex") { app.newAgent = "codex" }
+                    Button("Shell") { app.newAgent = "shell" }
+                } label: { Chip(text: agentName, symbol: app.newAgent == "shell" ? "apple.terminal" : "sparkle", menu: true) }
+            }
+        }
+        .background(Theme.background)
+        .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
+        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item]) { result in
+            if case .success(let url) = result { Task { await attachFile(url) } }
+        }
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            photoItem = nil
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self) else { problem = "Couldn't read that photo."; return }
+                await attach(ImageShrinker.jpeg(data) ?? data, name: "photo-\(Int(Date().timeIntervalSince1970)).jpg")
+            }
+        }
+        .task {
+            if let c = connection {
+                await c.connect()
+                await c.loadProjects()
+                if app.newProject == nil { app.newProject = c.projects.first?.path }
+            }
+        }
+    }
+
+    private var connectionProblem: String? {
+        if let state = connection?.state, case .failed(let m) = state { return m }
+        return nil
+    }
+
+    private func attachFile(_ url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else { problem = "Couldn't read that file."; return }
+        await attach(data, name: url.lastPathComponent)
+    }
+
+    private func attach(_ data: Data, name: String) async {
+        guard let connection else { return }
+        uploading = 0
+        defer { uploading = nil }
+        do {
+            let path = try await connection.upload(data, name: name) { p in uploading = p }
+            draft += (draft.isEmpty || draft.hasSuffix(" ") ? "" : " ") + path.replacingOccurrences(of: " ", with: "\\ ") + " "
+            problem = nil
+            composing = true
+        } catch {
+            problem = error.localizedDescription
+        }
+    }
+
+    private func start() {
+        guard let hostID else { return }
+        let message = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else { return }
+        let quoted = "'" + message.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let input = app.newAgent == "shell" ? message : "\(app.newAgent) \(quoted)"
+        draft = ""
+        app.open(SessionTarget(host: hostID, session: nil, title: agentName, cwd: app.newProject, input: input))
+    }
+}

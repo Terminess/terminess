@@ -9,6 +9,7 @@ final class HostConnection: ObservableObject {
     @Published var state: State = .idle
     @Published var sessions: [SessionInfo] = []
     @Published var projects: [ProjectInfo] = []
+    @Published var history: [HistoryItem] = []
     private(set) var ssh: SSHConnection?
     private var control: ControlChannel?
     private var poller: Task<Void, Never>?
@@ -83,6 +84,10 @@ final class HostConnection: ObservableObject {
 
     func loadProjects() async {
         if let reply = await request(Message(op: "projects")), let p = reply.projects { projects = p }
+    }
+
+    func loadHistory() async {
+        if let reply = await request(Message(op: "history")), let h = reply.history { history = h }
     }
 
     func kill(_ id: String) async {

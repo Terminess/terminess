@@ -14,6 +14,7 @@ final class ScreenModel: ObservableObject {
     @Published private(set) var title = ""
     @Published private(set) var command = ""
     @Published private(set) var connected = false
+    @Published private(set) var statusChips: [StatusChip] = []
     private let events = ScreenEvents()
     private var pendingInput: String?
     private var sizeAfterReplay: (Int, Int)?
@@ -169,6 +170,8 @@ final class ScreenModel: ObservableObject {
             if y < rows.count - 1 { out += AttributedString("\n") }
         }
         text = out
+        let chips = StatusLine.chips(t)
+        if chips != statusChips { statusChips = chips }
     }
 
     private func styled(_ s: String, _ a: Attributes, _ p: Palette, cursor: Bool) -> AttributedString {

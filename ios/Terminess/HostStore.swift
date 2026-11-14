@@ -15,6 +15,7 @@ final class HostStore: ObservableObject {
     static let shared = HostStore()
     @Published private(set) var hosts: [SavedHost] = []
     @Published var justAdded: String?
+    @Published var pairing: String?
     private let key = "hosts"
 
     init() {
@@ -34,8 +35,33 @@ final class HostStore: ObservableObject {
 
     func host(_ id: UUID) -> SavedHost? { hosts.first { $0.id == id } }
 
+    func open(_ url: URL) {
+        guard let id = add(from: url) else { return }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let pair = items.first { $0.name == "pair" }?.value.flatMap(URL.init(string:))
+        let token = items.first { $0.name == "token" }?.value
+        let name = host(id)?.name ?? "the machine"
+        Task {
+            if let pair, let token {
+                pairing = "Pairing with \(name)…"
+                var req = URLRequest(url: pair)
+                req.httpMethod = "POST"
+                req.timeoutInterval = 8
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.httpBody = try? JSONSerialization.data(withJSONObject: ["token": token, "key": DeviceKey.authorizedKeyLine()])
+                let ok = ((try? await URLSession.shared.data(for: req))?.1 as? HTTPURLResponse)?.statusCode == 200
+                pairing = ok ? nil : "Couldn't reach \(name) to pair. Be on the same Wi-Fi (or Tailscale) and scan again, or add this iPhone's key in Settings by hand."
+            }
+            let c = AppState.shared.connection(id)
+            c.disconnect()
+            await c.connect()
+            AppState.shared.newHost = id
+            AppState.shared.newChat()
+        }
+    }
+
     @discardableResult
-    func add(from url: URL) -> String? {
+    func add(from url: URL) -> UUID? {
         guard url.scheme == "terminess", url.host == "add",
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
         func value(_ k: String) -> String? { items.first { $0.name == k }?.value.flatMap { $0.isEmpty ? nil : $0 } }
@@ -47,7 +73,7 @@ final class HostStore: ObservableObject {
         if let path = value("path") { host.terminessd = path }
         if let key = value("hostkey") { host.hostKey = key }
         save(host)
-        return host.name
+        return host.id
     }
 
     private func persist() {
