@@ -1,0 +1,10 @@
+{"type":"meta","model":"gemma4:e4b","cwd":"/tmp","started":1794664461}
+{"type":"user","text":"Call me Robin."}
+{"type":"partial","text":"Hel","thinking":""}
+{"type":"partial","text":"Hello Ro","thinking":"A gree"}
+{"type":"assistant","text":"Hello Robin.","thinking":"A greeting."}
+{"type":"user","text":"What name?"}
+{"type":"assistant","text":"Robin"}
+{"type":"user","text":"Stop that."}
+{"type":"partial","text":"Sure, I","thinking":""}
+{"type":"partial","text":"","thinking":""}

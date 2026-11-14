@@ -84,13 +84,13 @@ final class ReaderModel: ObservableObject {
         path = nil
         lastMTime = nil
         agentID = agent ?? ""
-        agentName = agent == "claude" ? "Claude Code" : agent == "codex" ? "Codex" : ""
+        agentName = agent == "claude" ? "Claude Code" : agent == "codex" ? "Codex" : agent == "ollama" ? "Local model" : ""
         live = false
     }
 
     private func show(agent: String, path: String, live: Bool, force: Bool) {
         agentID = agent
-        agentName = agent == "claude" ? "Claude Code" : "Codex"
+        agentName = agent == "claude" ? "Claude Code" : agent == "ollama" ? "Local model" : "Codex"
         self.live = live
         let mtime = Transcript.mtime(path)
         guard force || path != self.path || mtime != lastMTime else { return }

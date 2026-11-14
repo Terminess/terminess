@@ -47,6 +47,19 @@ import Testing
         #expect(survey.unknown == ["record:event_msg/future_event": 1, "record:future_record": 1])
     }
 
+    @Test func localModelChat() throws {
+        let (items, survey) = Transcript.parse(data: try fixture("localchat"), agent: "ollama")
+        #expect(items.map(\.kind.line) == [
+            "user: Call me Robin.",
+            "thinking: A greeting.",
+            "assistant: Hello Robin.",
+            "user: What name?",
+            "assistant: Robin",
+            "user: Stop that.",
+        ])
+        #expect(survey.version == "gemma4:e4b" && survey.unknown.isEmpty)
+    }
+
     @Test func claudeSessionFromProcessRecord() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("transcript-tests-\(UUID().uuidString)").path
         defer { try? FileManager.default.removeItem(atPath: home) }

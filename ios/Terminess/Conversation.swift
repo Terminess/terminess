@@ -133,7 +133,7 @@ struct ConversationView: View {
             if let id { Task { await chat.follow(session: id, on: connection) } }
         }
         .onAppear {
-            if mode == nil, let input = target.input, input.hasPrefix("claude") || input.hasPrefix("codex") { mode = .chat }
+            if mode == nil, let input = target.input, input.hasPrefix("claude") || input.hasPrefix("codex") || input.contains(" chat ") { mode = .chat }
         }
         .onChange(of: model.command) { _, _ in
             guard !modeChosen, !model.command.isEmpty else { return }
@@ -319,7 +319,17 @@ struct NewChatView: View {
                     Button("Claude Code") { app.newAgent = "claude" }
                     Button("Codex") { app.newAgent = "codex" }
                     Button("Shell") { app.newAgent = "shell" }
-                } label: { Chip(text: agentName, symbol: app.newAgent == "shell" ? "apple.terminal" : "sparkle", menu: true) }
+                    Section("Local model") {
+                        if let models = connection?.models, !models.isEmpty {
+                            ForEach(models, id: \.self) { m in Button(m) { app.newAgent = "ollama:" + m } }
+                        } else {
+                            Text(connection?.models == nil ? "Ollama isn't running on this machine" : "No models installed in Ollama")
+                        }
+                    }
+                } label: {
+                    Chip(text: agentName, symbol: app.newAgent == "shell" ? "apple.terminal"
+                         : app.newAgent.hasPrefix("ollama:") ? "cpu" : "sparkle", menu: true)
+                }
             }
         }
         .background(Theme.background)
@@ -339,6 +349,7 @@ struct NewChatView: View {
             if let c = connection {
                 await c.connect()
                 await c.loadProjects()
+                await c.loadModels()
                 if app.newProject == nil { app.newProject = c.projects.first?.path }
             }
         }
@@ -375,8 +386,15 @@ struct NewChatView: View {
         let message = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty else { return }
         let quoted = "'" + message.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        let input = app.newAgent == "shell" ? message : "\(app.newAgent) \(quoted)"
         draft = ""
+        if app.newAgent.hasPrefix("ollama:") {
+            let model = String(app.newAgent.dropFirst(7))
+            let exe = store.host(hostID)?.terminessd ?? "~/.local/bin/terminessd"
+            app.open(SessionTarget(host: hostID, session: nil, title: model, cwd: app.newProject,
+                                   input: LocalModels.chatCommand(terminessd: exe, model: model, message: message)))
+            return
+        }
+        let input = app.newAgent == "shell" ? message : "\(app.newAgent) \(quoted)"
         app.open(SessionTarget(host: hostID, session: nil, title: agentName, cwd: app.newProject, input: input))
     }
 }

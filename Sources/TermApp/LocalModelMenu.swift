@@ -1,0 +1,99 @@
+import AppKit
+import TermHost
+
+@MainActor
+final class LocalModelMenu: NSObject, NSMenuDelegate {
+    static let shared = LocalModelMenu()
+    private var models: [String]?
+    private var note = "Looking for models…"
+    private var loading = false
+    private weak var menu: NSMenu?
+
+    func attach(to menu: NSMenu) {
+        menu.delegate = self
+        self.menu = menu
+        refresh()
+    }
+
+    private var host: String { Settings.shared.localModelsHost.trimmingCharacters(in: .whitespaces) }
+    private var place: String { host.isEmpty ? "this Mac" : host }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        rebuild(menu)
+        refresh()
+    }
+
+    private func rebuild(_ menu: NSMenu) {
+        menu.removeAllItems()
+        if let models, !models.isEmpty {
+            let header = NSMenuItem(title: "On \(place)", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            menu.addItem(header)
+            for m in models {
+                let item = NSMenuItem(title: m, action: #selector(open(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = m
+                menu.addItem(item)
+            }
+        } else {
+            let item = NSMenuItem(title: note, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let settings = NSMenuItem(title: "Choose the Machine…", action: #selector(AppDelegate.showSettings(_:)), keyEquivalent: "")
+        menu.addItem(settings)
+    }
+
+    func refresh() {
+        guard !loading else { return }
+        loading = true
+        let host = self.host
+        let finish: @Sendable ([String]?, String) -> Void = { models, note in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    let m = LocalModelMenu.shared
+                    m.loading = false
+                    m.models = models
+                    m.note = note
+                    if let menu = m.menu { m.rebuild(menu) }
+                }
+            }
+        }
+        if host.isEmpty {
+            LocalModels.installed { names in
+                finish(names, names == nil ? "Ollama isn't running on this Mac. Set the machine in Settings." : "No models installed in Ollama")
+            }
+            return
+        }
+        Task.detached(priority: .utility) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            p.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host,
+                           "curl -s --max-time 3 http://127.0.0.1:11434/api/tags"]
+            let out = Pipe()
+            p.standardOutput = out
+            p.standardError = FileHandle.nullDevice
+            p.standardInput = FileHandle.nullDevice
+            do { try p.run() } catch { finish(nil, "Couldn't run ssh"); return }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            if p.terminationStatus == 255 { finish(nil, "Couldn't reach \(host) over SSH"); return }
+            let names = LocalModels.parse(data)
+            finish(names, names == nil ? "Ollama isn't running on \(host)" : "No models installed in Ollama on \(host)")
+        }
+    }
+
+    @objc private func open(_ sender: NSMenuItem) {
+        guard let model = sender.representedObject as? String, let app = NSApp.delegate as? AppDelegate else { return }
+        let command: String
+        if host.isEmpty {
+            command = LocalModels.chatCommand(terminessd: HostService.executable ?? "terminessd", model: model)
+        } else {
+            let run = LocalModels.chatCommand(terminessd: "~/.local/bin/terminessd", model: model)
+            command = "ssh -t \(shellQuote(host)) \(shellQuote(run))"
+        }
+        let c = app.open(tabbedWith: NSApp.keyWindow, command: command)
+        c.customTitle = model
+    }
+}

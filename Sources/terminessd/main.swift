@@ -369,6 +369,15 @@ case "service":
 case "pair":
     pair()
 
+case "chat":
+    chat(rest)
+
+case "models":
+    let reply = request(Message(op: "models"))
+    if reply.code != 1 { print("Ollama isn't running here.") }
+    else if (reply.args ?? []).isEmpty { print("No models installed in Ollama.") }
+    else { (reply.args ?? []).forEach { print($0) } }
+
 case "hook":
     let env = ProcessInfo.processInfo.environment
     guard let session = env["TERMINESS_SESSION"], !session.isEmpty,
@@ -424,6 +433,8 @@ case "-h", "--help", "help":
       terminessd pair [--address A]    print a link that adds this machine to Terminess on iPhone
       terminessd service install       run it as a systemd user service (Linux)
       terminessd service uninstall|status
+      terminessd models                list the Ollama models the iPhone can start a chat with
+      terminessd chat MODEL [message]  chat with a local model (Ollama), saved for Chat view
       terminessd hooks install         let Claude Code and Codex tell Terminess what they're doing
       terminessd hooks uninstall|status
     """)

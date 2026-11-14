@@ -469,6 +469,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let commit = NSMenuItem(title: "Commit Changes…", action: #selector(commitChanges(_:)), keyEquivalent: "c")
         commit.keyEquivalentModifierMask = [.command, .option]
         shell.addItem(commit)
+        let localModel = NSMenuItem(title: "Local Model", action: nil, keyEquivalent: "")
+        let localModelMenu = NSMenu(title: "Local Model")
+        LocalModelMenu.shared.attach(to: localModelMenu)
+        localModel.submenu = localModelMenu
+        shell.addItem(localModel)
         shell.addItem(withTitle: "Show Quick Terminal", action: #selector(toggleQuickTerminal(_:)), keyEquivalent: "")
         shell.addItem(.separator())
         let tabTheme = NSMenuItem(title: "Tab Theme", action: nil, keyEquivalent: "")

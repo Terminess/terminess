@@ -44,7 +44,7 @@ final class ScreenModel: ObservableObject {
         terminal.delegate = events
     }
 
-    var isAgent: Bool { command == "claude" || command == "codex" }
+    var isAgent: Bool { command == "claude" || command == "codex" || command == "ollama" }
     var busy: Bool {
         guard let first = title.unicodeScalars.first else { return false }
         return (0x25D0...0x25D3).contains(first.value) || (0x2800...0x28FF).contains(first.value)
@@ -156,41 +156,65 @@ final class ScreenModel: ObservableObject {
         }
     }
 
+    private var historyCache: (key: String, text: AttributedString)?
+    static let historyLines = 500
+
+    private func history() -> AttributedString {
+        let t = terminal
+        guard !t.isAlternate else { return AttributedString() }
+        let lines = t.screen.scrollback.rows.suffix(Self.historyLines)
+        guard let last = lines.last else { return AttributedString() }
+        let key = "\(lines.count)|\(last.plainText())|\(lines.first?.plainText() ?? "")"
+        if let c = historyCache, c.key == key { return c.text }
+        var out = AttributedString()
+        for row in lines {
+            out += line(row, palette: t.palette, cursorX: nil)
+            out += AttributedString("\n")
+        }
+        historyCache = (key, out)
+        return out
+    }
+
     private func render() {
         let t = terminal
         let palette = t.palette
-        var out = AttributedString()
+        var out = history()
         let rows = t.screen.rows
         let cursor = t.cursor
         for (y, row) in rows.enumerated() {
-            let count = row.cells.count
-            func isCursor(_ x: Int) -> Bool { t.modes.cursorVisible && y == cursor.y && x == cursor.x }
-            func glyph(_ x: Int) -> String {
-                let c = row.cells[x]
-                if c.isWideTail { return "" }
-                if c.isEmpty { return " " }
-                return row.clusters[x] ?? UnicodeScalar(c.scalar).map { String(Character($0)) } ?? " "
-            }
-            var x = 0
-            while x < count {
-                if isCursor(x) {
-                    out += styled(glyph(x), row.cells[x].attrs, palette, cursor: true)
-                    x += 1
-                    continue
-                }
-                let a = row.cells[x].attrs
-                var run = ""
-                while x < count, row.cells[x].attrs == a, !isCursor(x) {
-                    run += glyph(x)
-                    x += 1
-                }
-                out += styled(run, a, palette, cursor: false)
-            }
+            out += line(row, palette: palette, cursorX: t.modes.cursorVisible && y == cursor.y ? cursor.x : nil)
             if y < rows.count - 1 { out += AttributedString("\n") }
         }
         text = out
         let chips = StatusLine.chips(t)
         if chips != statusChips { statusChips = chips }
+    }
+
+    private func line(_ row: Row, palette: Palette, cursorX: Int?) -> AttributedString {
+        var out = AttributedString()
+        let count = row.cells.count
+        func glyph(_ x: Int) -> String {
+            let c = row.cells[x]
+            if c.isWideTail { return "" }
+            if c.isEmpty { return " " }
+            return row.clusters[x] ?? UnicodeScalar(c.scalar).map { String(Character($0)) } ?? " "
+        }
+        var x = 0
+        while x < count {
+            if x == cursorX {
+                out += styled(glyph(x), row.cells[x].attrs, palette, cursor: true)
+                x += 1
+                continue
+            }
+            let a = row.cells[x].attrs
+            var run = ""
+            while x < count, row.cells[x].attrs == a, x != cursorX {
+                run += glyph(x)
+                x += 1
+            }
+            out += styled(run, a, palette, cursor: false)
+        }
+        return out
     }
 
     private func styled(_ s: String, _ a: Attributes, _ p: Palette, cursor: Bool) -> AttributedString {

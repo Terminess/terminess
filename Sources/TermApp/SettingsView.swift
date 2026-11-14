@@ -186,6 +186,8 @@ struct SettingsView: View {
                 Toggle("Keep shells and agents running after Terminess quits", isOn: $settings.keepSessions)
                 AgentEventsToggle(agent: .claude).disabled(!settings.keepSessions)
                 AgentEventsToggle(agent: .codex).disabled(!settings.keepSessions)
+                TextField("Local models on", text: $settings.localModelsHost, prompt: Text("This Mac, or an SSH host such as my-server"))
+                    .help("Shell, Local Model lists the Ollama models on this machine and opens a tab chatting with one.")
                     .help("Shells run in terminessd, so quitting the app leaves them running and reopening it reattaches. Applies to new tabs.")
                 Toggle("New tabs open in the current tab's folder", isOn: $settings.newTabsInCurrentFolder)
                 Toggle("Shell integration (zsh)", isOn: $settings.shellIntegration)

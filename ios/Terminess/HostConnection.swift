@@ -9,6 +9,7 @@ final class HostConnection: ObservableObject {
     @Published var state: State = .idle
     @Published var sessions: [SessionInfo] = []
     @Published var projects: [ProjectInfo] = []
+    @Published var models: [String]?
     @Published var history: [HistoryItem] = []
     private(set) var ssh: SSHConnection?
     private var control: ControlChannel?
@@ -84,6 +85,11 @@ final class HostConnection: ObservableObject {
 
     func loadProjects() async {
         if let reply = await request(Message(op: "projects")), let p = reply.projects { projects = p }
+    }
+
+    func loadModels() async {
+        guard let reply = await request(Message(op: "models")), reply.op == "models" else { models = nil; return }
+        models = reply.code == 1 ? (reply.args ?? []) : nil
     }
 
     func loadHistory() async {

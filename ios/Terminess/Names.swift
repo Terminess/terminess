@@ -2,10 +2,12 @@ import SwiftUI
 import TermHost
 
 enum SessionText {
-    static func isAgent(_ s: SessionInfo) -> Bool { s.command == "claude" || s.command == "codex" }
+    static func isAgent(_ s: SessionInfo) -> Bool { ["claude", "codex", "ollama"].contains(s.command) }
 
     static func agentName(_ command: String) -> String? {
-        command == "claude" ? "Claude Code" : (command == "codex" ? "Codex" : nil)
+        if command.hasPrefix("ollama:") { return String(command.dropFirst(7)) }
+        if command == "ollama" { return "Local model" }
+        return command == "claude" ? "Claude Code" : (command == "codex" ? "Codex" : nil)
     }
 
     static func topic(_ title: String?) -> String {

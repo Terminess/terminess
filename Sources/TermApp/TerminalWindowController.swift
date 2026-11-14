@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import TermCore
 import TermTranscript
+import TermHost
 
 @MainActor
 final class Pane {
@@ -43,6 +44,9 @@ final class Pane {
 
     func readerSource() -> ReaderSource {
         guard let process = session.process else { return .none }
+        if process.foregroundCommand == "ollama", let id = process.hostSessionID, let p = LocalChat.latest(for: id) {
+            return .file(agent: "ollama", path: p, live: true)
+        }
         if let agent = Agent.detect(process.foregroundCommand), agent.id == "claude" || agent.id == "codex",
            let dir = currentDirectory {
             let pid = process.foregroundPID

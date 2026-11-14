@@ -49,16 +49,21 @@ final class HostSession {
         }
     }
 
+    var command: String {
+        let c = process.foregroundCommand ?? initialCommand
+        return c == "terminessd" && LocalChat.isChat(command: c, args: process.foregroundArguments) ? "ollama" : c
+    }
+
     var foreground: ForegroundInfo {
         let fgPid = process.foregroundPID
-        return ForegroundInfo(command: process.foregroundCommand ?? initialCommand,
+        return ForegroundInfo(command: command,
                               cwd: process.foregroundDirectory ?? "",
                               args: fgPid == process.pid ? [] : process.foregroundArguments,
                               started: process.foregroundStartTime ?? 0, pid: fgPid, shellPid: process.pid)
     }
 
     var info: SessionInfo {
-        var i = SessionInfo(id: id, name: name, command: process.foregroundCommand ?? initialCommand,
+        var i = SessionInfo(id: id, name: name, command: command,
                             cwd: process.foregroundDirectory ?? "", created: created, clients: clients.count)
         i.title = title.isEmpty ? nil : title
         i.busy = busy
@@ -235,6 +240,10 @@ public final class HostServer: @unchecked Sendable {
             transcriptSubs[key] = nil
         case "projects":
             conn.send(Message(op: "projects", projects: Projects.recent()))
+        case "models":
+            LocalModels.installed { names in
+                self.queue.async { conn.send(Message(op: "models", args: names ?? [], code: names == nil ? 0 : 1)) }
+            }
         case "history":
             conn.send(Message(op: "history", history: History.recent()))
         case "upload":
@@ -350,7 +359,7 @@ public final class HostServer: @unchecked Sendable {
         let pid = s.process.foregroundPID
         s.hookAgent = "claude"
         if let path = e["transcript_path"] as? String, !path.isEmpty, FileManager.default.fileExists(atPath: path) {
-            s.transcript = ("claude", path, pid)
+            s.transcript = (s.command == "ollama" ? "ollama" : "claude", path, pid)
         }
         switch e["hook_event_name"] as? String {
         case "SessionStart":
@@ -406,6 +415,10 @@ public final class HostServer: @unchecked Sendable {
 
     private func transcriptPath(_ s: HostSession) -> (agent: String, path: String)? {
         let fg = s.foreground
+        if fg.command == "ollama", let path = LocalChat.latest(for: s.id) {
+            s.transcript = ("ollama", path, fg.pid)
+            return ("ollama", path)
+        }
         if fg.command == "claude" || fg.command == "codex", !fg.cwd.isEmpty {
             if s.hooked, let t = s.transcript, t.pid == fg.pid { return (t.agent, t.path) }
             if fg.command == "claude", let path = Transcript.claudeSession(pid: fg.pid) {

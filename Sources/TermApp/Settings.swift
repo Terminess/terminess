@@ -37,6 +37,7 @@ final class Settings: ObservableObject {
     @Published var shellIntegration: Bool { didSet { save("shellIntegration", shellIntegration) } }
     @Published var restoreSession: Bool { didSet { save("restoreSession", restoreSession) } }
     @Published var keepSessions: Bool { didSet { save("keepSessions", keepSessions) } }
+    @Published var localModelsHost: String { didSet { save("localModelsHost", localModelsHost) } }
     @Published var quickTerminalKey: String { didSet { save("quickTerminalKey", quickTerminalKey) } }
     @Published var idleParking: Bool { didSet { save("idleParking", idleParking) } }
     @Published var idleParkingMinutes: Int { didSet { save("idleParkingMinutes", idleParkingMinutes) } }
@@ -58,6 +59,7 @@ final class Settings: ObservableObject {
             d.set(imported?.size ?? 12, forKey: "fontSize")
         }
         fontName = d.string(forKey: "fontName") ?? ""
+        localModelsHost = d.string(forKey: "localModelsHost") ?? ""
         fontSize = d.object(forKey: "fontSize") as? Double ?? 12
         lineSpacing = d.object(forKey: "lineSpacing") as? Double ?? 1.0
         style = d.string(forKey: "style") ?? "classic"

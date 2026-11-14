@@ -149,11 +149,14 @@ public enum Transcript {
         var items: [TranscriptItem] = []
         var toolIndex: [String: Int] = [:]
         var survey = Survey()
+        var partial: Range<Int>?
         for line in data.split(separator: UInt8(ascii: "\n")) {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
             if agent == "claude" {
                 if let v = obj["version"] as? String { survey.version = v }
                 parseClaude(obj, items: &items, toolIndex: &toolIndex, survey: &survey)
+            } else if agent == "ollama" {
+                parseLocalChat(obj, items: &items, partial: &partial, survey: &survey)
             } else {
                 if let p = obj["payload"] as? [String: Any], let v = p["cli_version"] as? String { survey.version = v }
                 parseCodex(obj, items: &items, toolIndex: &toolIndex, survey: &survey)
@@ -288,6 +291,29 @@ public enum Transcript {
                     }
                 }
             }
+        }
+    }
+
+    private static func parseLocalChat(_ obj: [String: Any], items: inout [TranscriptItem], partial: inout Range<Int>?,
+                                       survey: inout Survey) {
+        func add(_ k: TranscriptItem.Kind) { items.append(TranscriptItem(id: items.count, kind: k)) }
+        func reply() {
+            if let r = partial { items.removeSubrange(r); partial = nil }
+            let start = items.count
+            if let t = obj["thinking"] as? String, !t.isEmpty { add(.thinking(t)) }
+            if let s = obj["text"] as? String, !s.isEmpty { add(.assistant(s)) }
+            if obj["type"] as? String == "partial" { partial = start..<items.count }
+        }
+        switch obj["type"] as? String {
+        case "meta":
+            survey.version = obj["model"] as? String
+        case "user":
+            partial = nil
+            if let s = obj["text"] as? String, !s.isEmpty { add(.user(s)) }
+        case "assistant", "partial":
+            reply()
+        case let other:
+            survey.unknown["record:" + (other ?? "?"), default: 0] += 1
         }
     }
 
