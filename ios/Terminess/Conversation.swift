@@ -383,12 +383,14 @@ struct NewChatView: View {
                 await attach(ImageShrinker.jpeg(data) ?? data, name: "photo-\(Int(Date().timeIntervalSince1970)).jpg")
             }
         }
-        .task {
+        .task(id: hostID) {
             if let c = connection {
                 await c.connect()
                 await c.loadProjects()
                 await c.loadModels()
-                if app.newProject == nil { app.newProject = c.projects.first?.path }
+                if app.newProject == nil || !c.projects.contains(where: { $0.path == app.newProject }) {
+                    app.newProject = c.projects.first?.path
+                }
             }
         }
     }

@@ -40,7 +40,7 @@ import jwt
 KEY_PATH = os.environ["APNS_KEY_PATH"]
 KEY_ID = os.environ["APNS_KEY_ID"]
 TEAM_ID = os.environ["APNS_TEAM_ID"]
-TOPIC = os.environ.get("APNS_TOPIC", "com.nsokin.terminal.ios")
+TOPIC = os.environ.get("APNS_TOPIC", "com.terminess.ios")
 PORT = int(os.environ.get("PORT", "8099"))
 HOSTS = {"sandbox": "https://api.sandbox.push.apple.com", "production": "https://api.push.apple.com"}
 TOKEN_RE = re.compile(r"^[0-9a-f]{64,200}$")

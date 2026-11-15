@@ -4,7 +4,7 @@ import SwiftUI
 extension Git {
     static func ghProblem() -> String? {
         guard let gh else { return "The GitHub CLI is not installed. Install it with `brew install gh`, then run `gh auth login`." }
-        if exec(gh, ["auth", "status"]).status != 0 { return "The GitHub CLI is not signed in. Run `gh auth login` in a tab, then try again." }
+        if exec(gh, ["auth", "token"]).status != 0 { return "The GitHub CLI is not signed in. Run `gh auth login` in a tab, then try again." }
         return nil
     }
 

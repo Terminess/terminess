@@ -199,6 +199,23 @@ enum DebugScript {
                 }
             }
         }
+        if let spec = env["TERMAPP_OPEN_AT"], let app = NSApp.delegate as? AppDelegate {
+            for step in spec.split(separator: "|") {
+                let parts = step.split(separator: ":")
+                guard parts.count == 2, let delay = Double(parts[0]) else { continue }
+                let what = String(parts[1])
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    MainActor.assumeIsolated {
+                        switch what {
+                        case "library": app.showLibrary(nil)
+                        case "instructions": app.showProjectInstructions(nil)
+                        case "issues": app.showIssueBoard(nil)
+                        default: break
+                        }
+                    }
+                }
+            }
+        }
         if let at = env["TERMAPP_AGENTS_AT"].flatMap(Double.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + at) { MainActor.assumeIsolated { AgentsDashboardWindow.show() } }
         }

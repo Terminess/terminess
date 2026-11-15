@@ -13,7 +13,10 @@ enum DemoScript {
         if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
             try? key.write(to: docs.appendingPathComponent("demo-key.txt"), atomically: true, encoding: .utf8)
         }
-        if let link = env["TERMINESS_DEMO_ADD"].flatMap(URL.init(string:)) {
+        if env["TERMINESS_DEMO_ADD"] == "demo" {
+            if !HostStore.shared.hosts.contains(where: { DemoMachine.isDemo($0) }) { DemoMachine.hosts.forEach(HostStore.shared.save) }
+            AppState.shared.start()
+        } else if let link = env["TERMINESS_DEMO_ADD"].flatMap(URL.init(string:)) {
             HostStore.shared.addForDemo(link)
             AppState.shared.start()
         }
@@ -32,7 +35,19 @@ enum DemoScript {
         case "close": withAnimation { app.drawerOpen = false }
         case "newchat": app.newChat()
         case "settings": app.showSettings = true
+        case "pair":
+            HostStore.shared.open(URL(string: "terminess://add?name=Studio%20Mac&address=studio.local&user=demo&pair=http://studio.local:7860/pair&token=demo")!)
         default:
+            if action.hasPrefix("host:"), let n = Int(action.dropFirst(5)), n < app.hosts.count {
+                app.newHost = app.hosts[n].id
+                app.newProject = app.connection(app.hosts[n].id).projects.first?.path
+                return
+            }
+            if action.hasPrefix("menu:"), let n = Int(action.dropFirst(5)) { openMenu(n); return }
+            if action.hasPrefix("session:"), let r = app.running.first(where: { $0.session.id == action.dropFirst(8) }) {
+                app.open(SessionTarget(host: r.host.id, session: r.session.id, title: SessionText.title(r.session), cwd: r.session.cwd))
+                return
+            }
             if action.hasPrefix("open:"), let n = Int(action.dropFirst(5)), n < app.running.count {
                 let r = app.running[n]
                 app.open(SessionTarget(host: r.host.id, session: r.session.id, title: r.session.name, cwd: r.session.cwd))
@@ -40,6 +55,28 @@ enum DemoScript {
                 NotificationCenter.default.post(name: modeChange, object: mode)
             }
         }
+    }
+
+    private static func openMenu(_ n: Int) {
+        guard let window = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first else { return }
+        var found: [(UIView, UIContextMenuInteraction)] = []
+        func walk(_ v: UIView) {
+            if v is UIControl, v.bounds.width > 40 {
+                for i in v.interactions { if let m = i as? UIContextMenuInteraction { found.append((v, m)) } }
+            }
+            v.subviews.forEach(walk)
+        }
+        walk(window)
+        found.sort { $0.0.convert($0.0.bounds, to: window).minX < $1.0.convert($1.0.bounds, to: window).minX }
+        print("demo menus: \(found.map { "\(type(of: $0.0)) \($0.0.convert($0.0.bounds, to: window))" })")
+        guard n < found.count else { return }
+        let (view, interaction) = found[n]
+        let sel = NSSelectorFromString("_presentMenuAtLocation:")
+        guard interaction.responds(to: sel), let imp = class_getMethodImplementation(type(of: interaction), sel) else {
+            print("demo menus: can't present"); return
+        }
+        typealias Present = @convention(c) (AnyObject, Selector, CGPoint) -> Void
+        unsafeBitCast(imp, to: Present.self)(interaction, sel, CGPoint(x: view.bounds.midX, y: view.bounds.midY))
     }
 }
 #endif

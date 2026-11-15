@@ -4,7 +4,7 @@ import NIOSSH
 import Security
 
 enum DeviceKey {
-    private static let service = "com.nsokin.terminal.devicekey"
+    private static let service = "com.terminess.devicekey"
 
     static func load() throws -> NIOSSHPrivateKey {
         if let stored = try read() {

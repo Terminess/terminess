@@ -19,7 +19,8 @@ final class HostConnection: ObservableObject {
 
     var host: SavedHost? { HostStore.shared.host(hostID) }
     var stdioCommand: String { RemotePath.shellQuoted(host?.terminessd ?? "~/.local/bin/terminessd") + " stdio" }
-    var isConnected: Bool { state == .connected && (ssh != nil || Self.demoSocket != nil) }
+    var isConnected: Bool { state == .connected && (ssh != nil || Self.demoSocket != nil || isDemo) }
+    var isDemo: Bool { DemoMachine.isDemo(host) }
 
     static var demoSocket: String? {
         #if DEBUG && targetEnvironment(simulator)
@@ -30,6 +31,10 @@ final class HostConnection: ObservableObject {
     }
 
     private func channel() async throws -> Int32 {
+        if let kind = DemoMachine.kind(host) {
+            guard let fd = DemoMachine.channel(kind) else { throw SSHError.channel("demo machine unavailable") }
+            return fd
+        }
         if let path = Self.demoSocket {
             guard let fd = UnixSocket.connect(path) else { throw SSHError.channel("no demo socket at \(path)") }
             return fd
@@ -42,7 +47,7 @@ final class HostConnection: ObservableObject {
         guard let host, !AppLock.shared.locked else { return }
         if ssh != nil, control?.isOpen == true { await refresh(); return }
         if state == .connecting { return }
-        if Self.demoSocket != nil {
+        if Self.demoSocket != nil || isDemo {
             state = .connected
             await refresh()
             return
@@ -176,7 +181,7 @@ final class HostConnection: ObservableObject {
     }
 
     private func request(_ m: Message) async -> Message? {
-        guard ssh != nil || Self.demoSocket != nil else { return nil }
+        guard ssh != nil || Self.demoSocket != nil || isDemo else { return nil }
         if control?.isOpen != true {
             guard let fd = try? await channel() else {
                 state = .failed("Lost the connection to \(host?.name ?? "the machine").")

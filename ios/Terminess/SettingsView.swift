@@ -55,6 +55,7 @@ struct SettingsView: View {
                 .listRowBackground(Theme.surface)
                 KeySection().listRowBackground(Theme.surface)
                 LockSection().listRowBackground(Theme.surface)
+                DemoSection().listRowBackground(Theme.surface)
                 Section {
                     Label(push.token == nil ? "Off. Allow them in iOS Settings, Terminess." : "On. You'll hear when an agent finishes or needs you.",
                           systemImage: push.token == nil ? "bell.slash" : "bell")
@@ -116,11 +117,25 @@ private struct Swatch: View {
 
 struct KeySection: View {
     @State private var copied = false
+    @State private var shown = false
+
+    private var fingerprint: String {
+        let blob = DeviceKey.authorizedKeyLine().split(separator: " ").dropFirst().first.map(String.init) ?? ""
+        return blob.isEmpty ? "" : "\u{2026}" + blob.suffix(12)
+    }
 
     var body: some View {
         Section {
-            Text(DeviceKey.authorizedKeyLine())
-                .font(.system(size: 11, design: .monospaced)).textSelection(.enabled).lineLimit(4)
+            HStack {
+                Label("Public key", systemImage: "key")
+                Spacer()
+                Text(fingerprint).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
+            }
+            if shown {
+                Text(DeviceKey.authorizedKeyLine())
+                    .font(.system(size: 11, design: .monospaced)).textSelection(.enabled).lineLimit(4)
+            }
+            Button(shown ? "Hide Key" : "Show Key") { withAnimation { shown.toggle() } }
             Button(copied ? "Copied" : "Copy Key") {
                 UIPasteboard.general.string = DeviceKey.authorizedKeyLine()
                 copied = true
@@ -130,8 +145,8 @@ struct KeySection: View {
             Text("This iPhone's key")
         } footer: {
             Text(DeviceKey.usesSecureEnclave
-                 ? "Made in the Secure Enclave; it never leaves this iPhone. Add it to ~/.ssh/authorized_keys on each machine."
-                 : "Add it to ~/.ssh/authorized_keys on each machine.")
+                 ? "This is the public half, safe to share: add it to ~/.ssh/authorized_keys on each machine (pairing with a Mac does it for you). The private half was made in the Secure Enclave and never leaves this iPhone."
+                 : "This is the public half, safe to share: add it to ~/.ssh/authorized_keys on each machine (pairing with a Mac does it for you).")
         }
     }
 }
@@ -201,6 +216,12 @@ struct WelcomeView: View {
             .padding(.horizontal, 24)
         }
         .background(Theme.background)
+        .overlay(alignment: .topTrailing) {
+            Button { AppState.shared.showSettings = true } label: {
+                Image(systemName: "gearshape").font(.title3).foregroundStyle(.secondary).padding(20)
+            }
+            .accessibilityLabel("Settings")
+        }
         .sheet(item: $adding) { HostEditor(host: $0) }
     }
 
@@ -235,6 +256,24 @@ private struct LockSection: View {
             Text(AppLock.available
                  ? "Terminess can type into shells on your machines, so it asks before opening. Locking disconnects; your sessions keep running."
                  : "Set a passcode on this iPhone to lock Terminess.")
+        }
+    }
+}
+
+
+private struct DemoSection: View {
+    @ObservedObject var store = HostStore.shared
+
+    var body: some View {
+        Section {
+            Toggle("Demo machine", isOn: Binding(
+                get: { store.hosts.contains { DemoMachine.isDemo($0) } },
+                set: { on in
+                    if on { DemoMachine.hosts.forEach(store.save); AppState.shared.start() }
+                    else { store.delete(store.hosts.filter { DemoMachine.isDemo($0) }.map(\.id)) }
+                }))
+        } footer: {
+            Text("Adds three pretend machines (a Mac, a Linux PC and a server) with sample sessions, so you can try Terminess without a machine of your own. Nothing runs on them.")
         }
     }
 }
