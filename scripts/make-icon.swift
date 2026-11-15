@@ -15,66 +15,48 @@ let ctx = gc.cgContext
 ctx.translateBy(x: 0, y: size)
 ctx.scaleBy(x: 1, y: -1)
 
-func rr(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ r: CGFloat) -> CGPath {
-    CGPath(roundedRect: CGRect(x: x * s, y: y * s, width: w * s, height: h * s),
-           cornerWidth: r * s, cornerHeight: r * s, transform: nil)
-}
+let tile = CGRect(x: 100, y: 100, width: 824, height: 824)
 
-func gradient(_ path: CGPath, _ top: NSColor, _ bottom: NSColor) {
-    ctx.saveGState()
-    ctx.addPath(path)
-    ctx.clip()
-    let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                       colors: [top.cgColor, bottom.cgColor] as CFArray, locations: [0, 1])!
-    let box = path.boundingBox
-    ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: box.minY), end: CGPoint(x: 0, y: box.maxY), options: [])
-    ctx.restoreGState()
-}
+let shape = CGPath(roundedRect: CGRect(x: tile.minX * s, y: tile.minY * s, width: tile.width * s, height: tile.height * s),
+                   cornerWidth: 185 * s, cornerHeight: 185 * s, transform: nil)
 
 ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: 10 * s), blur: 28 * s,
-              color: NSColor.black.withAlphaComponent(0.35).cgColor)
-ctx.addPath(rr(100, 100, 824, 824, 185))
-ctx.setFillColor(NSColor.black.cgColor)
+ctx.setShadow(offset: CGSize(width: 0, height: 10 * s), blur: 24 * s,
+              color: NSColor.black.withAlphaComponent(0.3).cgColor)
+ctx.addPath(shape)
+ctx.setFillColor(NSColor(srgbRed: 0.11, green: 0.11, blue: 0.118, alpha: 1).cgColor)
 ctx.fillPath()
 ctx.restoreGState()
 
-gradient(rr(100, 100, 824, 824, 185),
-         NSColor(srgbRed: 0.86, green: 0.90, blue: 0.92, alpha: 1),
-         NSColor(srgbRed: 0.50, green: 0.51, blue: 0.53, alpha: 1))
-ctx.addPath(rr(114, 114, 796, 796, 172))
-ctx.setFillColor(NSColor(srgbRed: 0.02, green: 0.02, blue: 0.03, alpha: 1).cgColor)
-ctx.fillPath()
-gradient(rr(150, 150, 724, 724, 140),
-         NSColor(srgbRed: 0.16, green: 0.16, blue: 0.17, alpha: 1),
-         NSColor(srgbRed: 0.10, green: 0.10, blue: 0.11, alpha: 1))
+ctx.saveGState()
+ctx.addPath(shape)
+ctx.clip()
+let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                   colors: [NSColor(srgbRed: 0.165, green: 0.165, blue: 0.176, alpha: 1).cgColor,
+                            NSColor(srgbRed: 0.110, green: 0.110, blue: 0.118, alpha: 1).cgColor] as CFArray,
+                   locations: [0, 1])!
+ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: tile.minY * s), end: CGPoint(x: 0, y: tile.maxY * s), options: [])
+ctx.restoreGState()
 
-func sparkle(cx: CGFloat, cy: CGFloat, r: CGFloat) -> CGPath {
-    let p = CGMutablePath()
-    let cxs = cx * s, cys = cy * s, rs = r * s
-    let k1: CGFloat = 0.15, k2: CGFloat = 0.36
-    p.move(to: CGPoint(x: cxs, y: cys - rs))
-    p.addCurve(to: CGPoint(x: cxs + rs, y: cys),
-               control1: CGPoint(x: cxs + rs * k1, y: cys - rs * k2),
-               control2: CGPoint(x: cxs + rs * k2, y: cys - rs * k1))
-    p.addCurve(to: CGPoint(x: cxs, y: cys + rs),
-               control1: CGPoint(x: cxs + rs * k2, y: cys + rs * k1),
-               control2: CGPoint(x: cxs + rs * k1, y: cys + rs * k2))
-    p.addCurve(to: CGPoint(x: cxs - rs, y: cys),
-               control1: CGPoint(x: cxs - rs * k1, y: cys + rs * k2),
-               control2: CGPoint(x: cxs - rs * k2, y: cys + rs * k1))
-    p.addCurve(to: CGPoint(x: cxs, y: cys - rs),
-               control1: CGPoint(x: cxs - rs * k2, y: cys - rs * k1),
-               control2: CGPoint(x: cxs - rs * k1, y: cys - rs * k2))
-    p.closeSubpath()
-    return p
+let fit = tile.width / 1024
+func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+    CGPoint(x: (tile.minX + ((x - 150) * 1.15 + 90) * fit) * s, y: (tile.minY + ((y - 150) * 1.15 + 90) * fit) * s)
 }
-
-let white = NSColor(srgbRed: 0.96, green: 0.96, blue: 0.97, alpha: 1).cgColor
-ctx.setFillColor(white)
-ctx.addPath(sparkle(cx: 312, cy: 312, r: 122))
+ctx.setFillColor(NSColor(srgbRed: 0.96, green: 0.96, blue: 0.97, alpha: 1).cgColor)
+let c = (x: 288.0 as CGFloat, y: 300.0 as CGFloat), r: CGFloat = 145, k = 0.30 * r
+let star = CGMutablePath()
+star.move(to: p(c.x, c.y - r))
+star.addCurve(to: p(c.x + r, c.y), control1: p(c.x + k, c.y - k), control2: p(c.x + k, c.y - k))
+star.addCurve(to: p(c.x, c.y + r), control1: p(c.x + k, c.y + k), control2: p(c.x + k, c.y + k))
+star.addCurve(to: p(c.x - r, c.y), control1: p(c.x - k, c.y + k), control2: p(c.x - k, c.y + k))
+star.addCurve(to: p(c.x, c.y - r), control1: p(c.x - k, c.y - k), control2: p(c.x - k, c.y - k))
+star.closeSubpath()
+ctx.addPath(star)
 ctx.fillPath()
-ctx.addPath(rr(448, 408, 136, 36, 4))
+let tl = p(448, 414), br = p(584, 443)
+let radius = 6 * fit * s
+ctx.addPath(CGPath(roundedRect: CGRect(x: tl.x, y: tl.y, width: br.x - tl.x, height: br.y - tl.y),
+                   cornerWidth: radius, cornerHeight: radius, transform: nil))
 ctx.fillPath()
 
 NSGraphicsContext.restoreGraphicsState()

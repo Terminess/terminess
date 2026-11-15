@@ -250,9 +250,7 @@ enum Library {
         _ = try await NSWorkspace.shared.recycle(paths.map { URL(fileURLWithPath: $0) })
     }
 
-    static func abbreviate(_ path: String) -> String {
-        path.hasPrefix(Transcript.home + "/") ? "~" + path.dropFirst(Transcript.home.count) : path
-    }
+    static func abbreviate(_ path: String) -> String { SidebarModel.tilde(path) }
 
 
     static func template(_ kind: Kind, name: String) -> String {

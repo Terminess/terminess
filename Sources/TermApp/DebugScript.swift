@@ -219,8 +219,9 @@ enum DebugScript {
         if let at = env["TERMAPP_AGENTS_AT"].flatMap(Double.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + at) { MainActor.assumeIsolated { AgentsDashboardWindow.show() } }
         }
-        if let spec = env["TERMAPP_ANSWER_AT"], let colon = spec.firstIndex(of: ":"), let delay = Double(spec[..<colon]) {
-            let answer = String(spec[spec.index(after: colon)...])
+        for step in (env["TERMAPP_ANSWER_AT"] ?? "").split(separator: "|") {
+            guard let colon = step.firstIndex(of: ":"), let delay = Double(step[..<colon]) else { continue }
+            let answer = String(step[step.index(after: colon)...])
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak controller] in
                 MainActor.assumeIsolated {
                     if let c = controller, let qp = c.panes.first(where: { $0.session.question != nil }) {

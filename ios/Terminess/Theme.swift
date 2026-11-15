@@ -89,12 +89,12 @@ struct LogoMark: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            StarShape().frame(width: size * 0.62, height: size * 0.62)
-            RoundedRectangle(cornerRadius: size * 0.025)
-                .frame(width: size * 0.35, height: size * 0.09)
-                .offset(x: size * 0.66, y: size * 0.55)
+            StarShape().frame(width: size * 0.744, height: size * 0.744)
+            RoundedRectangle(cornerRadius: size * 0.02)
+                .frame(width: size * 0.349, height: size * 0.074)
+                .offset(x: size * 0.783, y: size * 0.664)
         }
-        .frame(width: size * 1.05, height: size * 0.66, alignment: .topLeading)
+        .frame(width: size * 1.132, height: size * 0.744, alignment: .topLeading)
         .accessibilityHidden(true)
     }
 }
@@ -104,10 +104,11 @@ struct StarShape: Shape {
         let c = CGPoint(x: rect.midX, y: rect.midY), r = min(rect.width, rect.height) / 2, k = 0.30 * r
         var p = Path()
         p.move(to: CGPoint(x: c.x, y: c.y - r))
-        p.addQuadCurve(to: CGPoint(x: c.x + r, y: c.y), control: CGPoint(x: c.x + k, y: c.y - k))
-        p.addQuadCurve(to: CGPoint(x: c.x, y: c.y + r), control: CGPoint(x: c.x + k, y: c.y + k))
-        p.addQuadCurve(to: CGPoint(x: c.x - r, y: c.y), control: CGPoint(x: c.x - k, y: c.y + k))
-        p.addQuadCurve(to: CGPoint(x: c.x, y: c.y - r), control: CGPoint(x: c.x - k, y: c.y - k))
+        func side(_ to: CGPoint, _ h: CGPoint) { p.addCurve(to: to, control1: h, control2: h) }
+        side(CGPoint(x: c.x + r, y: c.y), CGPoint(x: c.x + k, y: c.y - k))
+        side(CGPoint(x: c.x, y: c.y + r), CGPoint(x: c.x + k, y: c.y + k))
+        side(CGPoint(x: c.x - r, y: c.y), CGPoint(x: c.x - k, y: c.y + k))
+        side(CGPoint(x: c.x, y: c.y - r), CGPoint(x: c.x - k, y: c.y - k))
         p.closeSubpath()
         return p
     }

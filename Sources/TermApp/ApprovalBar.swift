@@ -9,7 +9,7 @@ struct ApprovalBar: View {
     private var verb: String {
         switch request.tool {
         case "Bash", "Shell", "exec_command": return "run"
-        case "Write": return "create"
+        case "Write": return "write"
         case "Edit", "MultiEdit", "NotebookEdit", "apply_patch": return "edit"
         case "WebFetch": return "open"
         case "WebSearch": return "search for"

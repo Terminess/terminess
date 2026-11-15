@@ -30,7 +30,8 @@ enum PairRuns {
         let repo = after("- Repo: ").map { String($0.prefix { $0 != " " }).trimmingCharacters(in: CharacterSet(charactersIn: ".")) } ?? ""
         let transcript = after("transcript is at ").map { String($0.prefix { $0 != " " }).trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
         let task = taskText(prompt)
-        let firstLine = task.split(separator: "\n").first.map(String.init) ?? ""
+        let focus = task.range(of: "Focus from the main session:").map { String(task[$0.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines) }
+        let firstLine = (focus ?? task).split(separator: "\n").first.map(String.init) ?? ""
         var brief = firstLine.hasPrefix("Goal:") ? String(firstLine.dropFirst(5)).trimmingCharacters(in: .whitespaces) : firstLine
         if brief.count > 90 { brief = String(brief.prefix(89)) + "…" }
         return PairRun(id: name, from: parts[1], to: parts[2], mode: parts[3],

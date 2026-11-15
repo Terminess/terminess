@@ -22,8 +22,9 @@
 #   --transcript F    main session transcript to point the other agent at
 #   --from claude|codex  who is calling (normally auto-detected)
 #
-# Target defaults to "the other one". Runs are recorded in ~/.local/state/pair/.
-# Compatible with macOS bash 3.2.
+# Target defaults to "the other one". Runs are recorded in ~/.local/state/pair/
+# (or $PAIR_STATE). House rules added to every brief, if you want any, go in
+# ~/.config/pair/rules.md (or the file named by $PAIR_RULES).
 
 set -euo pipefail
 
@@ -34,6 +35,7 @@ LEDGER="$STATE/log.jsonl"
 mkdir -p "$STATE/runs"
 
 die() { echo "pair: $*" >&2; exit 1; }
+tilde() { case "$1" in "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
 
 usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -262,7 +264,7 @@ if [ "$MODE" = "parallel" ]; then
   echo $! > "$P/pid"
   disown 2>/dev/null || true
 
-  echo "pair: started parallel job $ID ($FROM -> $TARGET) in $WT"
+  echo "pair: started parallel job $ID ($FROM -> $TARGET) in $(tilde "$WT")"
   echo "pair: carry on; check with 'pair status', collect with 'pair wait $ID', then 'pair apply $ID' or 'pair discard $ID'"
   exit 0
 fi
@@ -306,8 +308,10 @@ else
   ACCESS="Read-only: do not modify any files. Read code, run read-only commands, and answer."
 fi
 
-CTX="- Repo: $REPO. Follow its CLAUDE.md / AGENTS.md.
-- Operator rules: the hard rules in ~/github/OPERATIONS.md apply."
+CTX="- Repo: $REPO. Follow its CLAUDE.md / AGENTS.md."
+RULES_FILE="${PAIR_RULES:-${XDG_CONFIG_HOME:-$HOME/.config}/pair/rules.md}"
+RULES=""
+[ -r "$RULES_FILE" ] && RULES="$(cat "$RULES_FILE")"
 [ -n "$TRANSCRIPT" ] && CTX="$CTX
 - The main session's transcript is at $TRANSCRIPT (JSONL, newest at the end). Read the recent part only if the brief leaves something unclear."
 
@@ -318,7 +322,10 @@ $CTX
 
 $ACCESS
 
-Never commit, push, deploy, touch production servers, or run migrations against anything but local test databases. Never use em dashes or en dashes. Never add AI attribution anywhere.
+Never commit, push, deploy, touch production servers, or run migrations against anything but local test databases.${RULES:+
+
+House rules:
+$RULES}
 
 Finish with a concise report for the main session: what you did or found, files changed (if any), and anything unresolved or needing the user's decision.
 
@@ -337,8 +344,8 @@ snapshot() {
 }
 BEFORE=""; [ $IS_GIT -eq 1 ] && BEFORE="$(snapshot || true)"
 
-echo "pair: $FROM -> $TARGET ($MODE$([ $WRITE -eq 1 ] && echo ', write')) in $REPO" >&2
-echo "pair: run log $RUN" >&2
+echo "pair: $FROM -> $TARGET ($MODE$([ $WRITE -eq 1 ] && echo ', write')) in $(tilde "$REPO")" >&2
+echo "pair: run $(basename "$RUN") (pair log to list runs)" >&2
 
 SESSION_ID=""; STATUS="ok"
 CLEAN_ENV=(env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION \
@@ -387,10 +394,13 @@ else
     ARGS=(exec -C "$REPO")
   fi
   ARGS+=(--json -o "$RESULT" --skip-git-repo-check)
-  if [ $WRITE -eq 1 ]; then ARGS+=(--approve-for-me); else ARGS+=(-s read-only); fi
+  if [ -n "$RESUME_ID" ]; then
+    if [ $WRITE -eq 1 ]; then ARGS+=(-c 'sandbox_mode="workspace-write"' -c 'approval_policy="never"')
+    else ARGS+=(-c 'sandbox_mode="read-only"'); fi
+  elif [ $WRITE -eq 1 ]; then ARGS+=(--approve-for-me); else ARGS+=(-s read-only); fi
   if [ $STRUCTURED -eq 1 ]; then printf '%s' "$FINDINGS_SCHEMA" > "$RUN/schema.json"; ARGS+=(--output-schema "$RUN/schema.json"); fi
   ARGS+=(-)
-  if printf '%s' "$PROMPT" | "${CLEAN_ENV[@]}" codex "${ARGS[@]}" > "$RUN/events.jsonl" 2> "$RUN/stderr.log"; then :; else STATUS="error"; fi
+  if printf '%s' "$PROMPT" | (cd "$REPO" && "${CLEAN_ENV[@]}" codex "${ARGS[@]}") > "$RUN/events.jsonl" 2> "$RUN/stderr.log"; then :; else STATUS="error"; fi
   SESSION_ID="$(jq -r 'select(.type=="thread.started") | .thread_id // empty' "$RUN/events.jsonl" 2>/dev/null | head -n1 || true)"
   [ -n "$SESSION_ID" ] || SESSION_ID="$RESUME_ID"
   if [ $STRUCTURED -eq 1 ] && jq -e '.findings' "$RESULT" >/dev/null 2>&1; then

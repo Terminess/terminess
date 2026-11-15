@@ -326,10 +326,7 @@ struct ProjectInstructionsView: View {
     }
 }
 
-private func abbreviated(_ path: String) -> String {
-    let home = Transcript.home
-    return path == home ? "~" : path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
-}
+private func abbreviated(_ path: String) -> String { SidebarModel.tilde(path) }
 
 private struct DocumentEditor: View {
     @ObservedObject var doc: InstructionDocument

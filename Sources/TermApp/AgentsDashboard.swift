@@ -130,7 +130,7 @@ section("In tabs", agentTabs.isEmpty) {
     @ViewBuilder private var backgroundSection: some View {
 section("In the background", background.isEmpty) {
             ForEach(background, id: \.id) { s in
-                card(icon: icon(s.command), title: s.title ?? s.name, detail: SidebarModel.tilde(s.cwd),
+                card(icon: icon(s.command), title: Self.title(s), detail: SidebarModel.tilde(s.cwd),
                      status: s.attention == true ? ("Needs you", .orange) : s.busy == true ? ("Working", .green) : ("Idle", .secondary),
                      changes: nil) {
                     Button("Open in a Tab") { model.actions?.attachHost(s) }
@@ -183,14 +183,15 @@ section("Pair runs today", model.runs.isEmpty) {
     }
 
     private var summary: String {
-        let busyTabs: Int = model.tabs.filter { $0.busy }.count
-        let busyBackground: Int = background.filter { $0.busy == true }.count
+        let busyTabs: Int = model.tabs.filter { $0.busy && !$0.attention }.count
+        let busyBackground: Int = background.filter { $0.busy == true && $0.attention != true }.count
         let busyJobs: Int = liveJobs.filter { $0.state == "running" }.count
         let busyRuns: Int = model.runs.filter { $0.state == "running" }.count
         let working = busyTabs + busyBackground + busyJobs + busyRuns
         let waitingTabs: Int = model.tabs.filter { $0.attention }.count
         let waiting = waitingTabs + background.filter { $0.attention == true }.count
-        return "\(working) working" + (waiting > 0 ? ", \(waiting) waiting for you" : "")
+        let parts = (working > 0 || waiting == 0 ? ["\(working) working"] : []) + (waiting > 0 ? ["\(waiting) waiting for you"] : [])
+        return parts.joined(separator: ", ")
     }
 
     private func icon(_ command: String) -> String {
@@ -200,6 +201,13 @@ section("Pair runs today", model.runs.isEmpty) {
         case "ollama": return "cpu"
         default: return "terminal"
         }
+    }
+
+    static func title(_ s: SessionInfo) -> String {
+        let agent = Agent.detect(s.command)
+        if let t = s.title, let topic = Agent.topic(fromTitle: t, agentName: agent?.name ?? ""),
+           topic.contains(where: \.isLetter) { return topic }
+        return agent?.name ?? s.name
     }
 
     @ViewBuilder

@@ -9,7 +9,7 @@ NSGradient(starting: NSColor(srgbRed: 0.165, green: 0.165, blue: 0.176, alpha: 1
 let s = 1.15, o = 90.0
 func p(_ x: Double, _ y: Double) -> NSPoint { NSPoint(x: (x - 150) * s + o, y: size - ((y - 150) * s + o)) }
 NSColor(srgbRed: 0.96, green: 0.96, blue: 0.97, alpha: 1).setFill()
-let c = (x: 312.0, y: 312.0), r = 121.0, k = 0.30 * r
+let c = (x: 288.0, y: 300.0), r = 145.0, k = 0.30 * r
 let star = NSBezierPath()
 star.move(to: p(c.x, c.y - r))
 star.curve(to: p(c.x + r, c.y), controlPoint1: p(c.x + k, c.y - k), controlPoint2: p(c.x + k, c.y - k))
@@ -18,7 +18,7 @@ star.curve(to: p(c.x - r, c.y), controlPoint1: p(c.x - k, c.y + k), controlPoint
 star.curve(to: p(c.x, c.y - r), controlPoint1: p(c.x - k, c.y - k), controlPoint2: p(c.x - k, c.y - k))
 star.close()
 star.fill()
-let tl = p(448, 408), br = p(584, 443)
+let tl = p(448, 414), br = p(584, 443)
 NSBezierPath(roundedRect: NSRect(x: tl.x, y: br.y, width: br.x - tl.x, height: tl.y - br.y), xRadius: 6, yRadius: 6).fill()
 NSGraphicsContext.restoreGraphicsState()
 let cg = rep.cgImage!

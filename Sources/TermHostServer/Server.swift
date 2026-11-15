@@ -28,6 +28,7 @@ final class HostSession {
     var asking = false
     var permission: PermissionInfo?
     var permissionWaiter: Connection?
+    var queuedPermissions: [(info: PermissionInfo, waiter: Connection)] = []
     var question: QuestionInfo?
     var questionWaiter: Connection?
     var active = Date().timeIntervalSince1970
@@ -157,8 +158,25 @@ public final class HostServer: @unchecked Sendable {
         s.permissionWaiter?.send(Message(op: "decision", message: answer))
         s.permissionWaiter = nil
         s.permission = nil
-        s.asking = false
-        for (_, c) in s.clients { c.send(Message(op: "permission", id: s.id)) }
+        showNextPermission(s)
+    }
+
+    private func releasePermissions(_ s: HostSession) {
+        for q in s.queuedPermissions { q.waiter.send(Message(op: "decision", message: "")) }
+        s.queuedPermissions = []
+        if s.permission != nil { answerPermission(s, "") }
+    }
+
+    private func showNextPermission(_ s: HostSession) {
+        if s.queuedPermissions.isEmpty {
+            s.asking = false
+            for (_, c) in s.clients { c.send(Message(op: "permission", id: s.id)) }
+            return
+        }
+        let next = s.queuedPermissions.removeFirst()
+        s.permission = next.info
+        s.permissionWaiter = next.waiter
+        for (_, c) in s.clients { c.send(Message(op: "permission", id: s.id, permission: next.info)) }
     }
 
     static func permissionSummary(_ tool: String, _ input: [String: Any], cwd: String?) -> String {
@@ -182,11 +200,13 @@ public final class HostServer: @unchecked Sendable {
         clientKinds[key] = nil
         for (req, w) in toolWaiters where ObjectIdentifier(w) == key { toolWaiters[req] = nil }
         for s in sessions.values where s.questionWaiter.map(ObjectIdentifier.init) == key { clearQuestion(s) }
-        for s in sessions.values where s.permissionWaiter.map(ObjectIdentifier.init) == key {
-            s.permissionWaiter = nil
-            s.permission = nil
-            s.asking = false
-            for (_, c) in s.clients { c.send(Message(op: "permission", id: s.id)) }
+        for s in sessions.values {
+            s.queuedPermissions.removeAll { ObjectIdentifier($0.waiter) == key }
+            if s.permissionWaiter.map(ObjectIdentifier.init) == key {
+                s.permissionWaiter = nil
+                s.permission = nil
+                showNextPermission(s)
+            }
         }
         if let id = bindings.removeValue(forKey: key), let s = sessions[id] {
             s.clients[key] = nil
@@ -210,7 +230,7 @@ public final class HostServer: @unchecked Sendable {
                     resize(s, cols: size.cols, rows: size.rows, nudge: false)
                 }
                 s.process.write(frame.payload)
-                if s.permission != nil { answerPermission(s, "") }
+                releasePermissions(s)
                 s.attention = false
                 s.asking = false
                 s.active = Date().timeIntervalSince1970
@@ -333,11 +353,14 @@ public final class HostServer: @unchecked Sendable {
                 conn.send(Message(op: "decision", message: "")); return
             }
             guard !s.clients.isEmpty || !push.devices.isEmpty else { conn.send(Message(op: "decision", message: "")); return }
-            if s.permission != nil { answerPermission(s, "") }
             let input = e["tool_input"] as? [String: Any] ?? [:]
             let req = PermissionInfo(id: String(UUID().uuidString.prefix(8)).lowercased(), tool: tool,
                                      summary: Self.permissionSummary(tool, input, cwd: e["cwd"] as? String),
                                      canAlways: !((e["permission_suggestions"] as? [Any]) ?? []).isEmpty)
+            if s.permission != nil {
+                s.queuedPermissions.append((req, conn))
+                return
+            }
             s.permission = req
             s.permissionWaiter = conn
             for (_, c) in s.clients { c.send(Message(op: "permission", id: s.id, permission: req)) }
@@ -537,13 +560,13 @@ public final class HostServer: @unchecked Sendable {
             s.hookPid = pid
             s.busy = false
         case "UserPromptSubmit":
-            if s.permission != nil { answerPermission(s, "") }
+            releasePermissions(s)
             s.hookPid = pid
             s.busy = true
             s.attention = false
             s.asking = false
         case "Stop":
-            if s.permission != nil { answerPermission(s, "") }
+            releasePermissions(s)
             s.hookPid = pid
             s.busy = false
             raiseAttention(s, .finished)
