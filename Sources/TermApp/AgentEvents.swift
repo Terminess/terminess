@@ -59,7 +59,7 @@ enum AgentEvents {
                 Claude asks permission for from Terminess or your iPhone.
 
                 This adds a small entry to Claude Code's settings (~/.claude/settings.json) that only acts inside Terminess. \
-                Your other settings stay as they are, and you can turn it off in Settings, Windows and Tabs.
+                Your other settings stay as they are, and you can turn it off in Settings, Agents.
                 """
         } else {
             alert.messageText = "Let Codex tell Terminess when it finishes or needs approval?"
@@ -69,7 +69,7 @@ enum AgentEvents {
 
                 This sets notify in Codex's settings (~/.codex/config.toml) and adds a hook (~/.codex/hooks.json), both \
                 Terminess commands that only act inside Terminess. Codex asks you once to trust the hook: type /hooks in \
-                Codex. Your other settings stay as they are, and you can turn it off in Settings, Windows and Tabs.
+                Codex. Your other settings stay as they are, and you can turn it off in Settings, Agents.
                 """
         }
         alert.addButton(withTitle: "Turn On")

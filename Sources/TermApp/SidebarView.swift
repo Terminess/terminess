@@ -27,6 +27,7 @@ struct SidebarView: View {
 
             List(selection: $selection) {
                 if model.search.isEmpty {
+                    shortcutsSection
                     openSection
                     if !model.background.isEmpty { runningSection }
                     pairSection
@@ -97,6 +98,27 @@ struct SidebarView: View {
 
     private func shortPath(_ p: String) -> String {
         SidebarModel.tilde(p)
+    }
+
+    @AppStorage("sidebar.shortcutsExpanded") private var shortcutsExpanded = true
+
+    private var shortcutsSection: some View {
+        Section("Shortcuts", isExpanded: $shortcutsExpanded) {
+            shortcut("Library", "books.vertical", #selector(AppDelegate.showLibrary(_:)),
+                     help: "The skills, slash commands, subagents and MCP servers Claude Code and Codex load, in one place.")
+            shortcut("Models", "cpu", #selector(AppDelegate.showModels(_:)),
+                     help: "Which model each agent uses for orchestration, building, reviews and handed-off work.")
+            shortcut("Pair iPhone", "iphone", #selector(AppDelegate.showPairPhone(_:)),
+                     help: "Follow and steer what's running here from Terminess for iPhone.")
+        }
+    }
+
+    private func shortcut(_ title: String, _ symbol: String, _ action: Selector, help: String) -> some View {
+        Button { NSApp.sendAction(action, to: nil, from: nil) } label: {
+            Label(title, systemImage: symbol).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private var pairSection: some View {

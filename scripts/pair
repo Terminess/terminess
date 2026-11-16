@@ -5,6 +5,9 @@
 #   pair handoff [claude|codex] [opts] "task"         other agent does the work, may edit files
 #   pair review  [claude|codex] [opts] ["focus"]      other agent reviews uncommitted changes
 #   pair log     [N]                                  show the last N ledger entries (default 10)
+#   pair models                                       show which model each agent uses for which job
+#   pair models set AGENT ROLE MODEL                  e.g. pair models set codex review gpt-6-astra
+#   pair models unset AGENT ROLE                      back to the agent's own default
 #
 # Parallel (other agent works in its own git worktree while you carry on):
 #   pair parallel [claude|codex] [opts] "task"        start in the background, print a job id
@@ -21,6 +24,12 @@
 #   --brief-file F    read the brief from file F (use - for stdin)
 #   --transcript F    main session transcript to point the other agent at
 #   --from claude|codex  who is calling (normally auto-detected)
+#   --model MODEL     use this model for this run, whatever pair models says
+#
+# Models: each agent can use one model for reviews, another for work (handoff,
+# parallel) and another for questions (ask). For Claude Code, "main" is the
+# session you talk to and "subagents" the agents it starts; Terminess applies
+# those two to new tabs. Kept in ~/.config/pair/models.json (or $PAIR_MODELS).
 #
 # Target defaults to "the other one". Runs are recorded in ~/.local/state/pair/
 # (or $PAIR_STATE). House rules added to every brief, if you want any, go in
@@ -37,7 +46,19 @@ mkdir -p "$STATE/runs"
 die() { echo "pair: $*" >&2; exit 1; }
 tilde() { case "$1" in "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
 
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+MODELS_FILE="${PAIR_MODELS:-${XDG_CONFIG_HOME:-$HOME/.config}/pair/models.json}"
+role_model() {
+  [ -r "$MODELS_FILE" ] || return 0
+  jq -r --arg a "$1" --arg r "$2" '.[$a][$r] // empty' "$MODELS_FILE" 2>/dev/null || true
+}
+valid_role() {
+  case "$1:$2" in
+    claude:main|claude:subagents|claude:review|claude:work|claude:ask|codex:review|codex:work|codex:ask) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 PAR="$STATE/parallel"
 
@@ -157,11 +178,43 @@ case "$MODE" in
     [ -f "$LEDGER" ] || { echo "No runs yet."; exit 0; }
     tail -n "$n" "$LEDGER" | jq -r '"\(.ts)  \(.from) -> \(.to)  \(.mode)  \(.repo | split("/") | last)  [\(.status)]\n    \(.brief_head)\n    result: \(.result_file)"'
     exit 0 ;;
+  models)
+    sub="${1:-show}"
+    case "$sub" in
+      show)
+        printf '%-8s %-10s %-22s %s\n' AGENT ROLE MODEL USED-FOR
+        for pairing in "claude main|the session you talk to (new Terminess tabs)" \
+                       "claude subagents|the agents Claude Code starts (new Terminess tabs)" \
+                       "claude review|pair review, when Codex asks Claude" \
+                       "claude work|pair handoff and parallel, when Codex asks Claude" \
+                       "claude ask|pair ask, when Codex asks Claude" \
+                       "codex review|pair review, when Claude asks Codex" \
+                       "codex work|pair handoff and parallel, when Claude asks Codex" \
+                       "codex ask|pair ask, when Claude asks Codex"; do
+          key="${pairing%%|*}"; a="${key% *}"; r="${key#* }"; m="$(role_model "$a" "$r")"
+          printf '%-8s %-10s %-22s %s\n' "$a" "$r" "${m:-(its default)}" "${pairing#*|}"
+        done
+        echo; echo "Kept in $(tilde "$MODELS_FILE")" ;;
+      set|unset)
+        a="${2:-}"; r="${3:-}"; m="${4:-}"
+        valid_role "$a" "$r" || die "usage: pair models set AGENT ROLE MODEL, or pair models unset AGENT ROLE (claude roles: main subagents review work ask; codex roles: review work ask)"
+        [ "$sub" = "unset" ] || [ -n "$m" ] || die "usage: pair models set $a $r MODEL"
+        mkdir -p "$(dirname "$MODELS_FILE")"
+        cur='{}'; [ -r "$MODELS_FILE" ] && jq -e . "$MODELS_FILE" >/dev/null 2>&1 && cur="$(cat "$MODELS_FILE")"
+        tmp="$(mktemp "$MODELS_FILE.XXXXXX")"
+        if [ "$sub" = "set" ]; then printf '%s' "$cur" | jq --arg a "$a" --arg r "$r" --arg m "$m" '.[$a][$r] = $m' > "$tmp"
+        else printf '%s' "$cur" | jq --arg a "$a" --arg r "$r" 'if .[$a] then del(.[$a][$r]) else . end' > "$tmp"; fi
+        mv "$tmp" "$MODELS_FILE"
+        if [ "$sub" = "set" ]; then echo "$a $r: $m"; else echo "$a $r: its default"; fi
+        case "$r" in main|subagents) echo "(applies to new Terminess tabs)" ;; esac ;;
+      *) die "usage: pair models [show | set AGENT ROLE MODEL | unset AGENT ROLE]" ;;
+    esac
+    exit 0 ;;
   -h|--help|help) usage 0 ;;
-  *) die "unknown mode '$MODE' (ask, handoff, review, parallel, status, wait, diff, apply, discard, log)" ;;
+  *) die "unknown mode '$MODE' (ask, handoff, review, parallel, models, status, wait, diff, apply, discard, log)" ;;
 esac
 
-TARGET=""; FROM=""; FIX=0; BASE=""; CONTINUE=0; BRIEF_FILE=""; TRANSCRIPT=""
+TARGET=""; FROM=""; FIX=0; BASE=""; CONTINUE=0; BRIEF_FILE=""; TRANSCRIPT=""; MODEL=""
 PROMPT_PARTS=()
 if [ $# -ge 1 ] && { [ "$1" = "claude" ] || [ "$1" = "codex" ]; }; then TARGET="$1"; shift; fi
 while [ $# -gt 0 ]; do
@@ -172,6 +225,7 @@ while [ $# -gt 0 ]; do
     --brief-file) BRIEF_FILE="${2:?--brief-file needs a path}"; shift ;;
     --transcript) TRANSCRIPT="${2:?--transcript needs a path}"; shift ;;
     --from) FROM="${2:?--from needs claude or codex}"; shift ;;
+    --model) MODEL="${2:?--model needs a model}"; shift ;;
     -h|--help) usage 0 ;;
     *) PROMPT_PARTS+=("$1") ;;
   esac
@@ -253,6 +307,7 @@ if [ "$MODE" = "parallel" ]; then
   } > "$P/meta"
 
   TARG=""; [ -n "$TRANSCRIPT" ] && TARG="--transcript $(printf '%q' "$TRANSCRIPT")"
+  [ -n "$MODEL" ] && TARG="$TARG --model $(printf '%q' "$MODEL")"
   SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
   {
     echo "cd $(printf '%q' "$WT") || exit 1"
@@ -279,6 +334,9 @@ fi
 WRITE=0
 [ "$MODE" = "handoff" ] && WRITE=1
 [ "$MODE" = "review" ] && [ $FIX -eq 1 ] && WRITE=1
+
+case "$MODE" in review) ROLE="review" ;; ask) ROLE="ask" ;; *) ROLE="work" ;; esac
+[ -n "$MODEL" ] || MODEL="$(role_model "$TARGET" "$ROLE")"
 
 cap() { echo "$1" | awk '{print toupper(substr($0,1,1)) substr($0,2)}'; }
 CALLER_NAME="$(cap "$FROM")"; [ "$FROM" = "user" ] && CALLER_NAME="The user"
@@ -344,7 +402,7 @@ snapshot() {
 }
 BEFORE=""; [ $IS_GIT -eq 1 ] && BEFORE="$(snapshot || true)"
 
-echo "pair: $FROM -> $TARGET ($MODE$([ $WRITE -eq 1 ] && echo ', write')) in $(tilde "$REPO")" >&2
+echo "pair: $FROM -> $TARGET ($MODE$([ $WRITE -eq 1 ] && echo ', write')${MODEL:+, $MODEL}) in $(tilde "$REPO")" >&2
 echo "pair: run $(basename "$RUN") (pair log to list runs)" >&2
 
 SESSION_ID=""; STATUS="ok"
@@ -373,6 +431,7 @@ if [ "$TARGET" = "claude" ]; then
       "Bash(ls:*)" "Bash(cat:*)" "Bash(grep:*)" "Bash(rg:*)" "Bash(find:*)" "Bash(wc:*)" "Bash(head:*)" "Bash(tail:*)")
   fi
   [ -n "$RESUME_ID" ] && ARGS+=(--resume "$RESUME_ID")
+  [ -n "$MODEL" ] && ARGS+=(--model "$MODEL")
   if printf '%s' "$PROMPT" | "${CLEAN_ENV[@]}" claude "${ARGS[@]}" > "$RUN/events.jsonl" 2> "$RUN/stderr.log"; then :; else STATUS="error"; fi
   jq -c 'select(.type == "result")' "$RUN/events.jsonl" 2>/dev/null | tail -n 1 > "$RUN/out.json" || true
   if jq -e . "$RUN/out.json" >/dev/null 2>&1; then
@@ -394,6 +453,7 @@ else
     ARGS=(exec -C "$REPO")
   fi
   ARGS+=(--json -o "$RESULT" --skip-git-repo-check)
+  [ -n "$MODEL" ] && ARGS+=(-c "model=\"$MODEL\"")
   if [ -n "$RESUME_ID" ]; then
     if [ $WRITE -eq 1 ]; then ARGS+=(-c 'sandbox_mode="workspace-write"' -c 'approval_policy="never"')
     else ARGS+=(-c 'sandbox_mode="read-only"'); fi
@@ -432,9 +492,9 @@ jq -cn --arg ts "$TS" --arg from "$FROM" --arg to "$TARGET" --arg mode "$MODE" \
   --arg session_id "$SESSION_ID" --arg resumed "$RESUME_ID" \
   --arg transcript "$TRANSCRIPT" --arg brief_head "$(printf '%s' "${BRIEF:-review}" | head -n1 | cut -c1-140)" \
   --arg result_file "$RESULT" --arg run "$RUN" --arg changed "$CHANGED" \
-  --arg parallel_id "${PAIR_PARALLEL_ID:-}" \
+  --arg parallel_id "${PAIR_PARALLEL_ID:-}" --arg model "$MODEL" \
   '{ts:$ts,from:$from,to:$to,mode:(if $parallel_id != "" then "parallel" else $mode end),parallel_id:$parallel_id,
-    write:($write==1),repo:$repo,status:$status,
+    write:($write==1),repo:$repo,status:$status,model:$model,
     session_id:$session_id,resumed_from:$resumed,main_transcript:$transcript,
     brief_head:$brief_head,files_changed:($changed|split("\n")|map(select(.!=""))),
     result_file:$result_file,run_dir:$run}' >> "$LEDGER"

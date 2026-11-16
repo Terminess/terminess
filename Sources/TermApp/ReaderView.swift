@@ -1,4 +1,5 @@
 import TermTranscript
+import TermHost
 import AppKit
 import SwiftUI
 
@@ -286,6 +287,11 @@ struct ItemView: View {
 @MainActor
 final class ComposerState: ObservableObject {
     @Published var busy = false
+    @Published var agentID: String?
+    @Published var models: [AgentModels.Model] = []
+    @Published var model: String?
+    @Published var pendingModel: AgentModels.Model?
+    @Published var switching = false
     @Published var draft = ""
     var drops: WindowLink?
 }
@@ -303,6 +309,7 @@ struct ComposerView: View {
     @State private var height: CGFloat = 22
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
         HStack(alignment: .bottom, spacing: 8) {
             ZStack(alignment: .topLeading) {
                 if text.isEmpty {
@@ -329,6 +336,8 @@ struct ComposerView: View {
                 .help("Send (Return)")
             }
         }
+            if state.agentID != nil, !state.models.isEmpty { modelPicker }
+        }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.06))
@@ -337,6 +346,31 @@ struct ComposerView: View {
         .padding(.bottom, 10)
         .padding(.top, 4)
         .onDrop(of: Drops.utTypes, isTargeted: nil) { _ in state.drops?.dropFromSwiftUI() ?? false }
+    }
+
+    private var modelPicker: some View {
+        let shown = state.pendingModel?.name ?? state.model ?? "Model"
+        return Menu {
+            ForEach(state.models) { m in
+                Button {
+                    state.pendingModel = (m.name == state.model) ? nil : m
+                } label: {
+                    if m.name == (state.pendingModel?.name ?? state.model) { Label(m.name, systemImage: "checkmark") }
+                    else { Text(m.name) }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: state.switching ? "arrow.triangle.2.circlepath" : "sparkle").font(.system(size: 10))
+                Text(state.switching ? "Switching to \(shown)…" : shown).font(.system(size: 11, weight: .medium))
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.visible)
+        .fixedSize()
+        .foregroundStyle(state.pendingModel != nil ? Color.accentColor : Color.secondary)
+        .disabled(state.switching)
+        .help("The model for your next message and the ones after it, in this session only. Your default for new sessions stays as it is.")
     }
 
     private func escape() {

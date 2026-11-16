@@ -108,7 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func newAgentTab(_ sender: NSMenuItem) {
         guard let model = sender.representedObject as? String, let exe = HostService.executable else { return }
         if AgentKey.read() == nil {
-            alert("Add your Anthropic API key", "Terminess agent tabs use your own API key, billed to your Anthropic account. Add it in Settings, Windows and Tabs, then try again.")
+            alert("Add your Anthropic API key", "Terminess agent tabs use your own API key, billed to your Anthropic account. Add it in Settings, Agents, then try again.")
             return
         }
         let c = open(tabbedWith: keyController?.window, directory: keyController?.currentDirectory,
@@ -120,13 +120,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         LibraryWindow.show(directory: keyController?.currentDirectory)
     }
 
+    func showSettings(page: String) {
+        UserDefaults.standard.set(page, forKey: "settingsPage")
+        showSettings(nil)
+    }
+
+    @objc func showModels(_ sender: Any?) { showSettings(page: "models") }
+
     @objc func showSettings(_ sender: Any?) {
         if settingsWindow == nil {
-            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
+            let host = NSHostingController(rootView: SettingsView())
+            host.sizingOptions = []
+            let w = NSWindow(contentViewController: host)
             w.title = "Settings"
-            w.styleMask = [.titled, .closable]
+            w.styleMask = [.titled, .closable, .resizable]
             w.isReleasedWhenClosed = false
-            w.center()
+            let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame.height ?? 800
+            w.setContentSize(NSSize(width: 500, height: min(720, visible - 80)))
+            w.contentMinSize = NSSize(width: 500, height: 360)
+            w.contentMaxSize = NSSize(width: 500, height: CGFloat.greatestFiniteMagnitude)
+            if !w.setFrameUsingName("Settings") { w.center() }
+            w.setFrameAutosaveName("Settings")
             settingsWindow = w
         }
         settingsWindow?.makeKeyAndOrderFront(nil)

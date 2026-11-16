@@ -8,9 +8,20 @@ struct SettingsView: View {
     @State private var editingForDark = true
     @State private var addingBinding = false
     private let fonts = Settings.monospacedFonts()
+    @AppStorage("settingsPage") private var page = "appearance"
+    static let pages = [("appearance", "Appearance"), ("text", "Text"), ("keyboard", "Keyboard"),
+                        ("windows", "Windows"), ("agents", "Agents"), ("models", "Models")]
 
     var body: some View {
+        VStack(spacing: 0) {
+        Picker("Page", selection: $page) {
+            ForEach(SettingsView.pages, id: \.0) { Text($0.1).tag($0.0) }
+        }
+        .pickerStyle(.segmented).labelsHidden().controlSize(.small)
+        .frame(width: 460)
+        .padding(.top, 12).padding(.bottom, 2)
         Form {
+            if page == "appearance" {
             Section("Style") {
                 Picker("Style", selection: $settings.style) {
                     Text("Classic").tag("classic")
@@ -36,7 +47,9 @@ struct SettingsView: View {
                     }
                 }
             }
+            }
 
+            if page == "appearance" {
             Section("Appearance") {
                 Picker("Mode", selection: $settings.appearance) {
                     Text("Follow System").tag(0)
@@ -63,7 +76,9 @@ struct SettingsView: View {
                     }
                 }
             }
+            }
 
+            if page == "text" {
             Section("Text") {
                 Picker("Font", selection: $settings.fontName) {
                     Text("SF Mono (system)").tag("")
@@ -89,7 +104,9 @@ struct SettingsView: View {
                 Text("Draws text without macOS font smoothing, which otherwise makes it look heavier. iTerm2 does this by default on Retina screens.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            }
 
+            if page == "text" {
             Section("Reader and Composer") {
                 Toggle("Hide the agent's own input box while the composer is open", isOn: $settings.composerHidesAgentInput)
                 Text("Leaves one place to type. The agent's status line stays, just above the composer. Questions and menus from the agent still show in the terminal.")
@@ -101,7 +118,9 @@ struct SettingsView: View {
                 Text("Native redraws the agent's status line as labels and meters. Esc or Cmd-. in the composer stops the agent while it works.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            }
 
+            if page == "text" {
             Section("Links") {
                 Picker("Open file paths in", selection: $settings.editor) {
                     ForEach(Editor.choices, id: \.0) { Text($0.1).tag($0.0) }
@@ -109,7 +128,9 @@ struct SettingsView: View {
                 Text("Hold Command over a file path or link to underline it, and click to open. Paths like src/app.ts:42 open at that line.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            }
 
+            if page == "text" {
             Section("Cursor") {
                 Picker("Shape", selection: $settings.cursorShape) {
                     Text("Block").tag("block")
@@ -119,7 +140,9 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
                 Toggle("Blink", isOn: $settings.cursorBlink)
             }
+            }
 
+            if page == "keyboard" {
             Section("Keyboard") {
                 Picker("Option key", selection: $settings.optionKey) {
                     Text("Left Option is Meta").tag("left")
@@ -146,7 +169,9 @@ struct SettingsView: View {
                 Text("Sends text or an escape sequence (\\e for Escape, \\r, \\n, \\t, \\xHH). Menu shortcuts can be changed in System Settings, Keyboard, Keyboard Shortcuts, App Shortcuts.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            }
 
+            if page == "windows" {
             Section("Memory") {
                 Toggle("Park idle agent tabs", isOn: $settings.idleParking)
                 Picker("After", selection: $settings.idleParkingMinutes) {
@@ -159,7 +184,9 @@ struct SettingsView: View {
                 Text("Claude Code and Codex tabs left idle in the background are stopped to free memory, and resume the same conversation when you switch back.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            }
 
+            if page == "keyboard" {
             Section("Quick Terminal") {
                 Picker("Hotkey", selection: $settings.quickTerminalKey) {
                     Text("Off").tag("off")
@@ -170,8 +197,10 @@ struct SettingsView: View {
                 Text("Drops a terminal down from the top of the screen over any app. Press the hotkey again to hide it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            }
 
-            Section("Windows, Tabs and Scrollback") {
+            if page == "windows" {
+            Section("Windows and Tabs") {
                 HStack {
                     Text("New windows open in")
                     Spacer()
@@ -185,15 +214,6 @@ struct SettingsView: View {
                 }
                 Toggle("Reopen windows and tabs on launch", isOn: $settings.restoreSession)
                 Toggle("Keep shells and agents running after Terminess quits", isOn: $settings.keepSessions)
-                AgentEventsToggle(agent: .claude).disabled(!settings.keepSessions)
-                AgentEventsToggle(agent: .codex).disabled(!settings.keepSessions)
-                PairSkillToggle(agent: .claude)
-                PairSkillToggle(agent: .codex)
-                AgentToolsToggle(agent: .claude)
-                AgentToolsToggle(agent: .codex)
-                AgentKeyField()
-                TextField("Local models on", text: $settings.localModelsHost, prompt: Text("This Mac, or an SSH host such as my-server"))
-                    .help("Shell, Local Model lists the Ollama models on this machine and opens a tab chatting with one.")
                     .help("Shells run in terminessd, so quitting the app leaves them running and reopening it reattaches. Applies to new tabs.")
                 Toggle("New tabs open in the current tab's folder", isOn: $settings.newTabsInCurrentFolder)
                 Toggle("Shell integration (zsh)", isOn: $settings.shellIntegration)
@@ -207,10 +227,27 @@ struct SettingsView: View {
                 }
                 Text("Scrollback applies to new tabs.").font(.caption).foregroundStyle(.secondary)
             }
+            }
+            if page == "agents" {
+            Section("Agents") {
+                AgentEventsToggle(agent: .claude).disabled(!settings.keepSessions)
+                AgentEventsToggle(agent: .codex).disabled(!settings.keepSessions)
+                PairSkillToggle(agent: .claude)
+                PairSkillToggle(agent: .codex)
+                AgentToolsToggle(agent: .claude)
+                AgentToolsToggle(agent: .codex)
+                AgentKeyField()
+                TextField("Local models on", text: $settings.localModelsHost, prompt: Text("This Mac, or an SSH host such as my-server"))
+                    .help("Shell, Local Model lists the Ollama models on this machine and opens a tab chatting with one.")
+                Text("The first two need \"Keep shells and agents running\", in Windows.").font(.caption).foregroundStyle(.secondary)
+            }
+            }
+            if page == "models" { ModelRolesSection() }
         }
         .formStyle(.grouped)
+        }
         .frame(width: 500)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(minHeight: 360, maxHeight: .infinity)
         .sheet(isPresented: $addingBinding) {
             BindingRecorder { b in
                 settings.keyBindings.append(b)

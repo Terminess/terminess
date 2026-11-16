@@ -157,6 +157,8 @@ public struct Message: Codable, Equatable {
     public var permission: PermissionInfo?
     public var question: QuestionInfo?
     public var history: [HistoryItem]?
+    public var agentModels: [AgentModel]?
+    public var roles: ModelRoles?
 
     public init(op: String, version: Int? = nil, host: String? = nil, id: String? = nil, name: String? = nil,
                 cwd: String? = nil, command: String? = nil, args: [String]? = nil, cols: Int? = nil, rows: Int? = nil,

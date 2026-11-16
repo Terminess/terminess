@@ -61,7 +61,7 @@ final class TerminalSession {
 
     private func createTarget(cwd: String) -> HostAttachment.Target {
         let shell = PTYProcess.userShell
-        let env = ShellIntegration.environment(for: shell, base: PTYProcess.defaultEnvironment(program: "Terminess"))
+        let env = ShellIntegration.environment(for: shell, base: PTYProcess.defaultEnvironment(program: "Terminess").merging(ModelRoles.load().environment()) { _, role in role })
         return .create(cwd: cwd, command: nil, args: [], env: env, name: nil)
     }
 
@@ -141,7 +141,7 @@ final class TerminalSession {
         let shell = PTYProcess.userShell
         let name = "-" + (shell.split(separator: "/").last.map(String.init) ?? "zsh")
         do {
-            let env = ShellIntegration.environment(for: shell, base: PTYProcess.defaultEnvironment(program: "Terminess"))
+            let env = ShellIntegration.environment(for: shell, base: PTYProcess.defaultEnvironment(program: "Terminess").merging(ModelRoles.load().environment()) { _, role in role })
             let p = try PTYProcess(executable: shell, argv0: name, environment: env, workingDirectory: cwd,
                                    columns: terminal.columns, rows: terminal.rows,
                                    pixelWidth: terminal.columns * cellWidth, pixelHeight: terminal.rows * cellHeight)

@@ -187,6 +187,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     var customTitle: String? { didSet { refreshTitle() } }
     private(set) var agent: Agent?
     private(set) var displayTitle = "shell"
+    var switchingModel = false
 
     var paneHost: NSView { host }
     var contentContainer: NSView { container }
@@ -327,7 +328,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         container.strip.native = Settings.shared.statusStyle == "native"
         container.strip.rows = status
         container.needsLayout = true
-        guard mode == .chat, Agent.detect(session.process?.foregroundCommand) != nil else { return }
+        refreshComposerModel()
+        guard mode == .chat, !switchingModel, Agent.detect(session.process?.foregroundCommand) != nil else { return }
         questionTimer?.cancel()
         if !inputVisible && !revealedForQuestion {
             let work = DispatchWorkItem { [weak self] in
@@ -447,6 +449,44 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     func sendFromComposer(_ text: String) {
         guard let pane = focused else { return }
         if pane.parked != nil { resume(pane) }
+        if let model = composerState.pendingModel {
+            Task { @MainActor in
+                composerState.switching = true
+                while composerState.busy { try? await Task.sleep(nanoseconds: 300_000_000) }
+                let ok = await switchModel(model)
+                composerState.switching = false
+                composerState.pendingModel = nil
+                guard ok else {
+                    composerState.draft = text
+                    let alert = NSAlert()
+                    alert.messageText = "Couldn't switch to \(model.name)"
+                    alert.informativeText = "The agent didn't confirm the change, so your message wasn't sent. It's back in the message box."
+                    if let w = window { alert.beginSheetModal(for: w, completionHandler: nil) }
+                    return
+                }
+                composerState.model = model.name
+                typeIntoAgent(text, pane: pane)
+            }
+            return
+        }
+        typeIntoAgent(text, pane: pane)
+    }
+
+    func refreshComposerModel() {
+        let id = Agent.detect(focused?.session.process?.foregroundCommand)?.id
+        let usable = id == "claude" || id == "codex" ? id : nil
+        if composerState.agentID != usable {
+            composerState.agentID = usable
+            composerState.models = AgentModels.list(for: usable)
+            composerState.model = nil
+            composerState.pendingModel = nil
+        }
+        guard usable != nil, !switchingModel,
+              let seen = AgentModels.current(onScreen: session.terminal.screenText(), agentID: usable) else { return }
+        if composerState.model != seen { composerState.model = seen }
+    }
+
+    private func typeIntoAgent(_ text: String, pane: Pane) {
         let t = pane.session.terminal
         pane.session.send(InputEncoder.paste(text, modes: t.modes))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {

@@ -210,9 +210,29 @@ enum DebugScript {
                         case "library": app.showLibrary(nil)
                         case "instructions": app.showProjectInstructions(nil)
                         case "issues": app.showIssueBoard(nil)
+                        case "settings": app.showSettings(nil)
+                        case "models": app.showModels(nil)
                         default: break
                         }
                     }
+                }
+            }
+        }
+        for (key, isModel) in [("TERMAPP_MODEL_AT", true), ("TERMAPP_COMPOSE_AT", false)] {
+            guard let spec = env[key], let colon = spec.firstIndex(of: ":"), let delay = Double(spec[..<colon]) else { continue }
+            let value = String(spec[spec.index(after: colon)...])
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak controller] in
+                MainActor.assumeIsolated {
+                    guard let c = controller else { return }
+                    if isModel {
+                        c.refreshComposerModel()
+                        let m = c.composerState.models.first { $0.name == value }
+                        c.composerState.pendingModel = m
+                        print("model: picked \(m?.name ?? "nothing") from \(c.composerState.models.map(\.name)) (showing \(c.composerState.model ?? "none"))")
+                    } else {
+                        print("compose: \(value)"); c.sendFromComposer(value)
+                    }
+                    fflush(stdout)
                 }
             }
         }

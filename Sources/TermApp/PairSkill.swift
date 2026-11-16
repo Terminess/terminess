@@ -64,6 +64,8 @@ enum PairSkill {
 
         Always pass `--from \(me)`. The target then defaults to \(other).
 
+        The user can choose which model \(Other) uses for reviews, for work and for questions (Terminess Settings, or `pair models`), and pair applies it by itself. Pass `--model NAME` only when the user names a model for this one run.
+
         ## Parallel work
 
         `pair parallel --from \(me) "task"` copies the repo (with uncommitted changes) into a separate git worktree, starts \(Other) there in the background and returns a job id. Carry on in the main copy meanwhile; pick tasks that touch different files.

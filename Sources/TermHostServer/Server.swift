@@ -324,6 +324,22 @@ public final class HostServer: @unchecked Sendable {
             }
         case "history":
             conn.send(Message(op: "history", history: History.recent()))
+        case "model-roles", "set-model-role":
+            var roles = ModelRoles.load()
+            if m.op == "set-model-role" {
+                guard let agent = m.name, let role = m.id, ModelRoles.roles[agent]?.contains(role) == true else {
+                    conn.send(Message(op: "error", message: "no such role")); return
+                }
+                roles.set(agent, role, m.message ?? "")
+                do { try roles.save() } catch { conn.send(Message(op: "error", message: "\(error)")); return }
+            }
+            var reply = Message(op: "model-roles")
+            reply.roles = roles
+            conn.send(reply)
+        case "agent-models":
+            var reply = Message(op: "agent-models", name: m.name)
+            reply.agentModels = AgentModels.list(for: m.name)
+            conn.send(reply)
         case "upload":
             upload(m, from: conn)
         case "register-push":
@@ -468,6 +484,7 @@ public final class HostServer: @unchecked Sendable {
         for k in PTYProcess.agentSessionVariables { env[k] = nil }
         let id = String(UUID().uuidString.prefix(8)).lowercased()
         env["TERMINESS_SESSION"] = id
+        for (k, v) in ModelRoles.load().environment() { env[k] = v }
         if let bin = Self.bundledBin {
             let path = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
             if !path.split(separator: ":").contains(Substring(bin)) { env["PATH"] = path + ":" + bin }
