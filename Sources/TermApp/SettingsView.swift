@@ -10,7 +10,7 @@ struct SettingsView: View {
     private let fonts = Settings.monospacedFonts()
     @AppStorage("settingsPage") private var page = "appearance"
     static let pages = [("appearance", "Appearance"), ("text", "Text"), ("keyboard", "Keyboard"),
-                        ("windows", "Windows"), ("agents", "Agents"), ("models", "Models")]
+                        ("windows", "Windows"), ("agents", "Agents"), ("models", "Models"), ("machines", "Machines")]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,7 +18,7 @@ struct SettingsView: View {
             ForEach(SettingsView.pages, id: \.0) { Text($0.1).tag($0.0) }
         }
         .pickerStyle(.segmented).labelsHidden().controlSize(.small)
-        .frame(width: 460)
+        .frame(width: 480)
         .padding(.top, 12).padding(.bottom, 2)
         Form {
             if page == "appearance" {
@@ -243,6 +243,7 @@ struct SettingsView: View {
             }
             }
             if page == "models" { ModelRolesSection() }
+            if page == "machines" { MachinesSection() }
         }
         .formStyle(.grouped)
         }

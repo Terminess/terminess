@@ -82,6 +82,10 @@ struct ConversationView: View {
     @State private var showPhotos = false
     @State private var showFiles = false
     @State private var uploading: Double?
+    @State private var models: [AgentModel] = []
+    @State private var currentModel: String?
+    @State private var pendingModel: AgentModel?
+    @State private var switchingModel = false
     @FocusState private var composing: Bool
     @Environment(\.scenePhase) private var phase
 
@@ -121,10 +125,11 @@ struct ConversationView: View {
                     .padding(.horizontal, 20).padding(.bottom, 4)
             }
             Composer(text: $draft, placeholder: model.isAgent ? "Message \(agentName)" : "Type a command",
-                     busy: model.busy, disabled: model.ended, focus: $composing,
+                     busy: model.busy, disabled: model.ended || switchingModel, focus: $composing,
                      onSend: send, onStop: { model.key(.escape) },
                      onPhoto: { showPhotos = true }, onFile: { showFiles = true }) {
-                ForEach(model.statusChips) { c in Chip(text: c.text, symbol: c.symbol, percent: c.percent) }
+                if !models.isEmpty { modelMenu }
+                ForEach(statusChips) { c in Chip(text: c.text, symbol: c.symbol, percent: c.percent) }
             }
         }
         .background(Theme.background)
@@ -136,6 +141,8 @@ struct ConversationView: View {
         .onChange(of: model.sessionID) { _, id in
             if let id { Task { await chat.follow(session: id, on: connection) } }
         }
+        .task(id: model.command) { await loadModels() }
+        .onReceive(model.$text) { _ in refreshCurrentModel() }
         .onAppear {
             if mode == nil, let input = target.input, input.hasPrefix("claude") || input.hasPrefix("codex") || input.contains(" chat ") || input.contains(" agent ") { mode = .chat }
         }
@@ -163,6 +170,12 @@ struct ConversationView: View {
         #if DEBUG
         .onReceive(NotificationCenter.default.publisher(for: DemoScript.modeChange)) { n in
             if let m = n.object as? ViewMode { mode = m; modeChosen = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: DemoScript.pickModel)) { n in
+            if let i = n.object as? Int, i < models.count { pendingModel = models[i] }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: DemoScript.sendText)) { n in
+            if let t = n.object as? String { draft = t; send() }
         }
         #endif
         .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
@@ -246,10 +259,70 @@ struct ConversationView: View {
         .disabled(model.ended)
     }
 
+    private var modelMenu: some View {
+        Menu {
+            Section("Model for this session") {
+                ForEach(models) { m in
+                    Button { pendingModel = (m.name == currentModel) ? nil : m } label: {
+                        if m.name == (pendingModel?.name ?? currentModel) { Label(m.name, systemImage: "checkmark") } else { Text(m.name) }
+                    }
+                }
+            }
+        } label: {
+            Chip(text: switchingModel ? "Switching…" : (pendingModel?.name ?? currentModel ?? "Model"), symbol: "cpu", menu: true)
+        }
+        .disabled(switchingModel || model.ended)
+    }
+
+    private var statusChips: [StatusChip] {
+        guard !models.isEmpty, let current = currentModel else { return model.statusChips }
+        return model.statusChips.filter { !$0.text.localizedCaseInsensitiveContains(current) }
+    }
+
+    private func loadModels() async {
+        let agent = model.command
+        guard agent == "claude" || agent == "codex" else {
+            models = []; currentModel = nil; pendingModel = nil
+            return
+        }
+        var list = await connection.agentModels(agent)
+        if list.isEmpty, agent == "claude" { list = AgentModels.claude }
+        guard agent == model.command else { return }
+        models = list
+        pendingModel = nil
+        refreshCurrentModel()
+    }
+
+    private func refreshCurrentModel() {
+        guard !models.isEmpty, !switchingModel,
+              let seen = AgentModels.current(onScreen: model.terminal.screenText(), models: models) else { return }
+        if currentModel != seen { currentModel = seen }
+    }
+
     private func send() {
         let text = draft
         draft = ""
-        model.sendLine(text)
+        guard let wanted = pendingModel else { model.sendLine(text); return }
+        let agent = model.command
+        Task {
+            switchingModel = true
+            while model.busy { try? await Task.sleep(nanoseconds: 300_000_000) }
+            let ok = await AgentModels.switchModel(wanted, agentID: agent,
+                                                   screen: { model.terminal.screenText() },
+                                                   send: { model.send($0) })
+            switchingModel = false
+            pendingModel = nil
+            guard ok else {
+                draft = text
+                let problem = "Couldn't switch to \(wanted.name), so your message wasn't sent."
+                error = problem
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                if error == problem { error = nil }
+                return
+            }
+            currentModel = wanted.name
+            model.sendLine(text)
+        }
     }
 
     private func attach() async {

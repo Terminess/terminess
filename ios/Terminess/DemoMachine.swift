@@ -39,6 +39,13 @@ final class DemoPeer: @unchecked Sendable {
     private var attached: String?
     private var line = ""
     private var followingTranscript: String?
+    private var pickerRow: Int?
+    private var escape = 0
+    private static let codexModels = [
+        AgentModel(id: "gpt-6.1-sol", name: "GPT-6.1-Sol", detail: "Latest workhorse model for coding and everyday work."),
+        AgentModel(id: "gpt-6-astra", name: "GPT-6-Astra", detail: "Frontier intelligence for the most demanding work."),
+        AgentModel(id: "gpt-6-luna", name: "GPT-6-Luna", detail: "Fast and affordable model for easier tasks."),
+    ]
 
     private init(fd: Int32, kind: DemoMachine.Kind) {
         conn = Connection(readFD: fd, queue: DemoPeer.queue)
@@ -75,6 +82,15 @@ final class DemoPeer: @unchecked Sendable {
         case "projects": conn.send(Message(op: "projects", projects: s.projects))
         case "history": conn.send(Message(op: "history", history: s.history))
         case "models": conn.send(Message(op: "models", args: s.models, code: s.models.isEmpty ? 0 : 1))
+        case "model-roles", "set-model-role":
+            if m.op == "set-model-role", let agent = m.name, let role = m.id { s.roles.set(agent, role, m.message ?? "") }
+            var reply = Message(op: "model-roles")
+            reply.roles = s.roles
+            conn.send(reply)
+        case "agent-models":
+            var reply = Message(op: "agent-models", name: m.name)
+            reply.agentModels = m.name == "claude" ? AgentModels.claude : m.name == "codex" ? DemoPeer.codexModels : []
+            conn.send(reply)
         case "register-push", "unregister-push", "resize", "detach": conn.send(Message(op: "ok"))
         case "create":
             let id = s.newShell(cwd: m.cwd)
@@ -116,14 +132,39 @@ final class DemoPeer: @unchecked Sendable {
 
     private func typed(_ bytes: [UInt8], in id: String) {
         guard let session = state.sessions[id] else { return }
+        func out(_ s: String) { conn.send(Wire.Frame(.output, Array(s.utf8))) }
         for b in bytes {
+            if let row = pickerRow {
+                let names = ["Default (recommended)"] + AgentModels.claude.map(\.name)
+                switch (escape, b) {
+                case (0, 0x1B): escape = 1
+                case (1, 0x5B): escape = 2
+                case (2, 0x41): escape = 0; pickerRow = max(1, row - 1)
+                case (2, 0x42): escape = 0; pickerRow = min(names.count, row + 1)
+                case (0, 0x73), (0, 13):
+                    pickerRow = nil
+                    out("\u{1B}[\(names.count + 2)A\r\u{1B}[J")
+                    out("\u{1B}[90mSet model to \(names[row - 1]) for this session only\u{1B}[0m\r\n\r\n")
+                default:
+                    if escape == 1 { pickerRow = nil; out("\u{1B}[\(names.count + 2)A\r\u{1B}[J") }
+                    escape = 0
+                }
+                continue
+            }
             switch b {
             case 13, 10:
                 let text = line.trimmingCharacters(in: .whitespaces)
                 line = ""
                 conn.send(Wire.Frame(.output, Array("\r\n".utf8)))
                 guard !text.isEmpty else { break }
-                if session.info.command == "zsh" {
+                if text == "/model", session.info.command == "claude" {
+                    let names = ["Default (recommended)"] + AgentModels.claude.map(\.name)
+                    out("Select model\r\n" + names.enumerated().map { i, n in "\(i == 0 ? "\u{276F}" : " ") \(i + 1). \(n)\r\n" }.joined() + "\r\n")
+                    pickerRow = 1
+                    escape = 0
+                } else if text.hasPrefix("/model "), session.info.command == "codex" {
+                    out("\u{1B}[90mModel changed to \(text.dropFirst(7)) for this session only\u{1B}[0m\r\n")
+                } else if session.info.command == "zsh" {
                     conn.send(Wire.Frame(.output, Array("This is the demo machine, so commands don't run here.\r\n\u{1B}[90m~/code\u{1B}[0m % ".utf8)))
                 } else {
                     state.reply(id, to: text)
@@ -155,6 +196,8 @@ final class DemoPeer: @unchecked Sendable {
 final class DemoState {
     struct Session { var info: SessionInfo; var items: [TranscriptItem]; var screen: String }
     var sessions: [String: Session] = [:]
+    var roles = ModelRoles(claude: ["main": "claude-fable-5-2", "subagents": "claude-opus-5-5"],
+                           codex: ["review": "gpt-6-astra", "work": "gpt-6-luna"])
     private(set) var projects: [ProjectInfo] = []
     private(set) var history: [HistoryItem] = []
     private(set) var models: [String] = []

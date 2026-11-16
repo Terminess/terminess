@@ -83,6 +83,10 @@ public final class HostAttachment: @unchecked Sendable {
         connection.send(Message(op: "kill", id: id))
     }
 
+    public func sendControl(_ m: Message) {
+        connection.send(m)
+    }
+
     public func signal(_ name: String) {
         guard let id = sessionID else { return }
         connection.send(Message(op: "signal", id: id, signal: name))

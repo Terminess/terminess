@@ -8,6 +8,9 @@ struct SettingsView: View {
     @State private var editing: SavedHost?
     @Environment(\.dismiss) private var dismiss
     @AppStorage("appearance") private var appearance = Appearance.dark.rawValue
+    #if DEBUG
+    @State private var demoModels = ProcessInfo.processInfo.environment["TERMINESS_DEMO_MODELS"] != nil
+    #endif
 
     var body: some View {
         NavigationStack {
@@ -53,9 +56,20 @@ struct SettingsView: View {
                     Text("Quickest: run terminessd pair on the machine and scan the code it shows with the iPhone camera.")
                 }
                 .listRowBackground(Theme.surface)
+                Section {
+                    ForEach(store.hosts) { h in
+                        NavigationLink { MachineModelsView(host: h) } label: {
+                            Label(store.hosts.count > 1 ? h.name : "Models on \(h.name)", systemImage: "cpu")
+                        }
+                    }
+                } header: {
+                    Text("Models")
+                } footer: {
+                    Text("Which model each agent uses for orchestration, building, reviews and handed-off work. For the model of one chat, use the menu under its message box.")
+                }
+                .listRowBackground(Theme.surface)
                 KeySection().listRowBackground(Theme.surface)
                 LockSection().listRowBackground(Theme.surface)
-                DemoSection().listRowBackground(Theme.surface)
                 Section {
                     Label(push.token == nil ? "Off. Allow them in iOS Settings, Terminess." : "On. You'll hear when an agent finishes or needs you.",
                           systemImage: push.token == nil ? "bell.slash" : "bell")
@@ -64,6 +78,7 @@ struct SettingsView: View {
                     Text("They only say a session finished or needs you. What's in your sessions stays between this iPhone and your machines.")
                 }
                 .listRowBackground(Theme.surface)
+                DemoSection().listRowBackground(Theme.surface)
             }
             .scrollContentBackground(.hidden)
             .background(Theme.background)
@@ -71,6 +86,11 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .sheet(item: $editing) { HostEditor(host: $0) }
+            #if DEBUG
+            .navigationDestination(isPresented: $demoModels) {
+                if let h = store.hosts.first { MachineModelsView(host: h) }
+            }
+            #endif
         }
         .id(appearance)
         .tint(Theme.ink)
@@ -190,50 +210,6 @@ struct HostEditor: View {
                         dismiss()
                     }
                     .disabled(host.address.isEmpty || host.user.isEmpty)
-                }
-            }
-        }
-    }
-}
-
-struct WelcomeView: View {
-    @State private var adding: SavedHost?
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                Image(systemName: "sparkle").font(.system(size: 40, weight: .light)).padding(.top, 50)
-                Text("Your agents, on your phone").font(.system(size: 30, weight: .bold))
-                Text("Terminess connects to the machines where Claude Code and Codex run, so you can follow and steer them from anywhere.")
-                    .foregroundStyle(.secondary)
-                step(1, "On your Mac or server, install terminessd and run:", code: "terminessd pair")
-                step(2, "Scan the code it shows with this iPhone's camera.", code: nil)
-                step(3, "Add this iPhone's key to the machine's ~/.ssh/authorized_keys:", code: nil)
-                List { KeySection() }.frame(height: 260).scrollDisabled(true).listStyle(.insetGrouped)
-                Button("Add a machine manually") { adding = SavedHost(name: "", address: "", user: "") }
-                    .padding(.bottom, 40)
-            }
-            .padding(.horizontal, 24)
-        }
-        .background(Theme.background)
-        .overlay(alignment: .topTrailing) {
-            Button { AppState.shared.showSettings = true } label: {
-                Image(systemName: "gearshape").font(.title3).foregroundStyle(.secondary).padding(20)
-            }
-            .accessibilityLabel("Settings")
-        }
-        .sheet(item: $adding) { HostEditor(host: $0) }
-    }
-
-    private func step(_ n: Int, _ text: String, code: String?) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text("\(n)").font(.system(size: 15, weight: .bold)).frame(width: 26, height: 26).background(Circle().fill(Theme.surface))
-            VStack(alignment: .leading, spacing: 8) {
-                Text(text)
-                if let code {
-                    Text(code).font(.system(.body, design: .monospaced))
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.surface))
                 }
             }
         }

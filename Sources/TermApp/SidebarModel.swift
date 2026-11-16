@@ -15,6 +15,7 @@ struct OpenTab: Identifiable, Equatable {
     var branch: String?
     var busy = false
     var hostIDs: [String] = []
+    var remoteIDs: [String] = []
 }
 
 struct PairJob: Identifiable, Equatable {
@@ -80,6 +81,9 @@ protocol SidebarActions: AnyObject {
     func showRun(_ run: PairRun)
     func attachHost(_ session: SessionInfo)
     func killHost(_ id: String)
+    func attachRemote(_ machine: RemoteMachine, _ session: SessionInfo)
+    func killRemote(_ machine: RemoteMachine, _ id: String)
+    func newRemote(_ machine: RemoteMachine, agent: String?, directory: String?)
 }
 
 @MainActor
@@ -93,6 +97,9 @@ final class SidebarModel: ObservableObject {
     @Published var sessionsNote: String?
     @Published var background: [SessionInfo] = []
     private var loadingBackground = false
+    @Published var remote: [RemoteMachineState] = []
+    private var monitors: [String: RemoteMonitor] = [:]
+    private var machinesObserver: NSObjectProtocol?
     @Published var search = ""
     @Published var issues: [IssueItem] = []
     @Published var issuesRepo: String?
@@ -140,6 +147,10 @@ final class SidebarModel: ObservableObject {
 
     func start() {
         guard fastTimer == nil else { return }
+        reloadMachines()
+        machinesObserver = NotificationCenter.default.addObserver(forName: RemoteMachines.changed, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { SidebarModel.shared.reloadMachines() }
+        }
         refreshTabs()
         refreshPair()
         refreshSessions()
@@ -206,6 +217,44 @@ final class SidebarModel: ObservableObject {
             }
         }
     }
+
+    func reloadMachines() {
+        let machines = RemoteMachines.all
+        for (id, mon) in monitors where machines.first(where: { $0.id == id }) != mon.machine {
+            mon.stop()
+            monitors[id] = nil
+        }
+        for m in machines where monitors[m.id] == nil {
+            let mon = RemoteMonitor(machine: m)
+            mon.onUpdate = { sessions, note in SidebarModel.shared.remoteUpdate(m.id, sessions: sessions, note: note) }
+            mon.onProjects = { projects in
+                let model = SidebarModel.shared
+                if let i = model.remote.firstIndex(where: { $0.id == m.id }) { model.remote[i].projects = projects }
+            }
+            monitors[m.id] = mon
+            mon.start()
+        }
+        remote = machines.map { m in
+            if var r = remote.first(where: { $0.id == m.id }) { r.machine = m; return r }
+            return RemoteMachineState(machine: m, note: "Connecting…")
+        }
+    }
+
+    private func remoteUpdate(_ id: String, sessions: [SessionInfo]?, note: String?) {
+        guard let i = remote.firstIndex(where: { $0.id == id }) else { return }
+        var r = remote[i]
+        if let sessions { r.sessions = sessions }
+        if sessions == nil, let note, note != "Connecting…" { r.sessions = [] }
+        r.note = note
+        if r != remote[i] { remote[i] = r }
+    }
+
+    func remoteFree(_ r: RemoteMachineState) -> [SessionInfo] {
+        let shown = Set(tabs.flatMap(\.remoteIDs))
+        return r.sessions.filter { !shown.contains("\(r.id)/\($0.id)") }
+    }
+
+    func monitor(_ id: String) -> RemoteMonitor? { monitors[id] }
 
     func refreshPair() {
         let (jobs, runs) = SidebarModel.readPair()

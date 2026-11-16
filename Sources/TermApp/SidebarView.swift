@@ -8,6 +8,7 @@ enum SidebarID: Hashable {
     case session(String)
     case issue(Int)
     case host(String)
+    case remote(String)
 }
 
 struct SidebarView: View {
@@ -29,6 +30,7 @@ struct SidebarView: View {
                 if model.search.isEmpty {
                     shortcutsSection
                     openSection
+                    ForEach(model.remote) { r in machineSection(r) }
                     if !model.background.isEmpty { runningSection }
                     pairSection
                     if model.issuesRepo != nil { issuesSection }
@@ -85,7 +87,7 @@ struct SidebarView: View {
                 let agent = Agent.detect(s.command)
                 Row(symbol: agent != nil ? "sparkle" : "terminal",
                     tint: agent.map { Color(nsColor: $0.tint) } ?? .secondary,
-                    title: agent?.name ?? s.command,
+                    title: SessionNames.title(s),
                     subtitle: [shortPath(s.cwd), s.clients > 0 ? "open elsewhere" : "no tab"].filter { !$0.isEmpty }.joined(separator: " · "),
                     actions: [
                         RowAction(symbol: "arrow.up.forward.app", help: "Open in a tab") { model.actions?.attachHost(s) },
@@ -94,6 +96,72 @@ struct SidebarView: View {
                     .tag(SidebarID.host(s.id))
             }
         }
+    }
+
+    private func machineSection(_ r: RemoteMachineState) -> some View {
+        Section {
+            if let note = r.note {
+                Text(note).font(.callout).foregroundStyle(.tertiary).lineLimit(2)
+            } else {
+                let free = model.remoteFree(r)
+                if free.isEmpty {
+                    Text(r.sessions.isEmpty ? "Nothing running" : "All open in tabs").font(.callout).foregroundStyle(.tertiary)
+                }
+                ForEach(free, id: \.id) { s in
+                    let agent = Agent.detect(s.command)
+                    Row(symbol: s.attention == true ? "circle.fill" : (agent != nil ? "sparkle" : "terminal"),
+                        tint: s.attention == true ? .orange : (agent.map { Color(nsColor: $0.tint) } ?? .secondary),
+                        title: SessionNames.title(s),
+                        subtitle: [s.busy == true ? "working" : (s.attention == true ? "needs you" : nil),
+                                   remotePath(s.cwd), s.clients > 0 ? "open elsewhere" : nil]
+                            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
+                        busy: s.busy == true && s.attention != true,
+                        actions: [
+                            RowAction(symbol: "arrow.up.forward.app", help: "Open in a tab") { model.actions?.attachRemote(r.machine, s) },
+                            RowAction(symbol: "xmark", help: "End this session") { model.actions?.killRemote(r.machine, s.id) },
+                        ])
+                        .tag(SidebarID.remote("\(r.id)/\(s.id)"))
+                }
+            }
+        } header: {
+            HStack(spacing: 4) {
+                Text(r.machine.name)
+                Spacer()
+                Menu {
+                    newRemoteItems(r, directory: nil, label: "Home")
+                    let recent = r.projects.sorted { $0.used > $1.used }.prefix(8)
+                    if !recent.isEmpty { Divider() }
+                    ForEach(Array(recent), id: \.path) { p in
+                        Menu(p.path.split(separator: "/").last.map(String.init) ?? p.path) {
+                            newRemoteItems(r, directory: p.path, label: nil)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "plus").font(.system(size: 11, weight: .medium))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("New session on \(r.machine.name)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func newRemoteItems(_ r: RemoteMachineState, directory: String?, label: String?) -> some View {
+        let suffix = label.map { " in \($0)" } ?? ""
+        Button("Claude Code" + suffix) { model.actions?.newRemote(r.machine, agent: "claude", directory: directory) }
+        Button("Codex" + suffix) { model.actions?.newRemote(r.machine, agent: "codex", directory: directory) }
+        Button("Shell" + suffix) { model.actions?.newRemote(r.machine, agent: nil, directory: directory) }
+    }
+
+    private func remotePath(_ p: String) -> String { remoteTilde(p) }
+
+    private func remoteSession(_ key: String) -> (RemoteMachine, SessionInfo)? {
+        let parts = key.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let r = model.remote.first(where: { $0.id == parts[0] }),
+              let s = r.sessions.first(where: { $0.id == parts[1] }) else { return nil }
+        return (r.machine, s)
     }
 
     private func shortPath(_ p: String) -> String {
@@ -262,6 +330,7 @@ struct SidebarView: View {
         case .session(let s): if let item = model.sessions.first(where: { $0.id == s }) { model.actions?.resume(item) }
         case .issue(let n): if let issue = model.issues.first(where: { $0.number == n }) { model.actions?.startIssue(issue, agent: "claude") }
         case .host(let h): if let s = model.background.first(where: { $0.id == h }) { model.actions?.attachHost(s) }
+        case .remote(let key): if let (m, s) = remoteSession(key) { model.actions?.attachRemote(m, s) }
         }
     }
 
@@ -309,6 +378,12 @@ struct SidebarView: View {
                 Button("Open in a Tab") { model.actions?.attachHost(s) }
                 Divider()
                 Button("End Session") { model.actions?.killHost(h) }
+            }
+        case .remote(let key):
+            if let (m, s) = remoteSession(key) {
+                Button("Open in a Tab") { model.actions?.attachRemote(m, s) }
+                Divider()
+                Button("End Session on \(m.name)") { model.actions?.killRemote(m, s.id) }
             }
         case .issue(let n):
             if let issue = model.issues.first(where: { $0.number == n }) {

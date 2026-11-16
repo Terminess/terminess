@@ -24,26 +24,30 @@ final class Pane {
         session.process?.foregroundDirectory ?? session.currentDirectory
     }
 
-    func resumeCommand() -> String? {
-        if let p = parked { return p.tool == "claude" ? "claude --resume \(shellQuote(p.id))" : "codex resume \(shellQuote(p.id))" }
+    func runningConversation() -> (tool: String, id: String)? {
+        guard session.machine == nil else { return nil }
         guard let process = session.process, let agent = Agent.detect(process.foregroundCommand) else { return nil }
         if agent.id == "claude" {
             let path = Transcript.claudeSession(pid: process.foregroundPID) ?? (transcript?.pid == process.foregroundPID ? transcript?.path : nil)
             guard let path else { return nil }
-            let id = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-            return "claude --resume \(shellQuote(id))"
+            return ("claude", ((path as NSString).lastPathComponent as NSString).deletingPathExtension)
         }
         if agent.id == "codex", let t = transcript, t.pid == process.foregroundPID {
             let name = ((t.path as NSString).lastPathComponent as NSString).deletingPathExtension
             let id = String(name.suffix(36))
             guard UUID(uuidString: id) != nil else { return nil }
-            return "codex resume \(id)"
+            return ("codex", id)
         }
         return nil
     }
 
+    func resumeCommand() -> String? {
+        guard let c = parked ?? runningConversation() else { return nil }
+        return c.tool == "claude" ? "claude --resume \(shellQuote(c.id))" : "codex resume \(shellQuote(c.id))"
+    }
+
     func readerSource() -> ReaderSource {
-        guard let process = session.process else { return .none }
+        guard session.machine == nil, let process = session.process else { return .none }
         if LocalChat.usesChatFile(process.foregroundCommand), let id = process.hostSessionID, let p = LocalChat.latest(for: id) {
             return .file(agent: process.foregroundCommand ?? "ollama", path: p, live: true)
         }
@@ -71,7 +75,7 @@ enum ReaderSource {
 }
 
 indirect enum PaneLayout: Codable {
-    case pane(directory: String, history: String?, host: String? = nil, resume: String? = nil)
+    case pane(directory: String, history: String?, host: String? = nil, resume: String? = nil, machine: String? = nil)
     case split(vertical: Bool, children: [PaneLayout], fractions: [Double])
 }
 
@@ -199,7 +203,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     private static let toggleItem = NSToolbarItem.Identifier("toggleSidebar")
     private static let modeItem = NSToolbarItem.Identifier("viewMode")
 
-    init(workingDirectory: String?, command: String? = nil, layout: PaneLayout? = nil) {
+    init(workingDirectory: String?, command: String? = nil, layout: PaneLayout? = nil,
+         machine: RemoteMachine? = nil, agent: String? = nil) {
         let sidebarHost = NSHostingController(rootView: SidebarView(model: SidebarModel.shared, drops: drops))
         sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarHost)
         sidebarItem.minimumThickness = 220
@@ -249,7 +254,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
                 MainActor.assumeIsolated { self?.applyFractions(layout, to: self?.host.root) }
             }
         } else {
-            let pane = makePane(directory: workingDirectory, command: command)
+            let pane = makePane(directory: workingDirectory, command: command, machine: machine, agent: agent)
             host.root = pane.view
         }
         focusPane(panes[0])
@@ -498,7 +503,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
 
     private func makePane(directory: String?, command: String?, history: String? = nil, attach: String? = nil,
-                          resumeIfGone: String? = nil) -> Pane {
+                          resumeIfGone: String? = nil, machine: RemoteMachine? = nil, agent: String? = nil) -> Pane {
         let pane = Pane(columns: 100, rows: 30)
         let view = pane.view, session = pane.session
         if attach == nil, let history, !history.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -508,6 +513,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         session.onUpdate = { [weak view] in view?.terminalDidUpdate() }
         session.onTitle = { [weak self, weak pane] t in
             pane?.programTitle = t
+            if pane === self?.focused { self?.refreshTitle() }
+        }
+        session.onForeground = { [weak self, weak pane] in
             if pane === self?.focused { self?.refreshTitle() }
         }
         session.onBell = { [weak self, weak pane] in
@@ -562,7 +570,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         panes.append(pane)
         session.start(workingDirectory: directory,
                       cellWidth: Int(view.cellSize.width.rounded()), cellHeight: Int(view.cellSize.height.rounded()),
-                      attach: attach, resumeIfGone: resumeIfGone)
+                      attach: attach, resumeIfGone: resumeIfGone, machine: machine, command: agent)
         if let command {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak session] in
                 MainActor.assumeIsolated { session?.send(Array((command + "\r").utf8)) }
@@ -591,7 +599,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     private func splitFocused(vertical: Bool) {
         let target = focused.view
-        let pane = makePane(directory: focused.currentDirectory, command: nil)
+        let pane = makePane(directory: focused.currentDirectory, command: nil, machine: focused.session.machine)
         if let sv = target.superview as? NSSplitView, sv.isVertical == vertical {
             sv.addSubview(pane.view, positioned: .above, relativeTo: target)
             equalize(sv)
@@ -679,13 +687,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     @discardableResult
     func park(_ pane: Pane, sessions: [SessionItem]) -> Bool {
-        guard pane.parked == nil, let process = pane.session.process,
-              let agent = Agent.detect(process.foregroundCommand), agent.id == "claude" || agent.id == "codex",
-              let dir = pane.currentDirectory else { return false }
-        guard let match = sessions.filter({ $0.tool == agent.id && $0.cwd == dir && $0.pair == nil })
-                .max(by: { $0.mtime < $1.mtime }) else { return false }
+        guard pane.parked == nil, pane.session.machine == nil, let process = pane.session.process,
+              let conversation = pane.runningConversation() else { return false }
         guard process.terminateForeground() else { return false }
-        pane.parked = (agent.id, match.id)
+        pane.parked = (conversation.tool, conversation.id)
         updateTabBadge()
         SidebarModel.shared.refreshTabs()
         return true
@@ -719,12 +724,19 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             history = lines.joined(separator: "\n")
         }
         return .pane(directory: pane?.currentDirectory ?? Settings.shared.startDirectory, history: history,
-                     host: pane?.session.process?.hostSessionID, resume: pane?.resumeCommand())
+                     host: pane?.session.process?.hostSessionID, resume: pane?.resumeCommand(),
+                     machine: pane?.session.machine?.id)
     }
 
     private func build(_ layout: PaneLayout) -> NSView {
         switch layout {
-        case .pane(let dir, let history, let host, let resume):
+        case .pane(let dir, let history, let host, let resume, let machineID):
+            if let machineID {
+                guard let m = RemoteMachines.machine(machineID) else {
+                    return makePane(directory: nil, command: nil, history: history).view
+                }
+                return makePane(directory: dir, command: nil, history: history, attach: host, resumeIfGone: resume, machine: m).view
+            }
             let exists = FileManager.default.fileExists(atPath: dir)
             var once: String?
             if exists, let resume, !Self.resumed.contains(resume) { Self.resumed.insert(resume); once = resume }
@@ -781,7 +793,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         let dir = currentDirectory ?? ""
         let folder = dir == SidebarModel.home ? "~" : (dir.split(separator: "/").last.map(String.init) ?? "")
         let found = Agent.detect(command)
-        let title: String
+        var title: String
         if let custom = customTitle, !custom.isEmpty {
             title = custom
         } else if let found {
@@ -803,6 +815,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             if let id = found?.id { AgentEvents.started(id) }
         }
         updateInputHiding()
+        if customTitle?.isEmpty != false, let m = focused.session.machine { title += " · \(m.name)" }
         displayTitle = title
         if window?.title != title { window?.title = title }
     }

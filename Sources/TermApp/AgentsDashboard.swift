@@ -207,7 +207,7 @@ section("Pair runs today", model.runs.isEmpty) {
         let agent = Agent.detect(s.command)
         if let t = s.title, let topic = Agent.topic(fromTitle: t, agentName: agent?.name ?? ""),
            topic.contains(where: \.isLetter) { return topic }
-        return agent?.name ?? s.name
+        return agent?.name ?? SessionNames.given(s) ?? s.command
     }
 
     @ViewBuilder

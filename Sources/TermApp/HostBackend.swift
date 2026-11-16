@@ -10,6 +10,7 @@ protocol SessionBackend: AnyObject {
     var foregroundStartTime: Double? { get }
     var foregroundPID: Int32 { get }
     var hostSessionID: String? { get }
+    var machineID: String? { get }
     func write(_ bytes: [UInt8])
     func respond(_ bytes: [UInt8])
     func resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int)
@@ -20,6 +21,7 @@ protocol SessionBackend: AnyObject {
 
 extension PTYProcess: SessionBackend {
     var hostSessionID: String? { nil }
+    var machineID: String? { nil }
     func respond(_ bytes: [UInt8]) { write(bytes) }
     func detach() {}
 }
@@ -28,9 +30,13 @@ extension PTYProcess: SessionBackend {
 final class HostBackend: SessionBackend {
     let attachment: HostAttachment
     private var info: ForegroundInfo?
+    private let link: SSHLink?
+    let machineID: String?
 
-    init(attachment: HostAttachment) {
+    init(attachment: HostAttachment, link: SSHLink? = nil, machineID: String? = nil) {
         self.attachment = attachment
+        self.link = link
+        self.machineID = machineID
     }
 
     func update(_ fg: ForegroundInfo) { info = fg }
@@ -45,8 +51,13 @@ final class HostBackend: SessionBackend {
     func write(_ bytes: [UInt8]) { attachment.write(bytes) }
     func respond(_ bytes: [UInt8]) { attachment.respond(bytes) }
     func resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) { attachment.resize(cols: columns, rows: rows) }
-    func hangUp() { attachment.kill() }
-    func detach() { attachment.detach() }
+    func hangUp() {
+        if machineID != nil { detach() } else { attachment.kill() }
+    }
+    func detach() {
+        attachment.detach()
+        link?.terminate()
+    }
 
     @discardableResult
     func terminateForeground() -> Bool {

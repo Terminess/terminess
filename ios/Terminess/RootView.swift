@@ -54,7 +54,10 @@ struct RootView: View {
             }
         }
         .task { app.start() }
-        .onChange(of: store.hosts.count) { _, _ in app.start() }
+        .onChange(of: store.hosts.count) { _, _ in
+            app.start()
+            PushPermission.askIfUseful()
+        }
         .onChange(of: phase) { _, p in if p == .active { app.resume() } }
         .onChange(of: app.drawerOpen) { _, open in if open { hideKeyboard() } }
     }

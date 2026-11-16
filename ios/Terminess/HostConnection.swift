@@ -120,6 +120,22 @@ final class HostConnection: ObservableObject {
         models = reply.code == 1 ? (reply.args ?? []) : nil
     }
 
+    func agentModels(_ agent: String) async -> [AgentModel] {
+        guard let reply = await request(Message(op: "agent-models", name: agent)), reply.op == "agent-models" else { return [] }
+        return reply.agentModels ?? []
+    }
+
+    func modelRoles() async -> ModelRoles? {
+        guard let reply = await request(Message(op: "model-roles")), reply.op == "model-roles" else { return nil }
+        return reply.roles
+    }
+
+    func setModelRole(agent: String, role: String, model: String) async -> ModelRoles? {
+        guard let reply = await request(Message(op: "set-model-role", id: role, name: agent, message: model)),
+              reply.op == "model-roles" else { return nil }
+        return reply.roles
+    }
+
     func loadHistory() async {
         if let reply = await request(Message(op: "history")), let h = reply.history { history = h }
     }

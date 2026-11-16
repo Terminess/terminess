@@ -77,10 +77,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         #if DEBUG
         if ProcessInfo.processInfo.environment["TERMINESS_DEMO_ADD"] != nil { return true }
         #endif
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
-            guard granted else { return }
-            DispatchQueue.main.async { application.registerForRemoteNotifications() }
-        }
+        PushPermission.askIfUseful()
         return true
     }
 
@@ -125,6 +122,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                 }
             }
             completionHandler()
+        }
+    }
+}
+
+@MainActor
+enum PushPermission {
+    static func askIfUseful() {
+        guard HostStore.shared.hosts.contains(where: { !DemoMachine.isDemo($0) }) else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+            guard granted else { return }
+            DispatchQueue.main.async { UIApplication.shared.registerForRemoteNotifications() }
         }
     }
 }

@@ -4,6 +4,8 @@ import SwiftUI
 @MainActor
 enum DemoScript {
     static let modeChange = Notification.Name("DemoScriptMode")
+    static let pickModel = Notification.Name("DemoScriptModel")
+    static let sendText = Notification.Name("DemoScriptSend")
 
     static func run() {
         let env = ProcessInfo.processInfo.environment
@@ -44,6 +46,8 @@ enum DemoScript {
                 return
             }
             if action.hasPrefix("menu:"), let n = Int(action.dropFirst(5)) { openMenu(n); return }
+            if action.hasPrefix("model:"), let n = Int(action.dropFirst(6)) { NotificationCenter.default.post(name: pickModel, object: n); return }
+            if action.hasPrefix("send:") { NotificationCenter.default.post(name: sendText, object: String(action.dropFirst(5))); return }
             if action.hasPrefix("session:"), let r = app.running.first(where: { $0.session.id == action.dropFirst(8) }) {
                 app.open(SessionTarget(host: r.host.id, session: r.session.id, title: SessionText.title(r.session), cwd: r.session.cwd))
                 return

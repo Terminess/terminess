@@ -57,7 +57,7 @@ find "$OUT" build/dd -name "$NAME.app" -maxdepth 8 -type d 2>/dev/null | while r
 rm -rf "$OUT/export" "$OUT/notarized"
 
 if [[ "${1:-}" == "--install" ]]; then
-  if pgrep -xq "$NAME"; then
+  if ps -axo comm= | grep -qx "/Applications/$NAME.app/Contents/MacOS/$NAME"; then
     echo "$NAME is running; quit it, then: ditto dist/$NAME.app /Applications/$NAME.app" >&2
   else
     rm -rf "/Applications/$NAME.app"

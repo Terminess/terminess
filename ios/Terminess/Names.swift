@@ -15,9 +15,15 @@ enum SessionText {
         String((title ?? "").drop { !$0.isLetter && !$0.isNumber }).trimmingCharacters(in: .whitespaces)
     }
 
+    static func givenName(_ s: SessionInfo) -> String? {
+        let n = s.name.trimmingCharacters(in: .whitespaces)
+        return n.isEmpty || n.allSatisfy(\.isNumber) ? nil : n
+    }
+
     static func title(_ s: SessionInfo) -> String {
         let t = topic(s.title)
         if let agent = agentName(s.command) { return t.isEmpty || t.lowercased() == agent.lowercased() ? agent : t }
+        if let n = givenName(s) { return n }
         if ["zsh", "bash", "fish", "sh"].contains(s.command) { return "Shell" }
         return t.isEmpty ? s.command : t
     }

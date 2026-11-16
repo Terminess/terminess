@@ -13,6 +13,7 @@ final class TerminalSession {
     var onUpdate: (() -> Void)?
     var onExit: ((Int32) -> Void)?
     var onTitle: ((String) -> Void)?
+    var onForeground: (() -> Void)?
     var onBell: (() -> Void)?
     var onNotify: ((String, String) -> Void)?
     var onCommandFinished: ((Double, Int) -> Void)?
@@ -47,8 +48,12 @@ final class TerminalSession {
     }
 
     func start(workingDirectory: String?, cellWidth: Int, cellHeight: Int, attach: String? = nil, persistent: Bool = true,
-               resumeIfGone: String? = nil) {
+               resumeIfGone: String? = nil, machine: RemoteMachine? = nil, command: String? = nil) {
         self.resumeIfGone = resumeIfGone
+        if let machine {
+            startRemote(machine, attach: attach, cwd: workingDirectory, command: command)
+            return
+        }
         let cwd = workingDirectory ?? Transcript.home
         let hosted = persistent && Settings.shared.keepSessions && HostService.ensureRunning()
         if hosted {
@@ -65,14 +70,38 @@ final class TerminalSession {
         return .create(cwd: cwd, command: nil, args: [], env: env, name: nil)
     }
 
-    private func startHost(_ target: HostAttachment.Target, cwd: String, cellWidth: Int, cellHeight: Int) {
-        guard let a = HostAttachment(target: target, cols: terminal.columns, rows: terminal.rows) else {
+    private(set) var machine: RemoteMachine?
+
+    private func startRemote(_ m: RemoteMachine, attach: String?, cwd: String?, command: String?) {
+        machine = m
+        let create = HostAttachment.Target.create(cwd: cwd, command: command.map { _ in "bash" },
+                                                  args: command.map { ["-ic", "\($0); exec bash -i"] } ?? [],
+                                                  env: nil, name: nil)
+        startHost(attach.map { .attach(id: $0) } ?? create, cwd: cwd ?? "", cellWidth: 0, cellHeight: 0, remote: m)
+    }
+
+    private func startHost(_ target: HostAttachment.Target, cwd: String, cellWidth: Int, cellHeight: Int,
+                           remote: RemoteMachine? = nil) {
+        var link: SSHLink?
+        let made: HostAttachment?
+        if let remote {
+            link = SSHLink.open(remote)
+            made = link.map { HostAttachment(readFD: $0.fd, writeFD: $0.fd, target: target, cols: terminal.columns, rows: terminal.rows) }
+        } else {
+            made = HostAttachment(target: target, cols: terminal.columns, rows: terminal.rows)
+        }
+        guard let a = made else {
+            if let remote {
+                terminal.feed("\r\n\u{1B}[2m[Could not run ssh for \(remote.host)]\u{1B}[0m\r\n")
+                onUpdate?()
+                return
+            }
             startLocal(cwd: cwd, cellWidth: cellWidth, cellHeight: cellHeight)
             return
         }
         a.resizesAfterReplay = true
         a.clientKind = "mac"
-        let backend = HostBackend(attachment: a)
+        let backend = HostBackend(attachment: a, link: link, machineID: remote?.id)
         process = backend
         var attached = false
         terminal.onResponse = { [weak self] bytes in self?.process?.respond(bytes) }
@@ -116,13 +145,30 @@ final class TerminalSession {
                 session.onUpdate?()
             }
         }
-        a.onForeground = { [weak backend] fg in MainActor.assumeIsolated { backend?.update(fg) } }
+        a.onForeground = { [weak backend] fg in
+            MainActor.assumeIsolated {
+                backend?.update(fg)
+                ref.value?.onForeground?()
+            }
+        }
         a.onExit = { code in MainActor.assumeIsolated { ref.value?.onExit?(Int32(code)) } }
         a.onDisconnect = { message in
             MainActor.assumeIsolated {
                 guard let session = ref.value else { return }
                 if attached {
                     session.terminal.feed("\r\n\u{1B}[2m[\(message)]\u{1B}[0m\r\n")
+                    session.onUpdate?()
+                    return
+                }
+                if let remote {
+                    let why = link?.lastError ?? ""
+                    if case .attach = target, why.isEmpty, message.hasPrefix("no session") {
+                        session.startHost(.create(cwd: cwd.isEmpty ? nil : cwd, command: nil, args: [], env: nil, name: nil),
+                                          cwd: cwd, cellWidth: 0, cellHeight: 0, remote: remote)
+                        session.typeResume()
+                        return
+                    }
+                    session.terminal.feed("\r\n\u{1B}[2m[Could not reach \(remote.name): \(why.isEmpty ? message : why)]\u{1B}[0m\r\n")
                     session.onUpdate?()
                     return
                 }
@@ -205,13 +251,17 @@ final class TerminalSession {
     func answerQuestion(_ text: String) {
         guard let q = question, let id = process?.hostSessionID else { return }
         questionChanged(nil)
-        HostAttachment.send(Message(op: "answer", id: id, name: q.id, message: text))
+        control(Message(op: "answer", id: id, name: q.id, message: text))
     }
 
     func answerPermission(_ answer: String) {
         guard let p = permission, let id = process?.hostSessionID else { return }
         permissionChanged(nil)
-        HostAttachment.send(Message(op: "decide", id: id, name: p.id, message: answer))
+        control(Message(op: "decide", id: id, name: p.id, message: answer))
+    }
+
+    private func control(_ m: Message) {
+        if machine != nil, let hb = process as? HostBackend { hb.attachment.sendControl(m) } else { HostAttachment.send(m) }
     }
 
     fileprivate func mark(_ kind: Character, _ params: [String]) {

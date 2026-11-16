@@ -261,11 +261,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @discardableResult
     func open(tabbedWith host: NSWindow?, directory: String? = nil, command: String? = nil,
-              layout: PaneLayout? = nil) -> TerminalWindowController {
+              layout: PaneLayout? = nil, machine: RemoteMachine? = nil, agent: String? = nil) -> TerminalWindowController {
         let inherit = Settings.shared.newTabsInCurrentFolder
-        let cwd = directory ?? (inherit ? (host?.windowController as? TerminalWindowController)?.currentDirectory : nil)
-            ?? Settings.shared.startDirectory
-        let controller = TerminalWindowController(workingDirectory: cwd, command: command, layout: layout)
+        let current = (host?.windowController as? TerminalWindowController)
+        let local = current?.session.machine == nil ? current?.currentDirectory : nil
+        let cwd = machine != nil ? directory : directory ?? (inherit ? local : nil) ?? Settings.shared.startDirectory
+        let controller = TerminalWindowController(workingDirectory: cwd, command: command, layout: layout,
+                                                  machine: machine, agent: agent)
         controller.onClose = { [weak self, weak controller] in
             self?.controllers.removeAll { $0 === controller }
             SidebarModel.shared.refreshTabs()
@@ -334,14 +336,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             c.refreshTitle()
             c.refreshBusy()
             let dir = c.currentDirectory ?? ""
-            let shown = SidebarModel.tilde(dir)
+            let shown = c.session.machine.map { "\($0.name): " + remoteTilde(dir) } ?? SidebarModel.tilde(dir)
             return OpenTab(id: ObjectIdentifier(c), title: c.customTitle ?? c.displayTitle,
                            command: c.session.process?.foregroundCommand ?? "",
                            directory: shown, isKey: c.window?.isKeyWindow == true,
                            attention: AttentionCenter.shared.needsAttention(c),
                            panes: c.panes.count, parked: c.hasParkedPane, branch: c.worktree?.branch,
                            busy: c.busy,
-                           hostIDs: c.panes.compactMap { $0.session.process?.hostSessionID })
+                           hostIDs: c.panes.filter { $0.session.machine == nil }.compactMap { $0.session.process?.hostSessionID },
+                           remoteIDs: c.panes.compactMap { p in
+                               guard let m = p.session.machine, let id = p.session.process?.hostSessionID else { return nil }
+                               return "\(m.id)/\(id)"
+                           })
         }
     }
 
@@ -403,6 +409,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func killHost(_ id: String) {
         HostAttachment.send(Message(op: "kill", id: id))
         SidebarModel.shared.background.removeAll { $0.id == id }
+    }
+
+    func attachRemote(_ machine: RemoteMachine, _ session: SessionInfo) {
+        let key = "\(machine.id)/\(session.id)"
+        if let tab = SidebarModel.shared.tabs.first(where: { $0.remoteIDs.contains(key) }) { focusTab(tab.id); return }
+        open(tabbedWith: keyController?.window,
+             layout: .pane(directory: session.cwd, history: nil, host: session.id, machine: machine.id))
+    }
+
+    func killRemote(_ machine: RemoteMachine, _ id: String) {
+        SidebarModel.shared.monitor(machine.id)?.send(Message(op: "kill", id: id))
+        SidebarModel.shared.monitor(machine.id)?.refresh()
+    }
+
+    func newRemote(_ machine: RemoteMachine, agent: String?, directory: String?) {
+        open(tabbedWith: keyController?.window, directory: directory, machine: machine, agent: agent)
     }
 
     func resume(_ session: SessionItem) {

@@ -22,10 +22,25 @@ final class HostStore: ObservableObject {
     init() {
         if let data = UserDefaults.standard.data(forKey: key),
            let saved = try? JSONDecoder().decode([SavedHost].self, from: data) { hosts = saved }
+        if !UserDefaults.standard.bool(forKey: "demoRetired") {
+            UserDefaults.standard.set(true, forKey: "demoRetired")
+            if hosts.contains(where: { !DemoMachine.isDemo($0) }), hosts.contains(where: { DemoMachine.isDemo($0) }) {
+                hosts.removeAll { DemoMachine.isDemo($0) }
+                persist()
+            }
+        }
     }
 
     func save(_ host: SavedHost) {
-        if let i = hosts.firstIndex(where: { $0.id == host.id }) { hosts[i] = host } else { hosts.append(host) }
+        if let i = hosts.firstIndex(where: { $0.id == host.id }) {
+            hosts[i] = host
+        } else {
+            hosts.append(host)
+            if !DemoMachine.isDemo(host) {
+                let demos = hosts.filter { DemoMachine.isDemo($0) }.map(\.id)
+                if !demos.isEmpty { delete(demos); return }
+            }
+        }
         persist()
     }
 

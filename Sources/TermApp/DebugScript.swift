@@ -259,6 +259,50 @@ enum DebugScript {
                 }
             }
         }
+        if let host = env["TERMAPP_REMOTE"] {
+            RemoteMachines.all = [RemoteMachine(id: "test", name: host, host: host)]
+        }
+        for step in (env["TERMAPP_REMOTE_AT"] ?? "").split(separator: "|") {
+            let parts = step.split(separator: ":", maxSplits: 2).map(String.init)
+            guard parts.count >= 2, let delay = Double(parts[0]), let app = NSApp.delegate as? AppDelegate else { continue }
+            let arg = parts.count > 2 ? parts[2] : ""
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                MainActor.assumeIsolated {
+                    let model = SidebarModel.shared
+                    model.refreshTabs()
+                    let key = NSApp.keyWindow?.windowController as? TerminalWindowController
+                    switch parts[1] {
+                    case "open":
+                        guard let r = model.remote.first, let s = r.sessions.first(where: { $0.name == arg }) else {
+                            print("remote: no session named \(arg)"); break
+                        }
+                        app.attachRemote(r.machine, s)
+                        print("remote: opened \(s.id) (\(arg))")
+                    case "new":
+                        if let r = model.remote.first { app.newRemote(r.machine, agent: arg == "shell" ? nil : arg, directory: nil) }
+                        print("remote: new \(arg)")
+                    case "type":
+                        let text = arg.replacingOccurrences(of: "\\r", with: "\r")
+                        key?.session.send(Array(text.utf8))
+                    case "close":
+                        key?.window?.performClose(nil)
+                        print("remote: closed key tab")
+                    case "kill":
+                        guard let r = model.remote.first, let s = r.sessions.first(where: { $0.name == arg || $0.id == arg }) else {
+                            print("remote: no session \(arg) to end"); break
+                        }
+                        app.killRemote(r.machine, s.id)
+                        print("remote: ended \(s.id)")
+                    default:
+                        for r in model.remote {
+                            print("remote: machine \(r.machine.name) note=\(r.note ?? "none") sessions=\(r.sessions.map { "\($0.name)[\(SessionNames.title($0))]" }) free=\(model.remoteFree(r).map(\.name)) projects=\(r.projects.count)")
+                        }
+                        for t in model.tabs { print("remote: tab \"\(t.title)\" remote=\(t.remoteIDs) host=\(t.hostIDs)") }
+                    }
+                    fflush(stdout)
+                }
+            }
+        }
         if let shots = env["TERMAPP_WINDOW_SHOTS"] {
             for step in shots.split(separator: "|") {
                 guard let colon = step.firstIndex(of: ":"), let delay = Double(step[..<colon]) else { continue }
