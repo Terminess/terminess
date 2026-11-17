@@ -6,7 +6,7 @@ It stores nothing and logs no message content.
 
 POST /v1/register {"token", "environment"}                 sends the phone a challenge
 POST /v1/confirm  {"token", "environment", "challenge"}    returns {"credential"}
-POST /v1/notify   {"token", "environment", "credential", "body", "session", "host"}
+POST /v1/notify   {"token", "environment", "credential", "body", "session", "host", "reminder"?}
 POST /v1/revoke   {"token", "environment", "credential"}   a lost phone: cancels its credentials
 GET  /health
 
@@ -51,8 +51,10 @@ LIMIT_OVERALL = 1200
 MAX_TRACKED = 50_000
 MAX_CONCURRENT = 32
 READ_TIMEOUT = 10
-BODIES = {"A session finished", "A session needs you", "A session stopped on an error", "A session needs your approval"}
+BODIES = {"A session finished", "A session needs you", "A session stopped on an error", "A session needs your approval",
+          "A reminder is due"}
 APPROVAL_BODY = "A session needs your approval"
+REMINDER_BODY = "A reminder is due"
 DEFAULT_BODY = "A session needs you"
 
 SECRET = os.environ.get("RELAY_SECRET", "").encode()
@@ -273,6 +275,9 @@ def send(req: dict, sender: str = "") -> tuple[int, str]:
         return 400, "bad token or environment"
     if not ID_RE.match(session) or not ID_RE.match(host):
         return 400, "bad session or host"
+    reminder = text(req, "reminder", "")
+    if reminder is None or not ID_RE.match(reminder):
+        return 400, "bad reminder"
     credential = text(req, "credential")
     if credential is None:
         return 400, "bad field"
@@ -291,9 +296,11 @@ def send(req: dict, sender: str = "") -> tuple[int, str]:
     body = body if body in BODIES else DEFAULT_BODY
     payload = {
         "aps": {"alert": {"title": title, "body": body}, "sound": "default", "thread-id": session or "terminess",
-                **({"category": "APPROVAL"} if body == APPROVAL_BODY else {})},
+                **({"category": "APPROVAL"} if body == APPROVAL_BODY else {}),
+                **({"category": "REMINDER"} if body == REMINDER_BODY else {})},
         "session": session,
         "host": host,
+        **({"reminder": reminder} if reminder else {}),
     }
     return apns(token, env, payload, session[:64] or "terminess")
 

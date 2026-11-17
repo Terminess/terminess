@@ -11,6 +11,7 @@ struct SessionTarget: Identifiable {
     var title: String
     var cwd: String?
     var input: String?
+    var resumeOf: String? = nil
 }
 
 enum ViewMode: String, CaseIterable, Identifiable {
@@ -75,6 +76,7 @@ struct ConversationView: View {
     @StateObject private var chat = ChatModel()
     @State private var mode: ViewMode?
     @State private var modeChosen = false
+    @State private var noteDismissed = false
     @State private var draft = ""
     @State private var error: String?
     @State private var attaching = false
@@ -117,6 +119,19 @@ struct ConversationView: View {
         VStack(spacing: 0) {
             TopBar(title: title, subtitle: subtitle) {
                 ModeSwitch(mode: Binding(get: { mode ?? .terminal }, set: { mode = $0; modeChosen = true }))
+            }
+            if let note = model.notice, !noteDismissed, (mode ?? .terminal) != .chat {
+                Button { withAnimation(.easeOut(duration: 0.15)) { noteDismissed = true } } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "clock.arrow.circlepath").font(.footnote)
+                        Text(note).font(.footnote).multilineTextAlignment(.leading)
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20).padding(.vertical, 8)
+                    .background(Theme.surface)
+                }
+                .buttonStyle(.plain)
             }
             content
             if (mode ?? .terminal) != .chat { keyRow }
@@ -195,7 +210,7 @@ struct ConversationView: View {
         case .terminal:
             TerminalScreen(model: model)
         case .chat:
-            ChatView(chat: chat, agentName: agentName, working: model.busy && !asking, folder: sessionFolder)
+            ChatView(chat: chat, agentName: agentName, working: model.busy && !asking, folder: sessionFolder, notice: model.notice)
                 .safeAreaInset(edge: .bottom) {
                     if let q = question {
                         QuestionCard(question: q, agent: agentName.isEmpty ? "The agent" : agentName) { text in
@@ -228,7 +243,7 @@ struct ConversationView: View {
             VStack(spacing: 0) {
                 TerminalScreen(model: model).frame(maxHeight: .infinity)
                 Divider()
-                ChatView(chat: chat, agentName: agentName, working: model.busy, folder: sessionFolder).frame(maxHeight: .infinity)
+                ChatView(chat: chat, agentName: agentName, working: model.busy, folder: sessionFolder, notice: model.notice).frame(maxHeight: .infinity)
             }
         }
     }
@@ -342,6 +357,7 @@ struct ConversationView: View {
             ?? .create(cwd: target.cwd, command: nil, args: [], env: nil, name: nil)
         do {
             let a = try await connection.attachment(to: t, cols: g.cols, rows: g.rows)
+            if existing == nil { a.resumeOf = target.resumeOf }
             model.start(a, cols: g.cols, rows: g.rows, input: existing == nil ? target.input : nil)
             if let id = existing { await chat.follow(session: id, on: connection) }
         } catch {

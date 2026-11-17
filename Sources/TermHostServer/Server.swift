@@ -23,7 +23,12 @@ final class HostSession {
     var lastForeground: ForegroundInfo?
     var scanner = OutputScanner()
     var title = ""
-    var busy = false
+    var origin: String?
+    var notice: String?
+    var onTurnEnd: (() -> Void)?
+    var busy = false {
+        didSet { if oldValue && !busy { onTurnEnd?() } }
+    }
     var attention = false
     var asking = false
     var permission: PermissionInfo?
@@ -79,6 +84,7 @@ final class HostSession {
         i.permission = permission
         i.question = question
         i.active = active
+        i.origin = origin
         return i
     }
 
@@ -106,10 +112,37 @@ public final class HostServer: @unchecked Sendable {
     private var connections: [ObjectIdentifier: Connection] = [:]
     private var bindings: [ObjectIdentifier: String] = [:]
     private var clientKinds: [ObjectIdentifier: String] = [:]
+
+    static var platform: String {
+        #if os(macOS)
+        return "macos"
+        #elseif os(Windows)
+        return "windows"
+        #else
+        return "linux"
+        #endif
+    }
+
+    func sessionInfo(_ s: HostSession) -> SessionInfo {
+        var i = s.info
+        let kinds = s.clients.keys.map { k -> String in
+            switch clientKinds[k] {
+            case "mac", "iphone": return clientKinds[k]!
+            default: return "other"
+            }
+        }
+        i.clientKinds = kinds.isEmpty ? nil : Array(Set(kinds)).sorted()
+        return i
+    }
     private var toolWaiters: [String: Connection] = [:]
     private var nextNumber = 1
     public let socketPath: String
     public var log: (String) -> Void = { _ in }
+    public var historyProvider: () -> [HistoryItem] = { History.recent() }
+    public var commits = CommitCounter()
+    public lazy var reminders = ReminderStore()
+    public var claudeHome = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+    public var promptReturnDelay: TimeInterval = 0.3
 
     public init(socketPath: String = HostPaths.socket) {
         self.socketPath = socketPath
@@ -127,6 +160,7 @@ public final class HostServer: @unchecked Sendable {
             self?.pushForeground()
             self?.pushTranscripts()
             self?.runDueSchedules()
+            self?.fireDueReminders()
         }
         infoTimer = t
         t.resume()
@@ -198,6 +232,7 @@ public final class HostServer: @unchecked Sendable {
 
     private func dropConnection(_ key: ObjectIdentifier) {
         clientKinds[key] = nil
+        reminderWatchers.remove(key)
         for (req, w) in toolWaiters where ObjectIdentifier(w) == key { toolWaiters[req] = nil }
         for s in sessions.values where s.questionWaiter.map(ObjectIdentifier.init) == key { clearQuestion(s) }
         for s in sessions.values {
@@ -251,12 +286,47 @@ public final class HostServer: @unchecked Sendable {
         let key = ObjectIdentifier(conn)
         switch m.op {
         case "hello":
-            conn.send(Message(op: "hello", version: Wire.version, host: ProcessInfo.processInfo.hostName))
+            var hello = Message(op: "hello", version: Wire.version, host: ProcessInfo.processInfo.hostName)
+            hello.platform = Self.platform
+            conn.send(hello)
+        case "watch-reminders":
+            reminderWatchers.insert(key)
+            conn.send(Message(op: "watching"))
+            for r in reminders.pending { conn.send(reminderMessage(r)) }
+        case "reminders":
+            var reply = Message(op: "reminders")
+            reply.reminders = reminders.items
+            conn.send(reply)
+        case "remind-add":
+            guard let r = m.reminder else { conn.send(Message(op: "error", message: "no reminder")); return }
+            switch addReminder(r) {
+            case .success(let saved):
+                var reply = Message(op: "reminder-added", id: saved.id)
+                reply.reminder = saved
+                conn.send(reply)
+            case .failure(let e):
+                conn.send(Message(op: "error", message: e.text))
+            }
+        case "remind-cancel", "reminder-dismiss":
+            guard let id = m.id, reminders.remove(id) != nil else { conn.send(Message(op: "error", message: "no reminder \(m.id ?? "")")); return }
+            broadcastReminderDone(id)
+            conn.send(Message(op: "ok", id: id))
+        case "reminder-act":
+            guard let id = m.id, let r = reminders.remove(id) else { conn.send(Message(op: "error", message: "no reminder \(m.id ?? "")")); return }
+            broadcastReminderDone(id)
+            do {
+                let session = try actOn(r)
+                conn.send(Message(op: "reminder-acted", id: session, name: r.id))
+            } catch {
+                conn.send(Message(op: "error", message: "\(error)"))
+            }
         case "list":
-            conn.send(Message(op: "sessions", sessions: order.compactMap { sessions[$0]?.info }))
+            conn.send(Message(op: "sessions", sessions: order.compactMap { sessions[$0].map(sessionInfo) }))
         case "create":
             do {
                 let s = try createSession(m)
+                if let resumed = m.resumeOf { warnIfOlder(s, resuming: resumed) }
+                s.origin = m.host
                 conn.send(Message(op: "created", id: s.id))
             } catch {
                 conn.send(Message(op: "error", message: "\(error)"))
@@ -270,6 +340,7 @@ public final class HostServer: @unchecked Sendable {
             bindings[key] = s.id
             s.clients[key] = conn
             if let kind = m.host { clientKinds[key] = kind }
+            if m.host == "mac" { s.origin = nil }
             conn.send(Message(op: "attached", id: s.id, cols: s.cols, rows: s.rows))
             if !s.replay.isEmpty { conn.send(Wire.Frame(.output, s.replay)) }
             conn.send(Message(op: "replayed", id: s.id))
@@ -278,6 +349,7 @@ public final class HostServer: @unchecked Sendable {
             conn.send(Message(op: "info", id: s.id, foreground: fg))
             if let p = s.permission { conn.send(Message(op: "permission", id: s.id, permission: p)) }
             if let q = s.question { conn.send(Message(op: "question", id: s.id, question: q)) }
+            if let n = s.notice { conn.send(Message(op: "notice", id: s.id, message: n)) }
             if let c = m.cols, let r = m.rows {
                 clientSizes[key] = (c, r, Date().timeIntervalSince1970)
                 owners[s.id] = key
@@ -323,7 +395,7 @@ public final class HostServer: @unchecked Sendable {
                 self.queue.async { conn.send(Message(op: "models", args: names ?? [], code: names == nil ? 0 : 1)) }
             }
         case "history":
-            conn.send(Message(op: "history", history: History.recent()))
+            conn.send(Message(op: "history", history: commits.annotate(historyProvider())))
         case "model-roles", "set-model-role":
             var roles = ModelRoles.load()
             if m.op == "set-model-role" {
@@ -402,6 +474,23 @@ public final class HostServer: @unchecked Sendable {
                 s.questionWaiter = conn
                 for (_, c) in s.clients { c.send(Message(op: "question", id: s.id, question: q)) }
                 raiseAttention(s, .needsYou)
+            case "remind":
+                let at = (args["at"] as? String) ?? ""
+                guard let due = ReminderTime.parse(at) else {
+                    done("Give `at` as a time like 22:00, +2h or 2026-11-17T22:00 (this machine's time zone unless it has an offset).", failed: true); return
+                }
+                let title = ((args["title"] as? String) ?? "").trimmingCharacters(in: .whitespaces)
+                guard !title.isEmpty else { done("Give a short title.", failed: true); return }
+                let r = ReminderInfo(id: "", title: title, body: args["body"] as? String, due: due.timeIntervalSince1970,
+                                     actionLabel: args["action_label"] as? String, actionPrompt: args["action_prompt"] as? String,
+                                     sessionId: s.id, created: 0)
+                switch addReminder(r) {
+                case .success(let saved):
+                    done("Reminder \(saved.id) set for \(Self.describe(Date(timeIntervalSince1970: saved.due))). At that time the person gets a notification on their Mac and phone with a \(saved.label) button" +
+                         (saved.actionPrompt == nil ? "." : " that types your prompt into this session (or resumes this conversation if the session has ended)."))
+                case .failure(let e):
+                    done(e.text, failed: true)
+                }
             case "open_tab", "start_worktree":
                 guard let mac = s.clients.first(where: { clientKinds[$0.key] == "mac" })?.value else {
                     done("That needs the Terminess app on the Mac to be showing this session.", failed: true); return
@@ -463,6 +552,88 @@ public final class HostServer: @unchecked Sendable {
         if changed { AgentSchedules.save(list) }
     }
 
+
+    struct ReminderError: Error { let text: String }
+
+    private func addReminder(_ r: ReminderInfo) -> Result<ReminderInfo, ReminderError> {
+        var r = r
+        guard !r.title.trimmingCharacters(in: .whitespaces).isEmpty else { return .failure(ReminderError(text: "A reminder needs a title.")) }
+        guard r.due > Date().timeIntervalSince1970 - 60 else { return .failure(ReminderError(text: "That time has already passed.")) }
+        guard r.due < Date().timeIntervalSince1970 + 366 * 86400 else { return .failure(ReminderError(text: "That is more than a year away.")) }
+        if let sid = r.sessionId, !sid.isEmpty {
+            guard let s = sessions[sid] else { return .failure(ReminderError(text: "No session \(sid) here.")) }
+            let fg = s.foreground
+            if r.cwd == nil, !fg.cwd.isEmpty { r.cwd = fg.cwd }
+            switch fg.command {
+            case "claude":
+                r.agent = "claude"
+                r.conversation = r.conversation ?? ReminderStore.claudeConversation(pid: fg.pid, home: claudeHome)
+            case "codex":
+                r.agent = "codex"
+            default: break
+            }
+        } else {
+            r.sessionId = nil
+        }
+        let saved = reminders.add(r)
+        log("reminder \(saved.id) set for \(Self.describe(Date(timeIntervalSince1970: saved.due)))")
+        return .success(saved)
+    }
+
+    private func reminderMessage(_ r: ReminderInfo) -> Message {
+        var m = Message(op: "reminder", id: r.id)
+        m.reminder = r
+        return m
+    }
+
+    private var reminderWatchers: Set<ObjectIdentifier> = []
+
+    private func fireDueReminders() {
+        for r in reminders.fireDue() {
+            log("reminder \(r.id) is due")
+            let m = reminderMessage(r)
+            for k in reminderWatchers { connections[k]?.send(m) }
+            if let sid = r.sessionId, let s = sessions[sid] { s.attention = true }
+            push.notify(.reminder, session: r.sessionId ?? "", reminder: r.id)
+        }
+    }
+
+    private func broadcastReminderDone(_ id: String) {
+        let m = Message(op: "reminder-done", id: id)
+        for k in reminderWatchers { connections[k]?.send(m) }
+    }
+
+    private func actOn(_ r: ReminderInfo) throws -> String {
+        if let sid = r.sessionId, let s = sessions[sid] {
+            s.attention = false
+            if let prompt = r.actionPrompt, !prompt.isEmpty {
+                s.process.write(Array(prompt.utf8))
+                queue.asyncAfter(deadline: .now() + promptReturnDelay) { [weak s] in s?.process.write([0x0D]) }
+                s.active = Date().timeIntervalSince1970
+            }
+            return sid
+        }
+        let home = ProcessInfo.processInfo.environment["HOME"] ?? "/"
+        var cwd = r.cwd ?? home
+        var isDir: ObjCBool = false
+        if !FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir) || !isDir.boolValue { cwd = home }
+        let title = String(r.title.prefix(40))
+        if let command = ReminderStore.resumeShellCommand(r) {
+            let shell = PTYProcess.userShell
+            let s = try createSession(Message(op: "create", name: title, cwd: cwd, command: shell,
+                                              args: ["-l", "-i", "-c", command + "; exec " + ReminderStore.shellQuote(shell) + " -l"]))
+            return s.id
+        }
+        return try createSession(Message(op: "create", name: title, cwd: cwd)).id
+    }
+
+    static func describe(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_GB")
+        f.dateFormat = "EEE d MMM HH:mm zzz"
+        return f.string(from: date)
+    }
+
     private func createSession(_ m: Message) throws -> HostSession {
         let cols = max(20, m.cols ?? 100), rows = max(5, m.rows ?? 30)
         let shell = PTYProcess.userShell
@@ -507,6 +678,27 @@ public final class HostServer: @unchecked Sendable {
         })
         log("session \(id) (\(name)) started: \(executable) in \(cwd)")
         return s
+    }
+
+    private func warnIfOlder(_ s: HostSession, resuming id: String) {
+        let items = CommitCounter.markNewest(historyProvider())
+        guard let item = items.first(where: { $0.id == id }), item.newest == false else { return }
+        let counter = commits
+        DispatchQueue.global(qos: .utility).async { [weak self, weak s] in
+            let n = counter.count(folder: item.cwd, since: item.used)
+            guard let text = CommitCounter.notice(for: item, commits: n) else { return }
+            self?.queue.async {
+                guard let self, let s, self.sessions[s.id] != nil else { return }
+                s.notice = text
+                s.onTurnEnd = { [weak self, weak s] in
+                    guard let self, let s, s.notice != nil else { return }
+                    s.notice = nil
+                    s.onTurnEnd = nil
+                    for c in s.clients.values { c.send(Message(op: "notice", id: s.id)) }
+                }
+                for c in s.clients.values { c.send(Message(op: "notice", id: s.id, message: text)) }
+            }
+        }
     }
 
     private func pushForeground(only s: HostSession? = nil, force: Bool = false) {

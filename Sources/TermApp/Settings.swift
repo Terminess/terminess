@@ -63,7 +63,7 @@ final class Settings: ObservableObject {
         localModelsHost = d.string(forKey: "localModelsHost") ?? ""
         fontSize = d.object(forKey: "fontSize") as? Double ?? 12
         lineSpacing = d.object(forKey: "lineSpacing") as? Double ?? 1.0
-        style = d.string(forKey: "style") ?? "classic"
+        style = d.string(forKey: "style") ?? "modern"
         backgroundOpacity = d.object(forKey: "backgroundOpacity") as? Double ?? 0.9
         letterSpacing = d.object(forKey: "letterSpacing") as? Double ?? 0.3
         cursorShape = d.string(forKey: "cursorShape") ?? "block"

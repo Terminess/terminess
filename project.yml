@@ -50,6 +50,17 @@ targets:
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHighResolutionCapable: true
         NSSupportsAutomaticTermination: false
+        # Shell scripts Finder can open here (.command, .sh, .tool). Alternate rank:
+        # Terminess only becomes the default when the person chooses it
+        # (Terminess menu, Make Terminess the Default Terminal).
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Shell Script
+            CFBundleTypeRole: Shell
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.apple.terminal.shell-script
+              - public.shell-script
+              - public.unix-executable
         NSLocalNetworkUsageDescription: Terminess listens on your network briefly while you pair your iPhone.
         # Without these, macOS refuses protected folders silently instead of asking.
         NSDesktopFolderUsageDescription: Shells and agents in Terminess read and write files on your Desktop when you ask them to.

@@ -71,3 +71,21 @@ struct QuestionBar: View {
         .padding(.horizontal, 10).padding(.vertical, 6)
     }
 }
+
+struct NoticeBar: View {
+    let text: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "clock.arrow.circlepath").foregroundStyle(.secondary)
+            Text(text).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+            Spacer(minLength: 8)
+            Button(action: dismiss) { Image(systemName: "xmark") }
+                .buttonStyle(.borderless).help("Dismiss")
+        }
+        .padding(.horizontal, 14).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.10)))
+        .padding(.horizontal, 10).padding(.vertical, 6)
+    }
+}

@@ -14,6 +14,7 @@ final class ScreenModel: ObservableObject {
     @Published private(set) var title = ""
     @Published private(set) var command = ""
     @Published private(set) var connected = false
+    @Published var notice: String?
     @Published private(set) var sizedElsewhere = false
     @Published private(set) var fontScale: CGFloat = 1
     @Published private(set) var statusChips: [StatusChip] = []
@@ -118,6 +119,7 @@ final class ScreenModel: ObservableObject {
             }
         }
         attachment.onForeground = { [weak self] fg in MainActor.assumeIsolated { self?.command = fg.command } }
+        attachment.onNotice = { [weak self] text in MainActor.assumeIsolated { self?.notice = text } }
         attachment.onExit = { [weak self] _ in MainActor.assumeIsolated { self?.ended = true; self?.connected = false; self?.status = "Session ended" } }
         attachment.onDisconnect = { [weak self] _ in
             MainActor.assumeIsolated {

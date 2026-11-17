@@ -19,6 +19,14 @@ enum MCPServer {
          "description": "Tell the person something important (finished a long job, found a problem) with a notification on their Mac and phone. Don't use it for routine progress.",
          "inputSchema": ["type": "object", "required": ["message"], "properties": [
             "message": ["type": "string", "description": "One or two sentences"]]]],
+        ["name": "remind",
+         "description": "Schedule a reminder for the person to pick this work back up later (for example \"10pm: switch on the firewall\"). At that time they get a notification on their Mac and phone with a button; pressing it types action_prompt into this session, or resumes this conversation in a new session if this one has ended. Use it whenever the person says to do something later, instead of relying on the chat staying open.",
+         "inputSchema": ["type": "object", "required": ["at", "title"], "properties": [
+            "at": ["type": "string", "description": "When: 22:00 (today, or tomorrow if passed), +2h, +90m, or 2026-11-17T22:00; this machine's time zone unless an offset is given"],
+            "title": ["type": "string", "description": "Short title shown in the notification, for example Switch on the prod-server firewall"],
+            "body": ["type": "string", "description": "One or two sentences of context"],
+            "action_prompt": ["type": "string", "description": "What to type into the session when the person presses the button, for example: It's 10pm, go ahead with the firewall switch-on and run the checks"],
+            "action_label": ["type": "string", "description": "Button label (default Proceed)"]]]],
         ["name": "ask_user",
          "description": "Ask the person a question and wait for the answer, which they can give on their Mac or phone. Offer choices when there are a few clear options. Waits up to nine minutes; if nobody answers, carry on with your best judgement or stop and explain.",
          "inputSchema": ["type": "object", "required": ["question"], "properties": [
@@ -40,7 +48,7 @@ enum MCPServer {
                 reply(id, ["protocolVersion": params["protocolVersion"] as? String ?? "2025-06-18",
                            "capabilities": ["tools": [:]],
                            "serverInfo": ["name": "terminess", "version": "1"],
-                           "instructions": "Tools for working inside Terminess: open tabs, start worktree tabs, notify the person, ask them a question."])
+                           "instructions": "Tools for working inside Terminess: open tabs, start worktree tabs, notify the person, ask them a question, and schedule a reminder that brings them back to this work later."])
             case "ping":
                 reply(id, [:])
             case "tools/list":

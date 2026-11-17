@@ -35,6 +35,9 @@ struct SettingsView: View {
                     ForEach(store.hosts) { h in
                         Button { editing = h } label: {
                             HStack {
+                                Image(systemName: app.connection(h.id).symbol)
+                                    .foregroundStyle(app.connection(h.id).state == .connected ? Color.connected : Color.secondary)
+                                    .frame(width: 24)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(h.name).foregroundStyle(.primary)
                                     Text("\(h.user)@\(h.address)").font(.caption).foregroundStyle(.secondary)
@@ -99,7 +102,7 @@ struct SettingsView: View {
 
     @ViewBuilder private func status(_ s: HostConnection.State) -> some View {
         switch s {
-        case .connected: Circle().fill(Color.green).frame(width: 8, height: 8)
+        case .connected: Text("connected").font(.caption).foregroundStyle(Color.connected)
         case .connecting: ProgressView().controlSize(.small)
         case .failed: Image(systemName: "exclamationmark.circle").foregroundStyle(Theme.attention)
         case .idle: EmptyView()

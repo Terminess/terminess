@@ -293,6 +293,53 @@ enum DebugScript {
                         }
                         app.killRemote(r.machine, s.id)
                         print("remote: ended \(s.id)")
+                    case "resumepast":
+                        guard let r = model.remote.first, let h = r.history.first(where: { $0.title.contains(arg) }) else {
+                            print("remote: no past conversation matching \(arg)"); break
+                        }
+                        app.resumeRemote(r.machine, h)
+                        print("remote: resumed \(h.id) in \(h.cwd)")
+                    case "resumelocal":
+                        let inFolder = model.sessions.filter { $0.cwd == arg && $0.pair == nil }.sorted { $0.mtime > $1.mtime }
+                        guard inFolder.count > 1 else { print("local: no older conversation in \(arg)"); break }
+                        app.resume(inFolder[1])
+                        print("local: resumed older \(inFolder[1].id) (\(inFolder[1].title.prefix(40)))")
+                    case "reminders":
+                        if model.allReminders.isEmpty { print("reminders: none") }
+                        for e in model.allReminders {
+                            print("reminder: \(e.reminder.id) \(e.machine?.name ?? "local") fired=\(e.reminder.fired == true) \(e.reminder.title) session=\(e.reminder.sessionId ?? "-")")
+                        }
+                    case "proceed":
+                        guard let e = model.allReminders.first(where: { $0.reminder.fired == true }) else { print("proceed: nothing due"); break }
+                        ReminderCenter.shared.proceed(e.reminder.id, machine: e.machine)
+                        print("proceed: \(e.reminder.id)")
+                    case "notice":
+                        print("notice: \(key?.focused?.session.notice ?? "none")")
+                    case "groups":
+                        let layout = SidebarView.layout(model, showAll: [])
+                        for g in layout.groups.prefix(Int(arg) ?? 8) {
+                            print("group: \(g.title) [\(g.key)] more=\(g.more)")
+                            for l in g.live {
+                                switch l {
+                                case .tab(let t): print("  live tab: \(t.title) path=\(t.path) machine=\(t.machineID ?? "-")")
+                                case .background(let s): print("  live background: \(s.name) \(s.cwd) origin=\(s.origin ?? "-")")
+                                case .remote(let r, let s): print("  live \(r.machine.name): \(s.name) \(s.cwd) origin=\(s.origin ?? "-")")
+                                }
+                            }
+                            for p in g.past {
+                                switch p {
+                                case .local(let s):
+                                    let n = model.commitsSince[SidebarModel.commitKey(s)]
+                                    print("  past: \(s.title.prefix(40)) newest=\(s.id == g.newest) commitsSince=\(n.map(String.init) ?? "-")")
+                                case .remote(let r, let h): print("  past \(r.machine.name): \(h.title.prefix(40)) \(h.cwd)")
+                                }
+                            }
+                        }
+                        for r in model.remote {
+                            let free = model.remoteFree(r).filter { !layout.placedRemote.contains("\(r.id)/\($0.id)") }
+                            print("machine \(r.machine.name): note=\(r.note ?? "none") unplaced=\(free.map(\.name)) history=\(r.history.count)")
+                        }
+                        print("background unplaced=\(model.background.filter { !layout.placedHosts.contains($0.id) }.map(\.name))")
                     default:
                         for r in model.remote {
                             print("remote: machine \(r.machine.name) note=\(r.note ?? "none") sessions=\(r.sessions.map { "\($0.name)[\(SessionNames.title($0))]" }) free=\(model.remoteFree(r).map(\.name)) projects=\(r.projects.count)")

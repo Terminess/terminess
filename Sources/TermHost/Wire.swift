@@ -97,6 +97,8 @@ public struct SessionInfo: Codable, Equatable {
     public var permission: PermissionInfo?
     public var question: QuestionInfo?
 
+    public var origin: String?
+    public var clientKinds: [String]?
     public init(id: String, name: String, command: String, cwd: String, created: Double, clients: Int) {
         self.id = id; self.name = name; self.command = command; self.cwd = cwd; self.created = created; self.clients = clients
     }
@@ -114,6 +116,8 @@ public struct HistoryItem: Codable, Equatable, Sendable {
     public var cwd: String
     public var title: String
     public var used: Double
+    public var newest: Bool?
+    public var commitsSince: Int?
     public init(id: String, agent: String, cwd: String, title: String, used: Double) {
         self.id = id; self.agent = agent; self.cwd = cwd; self.title = title; self.used = used
     }
@@ -135,6 +139,7 @@ public struct Message: Codable, Equatable {
     public var op: String
     public var version: Int?
     public var host: String?
+    public var platform: String?
     public var id: String?
     public var name: String?
     public var cwd: String?
@@ -159,6 +164,9 @@ public struct Message: Codable, Equatable {
     public var history: [HistoryItem]?
     public var agentModels: [AgentModel]?
     public var roles: ModelRoles?
+    public var resumeOf: String?
+    public var reminder: ReminderInfo?
+    public var reminders: [ReminderInfo]?
 
     public init(op: String, version: Int? = nil, host: String? = nil, id: String? = nil, name: String? = nil,
                 cwd: String? = nil, command: String? = nil, args: [String]? = nil, cols: Int? = nil, rows: Int? = nil,

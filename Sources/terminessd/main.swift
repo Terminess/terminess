@@ -345,7 +345,7 @@ case "new":
     let opts = dash.map { Array(rest[..<$0]) } ?? rest
     let program = dash.map { Array(rest[($0 + 1)...]) } ?? []
     let size = terminalSize()
-    let reply = request(Message(op: "create", name: value(after: "--name", in: opts),
+    let reply = request(Message(op: "create", host: "cli", name: value(after: "--name", in: opts),
                                 cwd: value(after: "--cwd", in: opts) ?? FileManager.default.currentDirectoryPath,
                                 command: program.first, args: Array(program.dropFirst()),
                                 cols: size.cols, rows: size.rows))
@@ -371,6 +371,54 @@ case "pair":
 
 case "chat":
     chat(rest)
+
+case "remind", "reminder", "reminders":
+    let a = Array(rest)
+    func value(_ flag: String) -> String? {
+        guard let i = a.firstIndex(of: flag), i + 1 < a.count else { return nil }
+        return a[i + 1]
+    }
+    func show(_ r: ReminderInfo) -> String {
+        let when = DateFormatter()
+        when.locale = Locale(identifier: "en_GB"); when.dateFormat = "EEE d MMM HH:mm zzz"
+        var line = "\(r.id)  \(when.string(from: Date(timeIntervalSince1970: r.due)))  \(r.fired == true ? "DUE  " : "")\(r.title)"
+        if let p = r.actionPrompt { line += "\n        \(r.label): \(p)" }
+        if let s = r.sessionId { line += "\n        session \(s)\(r.conversation.map { ", \(r.agent ?? "agent") conversation \($0)" } ?? "")" }
+        return line
+    }
+    switch command == "reminders" ? "list" : (a.first ?? "list") {
+    case "add":
+        guard let at = value("--at"), let title = value("--title") else {
+            fail("usage: terminessd remind add --at 22:00|+2h|2026-11-17T22:00 --title T [--body B] [--session ID] [--action-label L] [--action-prompt TEXT]")
+        }
+        guard let due = ReminderTime.parse(at) else { fail("can't read the time \"\(at)\"; use 22:00, +2h or 2026-11-17T22:00") }
+        let session = value("--session") ?? ProcessInfo.processInfo.environment["TERMINESS_SESSION"]
+        var m = Message(op: "remind-add")
+        m.reminder = ReminderInfo(id: "", title: title, body: value("--body"), due: due.timeIntervalSince1970,
+                                  actionLabel: value("--action-label"), actionPrompt: value("--action-prompt"),
+                                  sessionId: session?.isEmpty == false ? session : nil, created: 0)
+        let reply = request(m)
+        guard reply.op == "reminder-added", let r = reply.reminder else { fail(reply.message ?? "couldn't set the reminder") }
+        print("Reminder set:\n" + show(r))
+    case "list":
+        var m = Message(op: "reminders")
+        m = request(m)
+        let list = m.reminders ?? []
+        if list.isEmpty { print("No reminders. Add one with: terminessd remind add --at 22:00 --title \"...\"") }
+        list.forEach { print(show($0)) }
+    case "cancel", "remove", "dismiss":
+        guard a.count > 1 else { fail("usage: terminessd remind cancel ID") }
+        let reply = request(Message(op: "remind-cancel", id: a[1]))
+        if reply.op == "error" { fail(reply.message ?? "error") }
+        print("Cancelled.")
+    case "act", "proceed":
+        guard a.count > 1 else { fail("usage: terminessd remind act ID") }
+        let reply = request(Message(op: "reminder-act", id: a[1]))
+        if reply.op == "error" { fail(reply.message ?? "error") }
+        print("Done; session \(reply.id ?? "?").")
+    default:
+        fail("usage: terminessd remind add|list|cancel|act")
+    }
 
 case "schedule":
     var list = AgentSchedules.load()
@@ -523,7 +571,11 @@ case "-h", "--help", "help":
       terminessd hooks uninstall|status
       terminessd agent [--model M] [task]  harness mode: Terminess runs the agent on your API key or a local model
       terminessd schedule add|list|remove  agent runs on a schedule (your API key)
-      terminessd mcp                   an MCP server giving agents Terminess tools (tabs, worktrees, notify, ask)
+      terminessd remind add --at 22:00 --title T [--action-prompt TEXT]
+                                       a reminder: at that time a notification with a Proceed button
+                                       that types TEXT into this session (or resumes its conversation)
+      terminessd remind list|cancel ID|act ID
+      terminessd mcp                   an MCP server giving agents Terminess tools (tabs, worktrees, notify, ask, remind)
     """)
 
 default:

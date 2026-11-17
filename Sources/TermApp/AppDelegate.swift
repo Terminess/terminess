@@ -72,7 +72,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         Settings.shared.appearance = sender.tag
     }
 
-    private var settingsWindow: NSWindow?
     private var doctorWindow: NSWindow?
     private var pairWindow: NSWindow?
 
@@ -127,24 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc func showModels(_ sender: Any?) { showSettings(page: "models") }
 
-    @objc func showSettings(_ sender: Any?) {
-        if settingsWindow == nil {
-            let host = NSHostingController(rootView: SettingsView())
-            host.sizingOptions = []
-            let w = NSWindow(contentViewController: host)
-            w.title = "Settings"
-            w.styleMask = [.titled, .closable, .resizable]
-            w.isReleasedWhenClosed = false
-            let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame.height ?? 800
-            w.setContentSize(NSSize(width: 500, height: min(720, visible - 80)))
-            w.contentMinSize = NSSize(width: 500, height: 360)
-            w.contentMaxSize = NSSize(width: 500, height: CGFloat.greatestFiniteMagnitude)
-            if !w.setFrameUsingName("Settings") { w.center() }
-            w.setFrameAutosaveName("Settings")
-            settingsWindow = w
-        }
-        settingsWindow?.makeKeyAndOrderFront(nil)
-    }
+    @objc func showSettings(_ sender: Any?) { SettingsWindowController.shared.show() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(setAppearance(_:)) {
@@ -347,7 +329,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                            remoteIDs: c.panes.compactMap { p in
                                guard let m = p.session.machine, let id = p.session.process?.hostSessionID else { return nil }
                                return "\(m.id)/\(id)"
-                           })
+                           },
+                           path: dir, machineID: c.session.machine?.id)
         }
     }
 
@@ -430,7 +413,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func resume(_ session: SessionItem) {
         let cmd = session.tool == "claude" ? "claude --resume \(shellQuote(session.id))" : "codex resume \(shellQuote(session.id))"
         let dir = FileManager.default.fileExists(atPath: session.cwd) ? session.cwd : SidebarModel.home
-        open(tabbedWith: keyController?.window, directory: dir, command: cmd)
+        let c = open(tabbedWith: keyController?.window, directory: dir, command: cmd)
+        c.setResumeOf(session.id)
+    }
+
+    func resumeRemote(_ machine: RemoteMachine, _ item: HistoryItem) {
+        let cmd = item.agent == "claude" ? "claude --resume \(shellQuote(item.id))" : "codex resume \(shellQuote(item.id))"
+        let c = open(tabbedWith: keyController?.window, directory: item.cwd, machine: machine, agent: cmd)
+        c.setResumeOf(item.id)
     }
 
 
@@ -595,8 +585,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About Terminess", action: #selector(showAbout(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
         appMenu.addItem(withTitle: "Pair iPhone…", action: #selector(showPairPhone(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Make Terminess the Default Terminal…", action: #selector(makeDefaultTerminal(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())

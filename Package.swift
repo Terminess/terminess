@@ -29,5 +29,6 @@ let package = Package(
         .testTarget(name: "TermCoreTests", dependencies: ["TermCore"]),
         .testTarget(name: "TermTranscriptTests", dependencies: ["TermTranscript"], resources: [.copy("Fixtures")]),
         .testTarget(name: "TermHostTests", dependencies: ["TermHost"]),
+        .testTarget(name: "TermHostServerTests", dependencies: ["TermHostServer", "TermHost"]),
     ]
 )

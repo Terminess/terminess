@@ -27,6 +27,20 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticTermination</key><false/>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key><string>Shell Script</string>
+      <key>CFBundleTypeRole</key><string>Shell</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.apple.terminal.shell-script</string>
+        <string>public.shell-script</string>
+        <string>public.unix-executable</string>
+      </array>
+    </dict>
+  </array>
   <key>NSLocalNetworkUsageDescription</key><string>Terminess listens on your network briefly while you pair your iPhone.</string>
   <key>NSDesktopFolderUsageDescription</key><string>Shells and agents in Terminess read and write files on your Desktop when you ask them to.</string>
   <key>NSDocumentsFolderUsageDescription</key><string>Shells and agents in Terminess read and write files in Documents when you ask them to.</string>

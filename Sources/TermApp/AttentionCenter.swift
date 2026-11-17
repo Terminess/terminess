@@ -20,6 +20,7 @@ final class AttentionCenter: NSObject, @preconcurrency UNUserNotificationCenterD
         guard canNotify else { return }
         let centre = UNUserNotificationCenter.current()
         centre.delegate = self
+        centre.setNotificationCategories([ReminderCenter.notificationCategory])
         centre.requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
             DispatchQueue.main.async { MainActor.assumeIsolated { AttentionCenter.shared.authorised = granted } }
         }
@@ -70,7 +71,16 @@ final class AttentionCenter: NSObject, @preconcurrency UNUserNotificationCenterD
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler done: @escaping () -> Void) {
-        let key = response.notification.request.content.userInfo["controller"] as? String
+        let info = response.notification.request.content.userInfo
+        if let reminder = info["reminder"] as? String {
+            let action = response.actionIdentifier == "DISMISS" ? "DISMISS" : "PROCEED"
+            if response.actionIdentifier != UNNotificationDismissActionIdentifier {
+                ReminderCenter.shared.handle(action: action, reminder: reminder, machineID: info["machine"] as? String ?? "")
+            }
+            done()
+            return
+        }
+        let key = info["controller"] as? String
         if let app = NSApp.delegate as? AppDelegate,
            let c = app.controllers.first(where: { "\(ObjectIdentifier($0).hashValue)" == key }) {
             NSApp.activate(ignoringOtherApps: true)

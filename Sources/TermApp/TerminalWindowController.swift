@@ -364,7 +364,18 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             return
         }
         let pane = ([focused] + panes).compactMap { $0 }.first { $0.session.permission != nil }
-        guard let pane, let request = pane.session.permission else { container.approval = nil; return }
+        guard let pane, let request = pane.session.permission else {
+            if let p = ([focused] + panes).compactMap({ $0 }).first(where: { $0.session.notice != nil && !$0.session.noticeDismissed }),
+               let text = p.session.notice {
+                container.approval = NSHostingView(rootView: NoticeBar(text: text) { [weak self, weak p] in
+                    p?.session.noticeDismissed = true
+                    self?.updateApproval()
+                })
+            } else {
+                container.approval = nil
+            }
+            return
+        }
         let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
         let bar = NSHostingView(rootView: ApprovalBar(request: request, agent: agent) { [weak self, weak pane] answer in
             pane?.session.answerPermission(answer)
@@ -522,6 +533,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             guard let self, let pane else { return }
             AttentionCenter.shared.alert(controller: self, pane: pane, title: self.displayTitle, body: "Bell")
         }
+        session.onNotice = { [weak self] _ in self?.updateApproval() }
         session.onPermission = { [weak self, weak pane] request in
             guard let self, let pane else { return }
             self.updateApproval()
@@ -785,6 +797,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     func setSidebar(visible: Bool, animated: Bool) {
         guard sidebarItem.isCollapsed == visible else { return }
         if animated { sidebarItem.animator().isCollapsed = !visible } else { sidebarItem.isCollapsed = !visible }
+    }
+
+    func setResumeOf(_ id: String) {
+        focused?.session.resumeOf = id
     }
 
     func refreshTitle() {

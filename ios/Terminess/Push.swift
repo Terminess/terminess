@@ -73,7 +73,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         center.delegate = self
         let allow = UNNotificationAction(identifier: "ALLOW", title: "Allow", options: [.authenticationRequired, .foreground])
         let deny = UNNotificationAction(identifier: "DENY", title: "Deny", options: [.authenticationRequired, .destructive, .foreground])
-        center.setNotificationCategories([UNNotificationCategory(identifier: "APPROVAL", actions: [allow, deny], intentIdentifiers: [])])
+        let proceed = UNNotificationAction(identifier: "PROCEED", title: "Proceed", options: [.authenticationRequired, .foreground])
+        let dismiss = UNNotificationAction(identifier: "DISMISS", title: "Dismiss", options: [.authenticationRequired, .destructive, .foreground])
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: "APPROVAL", actions: [allow, deny], intentIdentifiers: []),
+            UNNotificationCategory(identifier: "REMINDER", actions: [proceed, dismiss], intentIdentifiers: []),
+        ])
         #if DEBUG
         if ProcessInfo.processInfo.environment["TERMINESS_DEMO_ADD"] != nil { return true }
         #endif
@@ -107,6 +112,27 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let host = (info["host"] as? String).flatMap(UUID.init(uuidString:))
         let session = info["session"] as? String
         let action = response.actionIdentifier
+        if let reminder = info["reminder"] as? String, !reminder.isEmpty, let host {
+            Task { @MainActor in
+                AppLock.shared.whenUnlocked {
+                    Task {
+                        let c = AppState.shared.connection(host)
+                        await c.connect()
+                        guard let r = c.reminders.first(where: { $0.id == reminder }) else {
+                            if let session, !session.isEmpty { AppState.shared.open(SessionTarget(host: host, session: session, title: "Session")) }
+                            return
+                        }
+                        if action == "DISMISS" { AppState.shared.dismiss(r, on: host) }
+                        else if action == "PROCEED" { await AppState.shared.proceed(r, on: host) }
+                        else {
+                            AppState.shared.drawerOpen = true
+                        }
+                    }
+                }
+                completionHandler()
+            }
+            return
+        }
         Task { @MainActor in
             if let host, let session {
                 AppLock.shared.whenUnlocked {

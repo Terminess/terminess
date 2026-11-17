@@ -27,6 +27,8 @@ public final class HostAttachment: @unchecked Sendable {
     public var onPermission: ((PermissionInfo?) -> Void)?
     public var onQuestion: ((QuestionInfo?) -> Void)?
     public var onNote: ((String) -> Void)?
+    public var onNotice: ((String?) -> Void)?
+    public var resumeOf: String?
     public var onAgentRequest: ((String, String, String) -> Void)?
     public var clientKind: String?
     public var onOutput: (([UInt8]) -> Void)?
@@ -114,8 +116,10 @@ public final class HostAttachment: @unchecked Sendable {
                 }
                 switch target {
                 case .create(let cwd, let command, let args, let env, let name):
-                    connection.send(Message(op: "create", name: name, cwd: cwd, command: command, args: args,
-                                            cols: cols, rows: rows, env: env))
+                    var create = Message(op: "create", host: clientKind, name: name, cwd: cwd, command: command, args: args,
+                                         cols: cols, rows: rows, env: env)
+                    create.resumeOf = resumeOf
+                    connection.send(create)
                 case .attach(let id):
                     sendAttach(id)
                 }
@@ -134,6 +138,8 @@ public final class HostAttachment: @unchecked Sendable {
                 onQuestion?(m.question)
             case "agent-note":
                 if let text = m.message { onNote?(text) }
+            case "notice":
+                onNotice?(m.message.flatMap { $0.isEmpty ? nil : $0 })
             case "agent-request":
                 if let id = m.id, let tool = m.name { onAgentRequest?(id, tool, m.message ?? "{}") }
             case "size":
@@ -175,6 +181,24 @@ public final class HostAttachment: @unchecked Sendable {
         guard let fd = UnixSocket.connect(socketPath) else { return false }
         defer { Darwin_close(fd) }
         return Connection.writeAll(fd, Wire.Frame.control(m).encoded())
+    }
+
+    public static func request(_ m: Message, expecting ops: Set<String>, socketPath: String = HostPaths.socket, timeout: Double = 3) -> Message? {
+        guard let fd = UnixSocket.connect(socketPath) else { return nil }
+        defer { Darwin_close(fd) }
+        guard Connection.writeAll(fd, Wire.Frame.control(m).encoded()) else { return nil }
+        var decoder = Wire.Decoder()
+        var buf = [UInt8](repeating: 0, count: 65536)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            guard poll(&p, 1, 200) >= 0 else { return nil }
+            if p.revents == 0 { continue }
+            let n = read(fd, &buf, buf.count)
+            guard n > 0, let frames = try? decoder.feed(Array(buf[0..<n])) else { return nil }
+            if let r = frames.compactMap(\.message).first(where: { ops.contains($0.op) || $0.op == "error" }) { return r }
+        }
+        return nil
     }
 
     public static func list(socketPath: String = HostPaths.socket, timeout: Double = 2) -> [SessionInfo]? {

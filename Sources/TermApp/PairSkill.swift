@@ -96,6 +96,17 @@ enum PairSkill {
         Read the report; for write modes, check the diff and run the tests yourself. Tell the user what \(Other) said or changed, briefly, and say so if you disagree. \(Other) never commits, pushes or deploys; that stays with you and the user.
 
         If pair says it needs jq (macOS 14 and older), tell the user to run `brew install jq`.
+
+        ## Picking work up later
+
+        When the user wants to do something later ("at 10pm, switch on the firewall", "remind me tomorrow morning"), don't rely on this chat still being open: set a Terminess reminder. At that time the user gets a notification on their Mac and iPhone with a Proceed button that types your prompt into this session, or resumes this conversation in a new session if this one has ended.
+
+        ```bash
+        terminessd remind add --at 22:00 --title "Switch on the prod-server firewall" \\
+          --action-prompt "It's 10pm: go ahead with the firewall switch-on and run the checks"
+        ```
+
+        `--at` takes 22:00 (today, or tomorrow if it has passed), +2h or 2026-11-17T22:00, in this machine's time zone. `terminessd remind list` and `terminessd remind cancel ID` manage them; with the Terminess MCP server, the `remind` tool does the same. Tell the user the time it was set for.
         """
     }
 }

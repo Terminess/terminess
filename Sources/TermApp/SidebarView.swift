@@ -9,12 +9,16 @@ enum SidebarID: Hashable {
     case issue(Int)
     case host(String)
     case remote(String)
+    case projectTab(ObjectIdentifier)
+    case remotePast(String)
+    case reminder(String)
 }
 
 struct SidebarView: View {
     @ObservedObject var model: SidebarModel
     var drops: WindowLink?
     @State private var selection: SidebarID?
+    @State private var openReminder: String?
     @AppStorage("sidebar.openExpanded") private var openExpanded = true
     @AppStorage("sidebar.pairExpanded") private var pairExpanded = true
     @AppStorage("sidebar.sessionsExpanded") private var sessionsExpanded = true
@@ -27,15 +31,17 @@ struct SidebarView: View {
                 .padding(.bottom, 4)
 
             List(selection: $selection) {
+                let layout = projectLayout
                 if model.search.isEmpty {
                     shortcutsSection
+                    if !model.allReminders.isEmpty { remindersSection }
                     openSection
-                    ForEach(model.remote) { r in machineSection(r) }
-                    if !model.background.isEmpty { runningSection }
+                    ForEach(model.remote) { r in machineSection(r, layout) }
+                    if model.background.contains(where: { !layout.placedHosts.contains($0.id) }) { runningSection(layout) }
                     pairSection
                     if model.issuesRepo != nil { issuesSection }
                 }
-                sessionSections
+                sessionSections(layout)
                 if !model.search.isEmpty && listedSessions.isEmpty {
                     Text("No matches for \u{201C}\(model.search)\u{201D}")
                         .font(.callout).foregroundStyle(.tertiary)
@@ -46,6 +52,11 @@ struct SidebarView: View {
                 }
             }
             .listStyle(.sidebar)
+            .sheet(isPresented: Binding(get: { openReminder != nil }, set: { if !$0 { openReminder = nil; selection = nil } })) {
+                if let key = openReminder, let (m, r) = reminderEntry(key) {
+                    ReminderDetailView(reminder: r, machine: m) { openReminder = nil; selection = nil }
+                }
+            }
             .contextMenu(forSelectionType: SidebarID.self) { ids in
                 if let id = ids.first { menu(for: id) }
             } primaryAction: { ids in
@@ -53,12 +64,40 @@ struct SidebarView: View {
             }
             .onChange(of: selection) { _, new in
                 if case .tab(let tab)? = new { model.actions?.focusTab(tab) }
+                if case .reminder(let key)? = new { openReminder = key }
+                if case .projectTab(let tab)? = new { model.actions?.focusTab(tab) }
             }
         }
         .frame(minWidth: 220)
         .onDrop(of: Drops.utTypes, isTargeted: nil) { _ in drops?.dropFromSwiftUI() ?? false }
     }
 
+
+    private var remindersSection: some View {
+        Section("Reminders") {
+            ForEach(model.allReminders, id: \.reminder.id) { entry in
+                let r = entry.reminder, m = entry.machine
+                let due = r.fired == true
+                Row(symbol: due ? "bell.badge.fill" : "clock",
+                    tint: due ? .orange : .secondary,
+                    title: r.title,
+                    subtitle: [due ? "due" : Self.reminderTime(r.due), m?.name, r.body].compactMap { $0 }.joined(separator: " · "),
+                    dimmed: !due,
+                    actions: due
+                        ? [RowAction(symbol: "play.fill", help: r.label) { ReminderCenter.shared.proceed(r.id, machine: m) },
+                           RowAction(symbol: "xmark", help: "Dismiss") { ReminderCenter.shared.dismiss(r.id, machine: m) }]
+                        : [RowAction(symbol: "xmark", help: "Cancel reminder") { ReminderCenter.shared.dismiss(r.id, machine: m) }])
+                    .tag(SidebarID.reminder("\(m?.id ?? "")/\(r.id)"))
+            }
+        }
+    }
+
+    static func reminderTime(_ due: Double) -> String {
+        let d = Date(timeIntervalSince1970: due)
+        let f = DateFormatter()
+        f.dateFormat = Calendar.current.isDateInToday(d) ? "HH:mm" : "EEE d MMM HH:mm"
+        return f.string(from: d)
+    }
 
     private var openSection: some View {
         Section("Open", isExpanded: $openExpanded) {
@@ -81,14 +120,15 @@ struct SidebarView: View {
         }
     }
 
-    private var runningSection: some View {
-        Section("Running") {
-            ForEach(model.background, id: \.id) { s in
+    private func runningSection(_ layout: Layout) -> some View {
+        Section("Background") {
+            ForEach(model.background.filter { !layout.placedHosts.contains($0.id) }, id: \.id) { s in
                 let agent = Agent.detect(s.command)
                 Row(symbol: agent != nil ? "sparkle" : "terminal",
                     tint: agent.map { Color(nsColor: $0.tint) } ?? .secondary,
                     title: SessionNames.title(s),
-                    subtitle: [shortPath(s.cwd), s.clients > 0 ? "open elsewhere" : "no tab"].filter { !$0.isEmpty }.joined(separator: " · "),
+                    subtitle: [shortPath(s.cwd), DeviceBadge.openElsewhere(s) ? "open elsewhere" : (DeviceBadge.phone(s)?.connected == true ? nil : "no tab")].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
+                    badge: DeviceBadge.phone(s),
                     actions: [
                         RowAction(symbol: "arrow.up.forward.app", help: "Open in a tab") { model.actions?.attachHost(s) },
                         RowAction(symbol: "xmark", help: "End this session") { model.actions?.killHost(s.id) },
@@ -98,14 +138,14 @@ struct SidebarView: View {
         }
     }
 
-    private func machineSection(_ r: RemoteMachineState) -> some View {
+    private func machineSection(_ r: RemoteMachineState, _ layout: Layout) -> some View {
         Section {
             if let note = r.note {
                 Text(note).font(.callout).foregroundStyle(.tertiary).lineLimit(2)
             } else {
-                let free = model.remoteFree(r)
+                let free = model.remoteFree(r).filter { !layout.placedRemote.contains("\(r.id)/\($0.id)") }
                 if free.isEmpty {
-                    Text(r.sessions.isEmpty ? "Nothing running" : "All open in tabs").font(.callout).foregroundStyle(.tertiary)
+                    Text(r.sessions.isEmpty ? "Nothing running" : "Running under projects or in tabs").font(.callout).foregroundStyle(.tertiary)
                 }
                 ForEach(free, id: \.id) { s in
                     let agent = Agent.detect(s.command)
@@ -113,9 +153,10 @@ struct SidebarView: View {
                         tint: s.attention == true ? .orange : (agent.map { Color(nsColor: $0.tint) } ?? .secondary),
                         title: SessionNames.title(s),
                         subtitle: [s.busy == true ? "working" : (s.attention == true ? "needs you" : nil),
-                                   remotePath(s.cwd), s.clients > 0 ? "open elsewhere" : nil]
+                                   remotePath(s.cwd), DeviceBadge.openElsewhere(s) ? "open elsewhere" : nil]
                             .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
                         busy: s.busy == true && s.attention != true,
+                        badge: DeviceBadge.phone(s),
                         actions: [
                             RowAction(symbol: "arrow.up.forward.app", help: "Open in a tab") { model.actions?.attachRemote(r.machine, s) },
                             RowAction(symbol: "xmark", help: "End this session") { model.actions?.killRemote(r.machine, s.id) },
@@ -125,7 +166,13 @@ struct SidebarView: View {
             }
         } header: {
             HStack(spacing: 4) {
-                Text(r.machine.name)
+                Image(systemName: r.symbol)
+                    .font(.system(size: 10, weight: .regular))
+                    .foregroundStyle(r.note == nil ? Color.connected : Color.secondary)
+                Text(model.remote.count > 1 ? "Remote \u{00B7} \(r.machine.name)" : "Remote")
+                if r.note == nil {
+                    Text("connected").font(.caption2).fontWeight(.regular).foregroundStyle(Color.connected).textCase(nil)
+                }
                 Spacer()
                 Menu {
                     newRemoteItems(r, directory: nil, label: "Home")
@@ -162,6 +209,13 @@ struct SidebarView: View {
         guard parts.count == 2, let r = model.remote.first(where: { $0.id == parts[0] }),
               let s = r.sessions.first(where: { $0.id == parts[1] }) else { return nil }
         return (r.machine, s)
+    }
+
+    private func remotePast(_ key: String) -> (RemoteMachine, HistoryItem)? {
+        let parts = key.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let r = model.remote.first(where: { $0.id == parts[0] }),
+              let h = r.history.first(where: { $0.id == parts[1] }) else { return nil }
+        return (r.machine, h)
     }
 
     private func shortPath(_ p: String) -> String {
@@ -239,18 +293,19 @@ struct SidebarView: View {
         }
     }
 
-    private var sessionSections: some View {
+    private func sessionSections(_ layout: Layout) -> some View {
         Group {
             if !pinnedSessions.isEmpty && model.search.isEmpty {
                 Section("Pinned") {
-                    ForEach(pinnedSessions) { s in sessionRow(s, showRepo: true) }
+                    ForEach(pinnedSessions) { s in sessionRow(s, showRepo: true, stale: nil) }
                 }
             }
-            ForEach(projectGroups, id: \.key) { group in
+            ForEach(layout.groups, id: \.key) { group in
                 Section(isExpanded: expandedBinding(group.key)) {
-                    ForEach(group.visible) { s in sessionRow(s, showRepo: false) }
-                    if group.hidden > 0 {
-                        Button(showAll.contains(group.key) ? "Show less" : "Show \(group.hidden) more") {
+                    ForEach(group.live) { liveRow($0) }
+                    ForEach(group.past) { pastRow($0, newest: group.newest) }
+                    if group.more > 0 {
+                        Button(showAll.contains(group.key) ? "Show less" : "Show \(group.more) more") {
                             if showAll.contains(group.key) { showAll.remove(group.key) } else { showAll.insert(group.key) }
                         }
                         .buttonStyle(.plain)
@@ -264,18 +319,90 @@ struct SidebarView: View {
         }
     }
 
-    private func sessionRow(_ s: SessionItem, showRepo: Bool) -> some View {
-        let recent = Date().timeIntervalSince1970 - s.mtime < 86_400
+    @ViewBuilder
+    private func liveRow(_ live: Live) -> some View {
+        switch live {
+        case .tab(let tab):
+            let agent = Agent.detect(tab.command)
+            let remoteMachine = tab.machineID.flatMap { id in model.remote.first { $0.id == id } }
+            Row(symbol: tab.attention ? "circle.fill" : (tab.parked ? "moon.zzz" : (agent != nil ? "sparkle" : "terminal")),
+                tint: tab.attention ? .orange : (agent.map { Color(nsColor: $0.tint) } ?? .secondary),
+                title: tab.title,
+                subtitle: [tab.busy ? "working" : nil, "open",
+                           tab.branch.map { "⎇ \($0)" }, tab.parked ? "parked" : nil].compactMap { $0 }.joined(separator: " · "),
+                busy: tab.busy && !tab.attention,
+                current: tab.id == drops?.owner,
+                badge: model.iPhoneOnTab(tab)
+                    ? DeviceBadge(symbol: "iphone", label: "iPhone connected", connected: true)
+                    : remoteMachine.map { DeviceBadge.machine($0) },
+                actions: [RowAction(symbol: "xmark", help: "Close tab") { model.actions?.closeTab(tab.id) }])
+                .tag(SidebarID.projectTab(tab.id))
+        case .background(let s):
+            let agent = Agent.detect(s.command)
+            Row(symbol: s.attention == true ? "circle.fill" : (agent != nil ? "sparkle" : "terminal"),
+                tint: s.attention == true ? .orange : (agent.map { Color(nsColor: $0.tint) } ?? .secondary),
+                title: SessionNames.title(s),
+                subtitle: [s.busy == true ? "working" : (s.attention == true ? "needs you" : nil), "background",
+                           DeviceBadge.openElsewhere(s) ? "open elsewhere" : nil].compactMap { $0 }.joined(separator: " · "),
+                busy: s.busy == true && s.attention != true,
+                badge: DeviceBadge.phone(s),
+                actions: [
+                    RowAction(symbol: "arrow.up.forward.app", help: "Open in a tab") { model.actions?.attachHost(s) },
+                    RowAction(symbol: "xmark", help: "End this session") { model.actions?.killHost(s.id) },
+                ])
+                .tag(SidebarID.host(s.id))
+        case .remote(let r, let s):
+            let agent = Agent.detect(s.command)
+            Row(symbol: s.attention == true ? "circle.fill" : (agent != nil ? "sparkle" : "terminal"),
+                tint: s.attention == true ? .orange : (agent.map { Color(nsColor: $0.tint) } ?? .secondary),
+                title: SessionNames.title(s),
+                subtitle: [s.busy == true ? "working" : (s.attention == true ? "needs you" : nil),
+                           DeviceBadge.openElsewhere(s) ? "open elsewhere" : nil].compactMap { $0 }.joined(separator: " · "),
+                busy: s.busy == true && s.attention != true,
+                badge: DeviceBadge.phone(s) ?? DeviceBadge.machine(r),
+                actions: [
+                    RowAction(symbol: "arrow.up.forward.app", help: "Open in a tab") { model.actions?.attachRemote(r.machine, s) },
+                    RowAction(symbol: "xmark", help: "End this session") { model.actions?.killRemote(r.machine, s.id) },
+                ])
+                .tag(SidebarID.remote("\(r.id)/\(s.id)"))
+        }
+    }
+
+    @ViewBuilder
+    private func pastRow(_ past: Past, newest: String?) -> some View {
+        switch past {
+        case .local(let s):
+            sessionRow(s, showRepo: false, stale: s.id == newest ? nil : commitsSince(s))
+        case .remote(let r, let h):
+            Row(symbol: "bubble.left", tint: toolTint(h.agent), title: h.title,
+                subtitle: [r.machine.name, relative(h.used),
+                           h.commitsSince.flatMap { $0 > 0 ? "\($0) commit\($0 == 1 ? "" : "s") since" : nil }]
+                    .compactMap { $0 }.joined(separator: " · "),
+                dimmed: true,
+                actions: [RowAction(symbol: "arrow.uturn.forward", help: "Resume on \(r.machine.name)") {
+                    model.actions?.resumeRemote(r.machine, h)
+                }])
+                .tag(SidebarID.remotePast("\(r.id)/\(h.id)"))
+        }
+    }
+
+    private func sessionRow(_ s: SessionItem, showRepo: Bool, stale: Int?) -> some View {
         let pinned = model.pinned.contains(s.id)
+        let when = showRepo ? "\(s.repo) · \(relative(s.mtime))" : relative(s.mtime)
         return Row(symbol: "bubble.left", tint: toolTint(s.tool), title: s.title,
-                   subtitle: showRepo ? "\(s.repo) · \(relative(s.mtime))" : relative(s.mtime),
-                   dimmed: !recent && !pinned,
+                   subtitle: [when, stale.map { "\($0) commit\($0 == 1 ? "" : "s") since" }].compactMap { $0 }.joined(separator: " · "),
+                   dimmed: !pinned,
                    actions: [
                        RowAction(symbol: "arrow.uturn.forward", help: "Resume in new tab") { model.actions?.resume(s) },
                        RowAction(symbol: pinned ? "pin.slash" : "pin", help: pinned ? "Unpin" : "Pin") { model.togglePin(s.id) },
                    ])
             .tag(SidebarID.session(s.id))
     }
+
+    private func commitsSince(_ s: SessionItem) -> Int? {
+        model.commitsSince[SidebarModel.commitKey(s)].flatMap { $0 > 0 ? $0 : nil }
+    }
+
 
 
     @State private var showAll: Set<String> = []
@@ -294,31 +421,121 @@ struct SidebarView: View {
         listedSessions.filter { model.pinned.contains($0.id) }
     }
 
-    private struct ProjectGroup {
-        let key: String
-        let title: String
-        let visible: [SessionItem]
-        let hidden: Int
+    enum Live: Identifiable {
+        case tab(OpenTab)
+        case background(SessionInfo)
+        case remote(RemoteMachineState, SessionInfo)
+        var id: String {
+            switch self {
+            case .tab(let t): return "tab-\(t.id.hashValue)"
+            case .background(let s): return "host-\(s.id)"
+            case .remote(let r, let s): return "remote-\(r.id)/\(s.id)"
+            }
+        }
     }
 
-    private var projectGroups: [ProjectGroup] {
-        let items = listedSessions.filter { model.search.isEmpty ? !model.pinned.contains($0.id) : true }
-        var order: [String] = []
-        var byKey: [String: [SessionItem]] = [:]
-        for s in items {
-            if byKey[s.cwd] == nil { order.append(s.cwd) }
-            byKey[s.cwd, default: []].append(s)
-        }
-        let cutoff = Date().timeIntervalSince1970 - 6 * 3600
-        return order.map { key in
-            let all = byKey[key] ?? []
-            let title = all.first?.repo ?? key
-            if !model.search.isEmpty || showAll.contains(key) {
-                return ProjectGroup(key: key, title: title, visible: all, hidden: showAll.contains(key) ? max(0, all.count - 5) : 0)
+    enum Past: Identifiable {
+        case local(SessionItem)
+        case remote(RemoteMachineState, HistoryItem)
+        var id: String {
+            switch self {
+            case .local(let s): return s.id
+            case .remote(let r, let h): return "\(r.id)/\(h.id)"
             }
-            let shown = all.enumerated().filter { $0.offset < 5 || $0.element.mtime > cutoff }.map(\.element)
-            return ProjectGroup(key: key, title: title, visible: shown, hidden: all.count - shown.count)
         }
+        var time: Double {
+            switch self {
+            case .local(let s): return s.mtime
+            case .remote(_, let h): return h.used
+            }
+        }
+    }
+
+    struct ProjectGroup {
+        let key: String
+        let title: String
+        let live: [Live]
+        let past: [Past]
+        let more: Int
+        let newest: String?
+    }
+
+    struct Layout {
+        var groups: [ProjectGroup] = []
+        var placedHosts: Set<String> = []
+        var placedRemote: Set<String> = []
+    }
+
+    private var projectLayout: Layout { Self.layout(model, showAll: showAll) }
+
+    static func layout(_ model: SidebarModel, showAll: Set<String>) -> Layout {
+        var layout = Layout()
+        let searching = !model.search.isEmpty
+        var order: [String] = []
+        var titles: [String: String] = [:]
+        var past: [String: [Past]] = [:]
+        var live: [String: [Live]] = [:]
+        func add(_ key: String, _ title: String) {
+            if titles[key] == nil { order.append(key); titles[key] = title }
+        }
+        func name(_ path: String) -> String { (path as NSString).lastPathComponent }
+
+        let listed = model.filteredSessions.filter { $0.pair == nil && $0.title != "(no messages)" }
+        for s in listed where searching || !model.pinned.contains(s.id) {
+            add(s.cwd, s.repo)
+            past[s.cwd, default: []].append(.local(s))
+        }
+        if !searching {
+            for tab in model.tabs where tab.machineID == nil {
+                guard let root = model.repoRoot(tab.path) else { continue }
+                add(root, name(root))
+                live[root, default: []].append(.tab(tab))
+            }
+            for s in model.background {
+                guard let root = model.repoRoot(s.cwd) else { continue }
+                add(root, name(root))
+                live[root, default: []].append(.background(s))
+                layout.placedHosts.insert(s.id)
+            }
+        }
+        var byName: [String: String] = [:]
+        for key in order where model.isRepo(key) && byName[name(key)] == nil { byName[name(key)] = key }
+        let names = Set(byName.keys)
+        let words = model.search.lowercased().split(separator: " ").map(String.init)
+        for r in model.remote {
+            let projects = r.projects.map(\.path)
+            func key(_ cwd: String) -> String? {
+                guard let project = ProjectGrouping.remoteProject(cwd: cwd, localNames: names, remoteProjects: projects) else { return nil }
+                let k = byName[project] ?? "remote:\(project)"
+                add(k, project)
+                return k
+            }
+            if !searching {
+                for tab in model.tabs where tab.machineID == r.id {
+                    if let k = key(tab.path) { live[k, default: []].append(.tab(tab)) }
+                }
+                for s in model.remoteFree(r) {
+                    guard let k = key(s.cwd) else { continue }
+                    live[k, default: []].append(.remote(r, s))
+                    layout.placedRemote.insert("\(r.id)/\(s.id)")
+                }
+            }
+            for h in r.history where h.title != "(no messages)" {
+                let hay = "\(h.title) \(name(h.cwd)) \(h.agent)".lowercased()
+                guard words.allSatisfy({ hay.contains($0) }), let k = key(h.cwd) else { continue }
+                past[k, default: []].append(.remote(r, h))
+            }
+        }
+        let groups: [ProjectGroup] = order.compactMap { key in
+            let running = live[key] ?? []
+            let all = (past[key] ?? []).sorted { $0.time > $1.time }
+            guard !running.isEmpty || !all.isEmpty else { return nil }
+            let shown = ProjectGrouping.limited(all, expanded: searching || showAll.contains(key))
+            return ProjectGroup(key: key, title: titles[key] ?? key, live: running, past: shown.visible,
+                                more: searching ? 0 : shown.more, newest: all.first?.id)
+        }
+        layout.groups = groups.filter { !$0.live.isEmpty } + groups.filter { $0.live.isEmpty }
+        return layout
     }
 
 
@@ -328,16 +545,24 @@ struct SidebarView: View {
         case .job(let j): if let job = model.jobs.first(where: { $0.id == j }) { model.actions?.jobAction(job, "wait") }
         case .run(let r): if let run = model.runs.first(where: { $0.id == r }) { model.actions?.showRun(run) }
         case .session(let s): if let item = model.sessions.first(where: { $0.id == s }) { model.actions?.resume(item) }
+        case .projectTab(let t): model.actions?.renameTab(t)
+        case .remotePast(let key): if let (m, h) = remotePast(key) { model.actions?.resumeRemote(m, h) }
         case .issue(let n): if let issue = model.issues.first(where: { $0.number == n }) { model.actions?.startIssue(issue, agent: "claude") }
         case .host(let h): if let s = model.background.first(where: { $0.id == h }) { model.actions?.attachHost(s) }
         case .remote(let key): if let (m, s) = remoteSession(key) { model.actions?.attachRemote(m, s) }
+        case .reminder(let key):
+            openReminder = key
         }
+    }
+
+    private func reminderEntry(_ key: String) -> (RemoteMachine?, ReminderInfo)? {
+        model.allReminders.first { "\($0.machine?.id ?? "")/\($0.reminder.id)" == key }.map { ($0.machine, $0.reminder) }
     }
 
     @ViewBuilder
     private func menu(for id: SidebarID) -> some View {
         switch id {
-        case .tab(let t):
+        case .tab(let t), .projectTab(let t):
             Button("Show Tab") { model.actions?.focusTab(t) }
             Button("Rename…") { model.actions?.renameTab(t) }
             if model.tabs.first(where: { $0.id == t })?.command == "claude" {
@@ -397,6 +622,19 @@ struct SidebarView: View {
                 }
                 Button("Open Issues Board") { NSApp.sendAction(#selector(AppDelegate.showIssueBoard(_:)), to: nil, from: nil) }
             }
+        case .reminder(let key):
+            if let (m, r) = reminderEntry(key) {
+                if r.fired == true { Button(r.label) { ReminderCenter.shared.proceed(r.id, machine: m) } }
+                Button(r.fired == true ? "Dismiss" : "Cancel Reminder") { ReminderCenter.shared.dismiss(r.id, machine: m) }
+            }
+        case .remotePast(let key):
+            if let (m, h) = remotePast(key) {
+                Button("Resume on \(m.name)") { model.actions?.resumeRemote(m, h) }
+                Button("Copy Session ID") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(h.id, forType: .string)
+                }
+            }
         case .session(let s):
             if let item = model.sessions.first(where: { $0.id == s }) {
                 Button("Resume in New Tab") { model.actions?.resume(item) }
@@ -453,6 +691,36 @@ struct RowAction {
     let perform: () -> Void
 }
 
+struct DeviceBadge: Equatable {
+    let symbol: String
+    let label: String
+    let connected: Bool
+
+    var view: some View {
+        HStack(spacing: 2) {
+            Image(systemName: symbol).font(.system(size: 9, weight: .regular))
+            Text(label).fontWeight(.regular).lineLimit(1)
+        }
+        .foregroundStyle(connected ? Color.connected : Color.secondary)
+        .fixedSize()
+    }
+
+    static func phone(_ s: SessionInfo) -> DeviceBadge? {
+        if s.clientKinds?.contains("iphone") == true { return DeviceBadge(symbol: "iphone", label: "iPhone connected", connected: true) }
+        if s.origin == "iphone" { return DeviceBadge(symbol: "iphone", label: "from iPhone", connected: false) }
+        return nil
+    }
+
+    static func machine(_ r: RemoteMachineState, label: String? = nil) -> DeviceBadge {
+        DeviceBadge(symbol: r.symbol, label: label ?? r.machine.name, connected: r.note == nil)
+    }
+
+    static func openElsewhere(_ s: SessionInfo) -> Bool {
+        if let kinds = s.clientKinds { return kinds.contains { $0 != "iphone" } }
+        return s.clients > 0
+    }
+}
+
 private struct Row: View {
     let symbol: String
     let tint: Color
@@ -461,6 +729,7 @@ private struct Row: View {
     var dimmed = false
     var busy = false
     var current = false
+    var badge: DeviceBadge? = nil
     var actions: [RowAction] = []
     @State private var hovering = false
 
@@ -481,11 +750,17 @@ private struct Row: View {
                     .fontWeight(current ? .semibold : .regular)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 4) {
+                    if let badge {
+                        badge.view
+                        if !subtitle.isEmpty { Text("\u{00B7}").foregroundStyle(.secondary) }
+                    }
+                    Text(subtitle)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(badge == nil ? .middle : .tail)
+                }
+                .font(.caption)
             }
             Spacer(minLength: 4)
             if hovering && !actions.isEmpty {

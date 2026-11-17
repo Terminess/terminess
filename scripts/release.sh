@@ -52,12 +52,19 @@ hdiutil create -quiet -volname "$NAME" -srcfolder "$STAGE" -fs HFS+ -format UDZO
 rm -rf "$STAGE"
 rm -rf dist/$NAME.app && ditto "$APP" dist/$NAME.app
 
+SHA=$(shasum -a 256 "$DMG" | cut -c1-64)
+NOTES="${RELEASE_NOTES:-}" VERSION="$VERSION" BUILD="$BUILD" SHA="$SHA" python3 -c '
+import json, os
+print(json.dumps({"version": os.environ["VERSION"], "build": int(os.environ["BUILD"]),
+                  "url": "https://terminess.com/download", "sha256": os.environ["SHA"],
+                  "notes": os.environ["NOTES"]}, indent=2))' > site/version.json
+
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 find "$OUT" build/dd -name "$NAME.app" -maxdepth 8 -type d 2>/dev/null | while read -r a; do $LSREGISTER -u "$a" 2>/dev/null || true; done
 rm -rf "$OUT/export" "$OUT/notarized"
 
 if [[ "${1:-}" == "--install" ]]; then
-  if ps -axo comm= | grep -qx "/Applications/$NAME.app/Contents/MacOS/$NAME"; then
+  if ps -axo comm= | grep -x "/Applications/$NAME.app/Contents/MacOS/$NAME" >/dev/null; then
     echo "$NAME is running; quit it, then: ditto dist/$NAME.app /Applications/$NAME.app" >&2
   else
     rm -rf "/Applications/$NAME.app"

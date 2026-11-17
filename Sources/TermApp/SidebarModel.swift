@@ -16,6 +16,8 @@ struct OpenTab: Identifiable, Equatable {
     var busy = false
     var hostIDs: [String] = []
     var remoteIDs: [String] = []
+    var path = ""
+    var machineID: String?
 }
 
 struct PairJob: Identifiable, Equatable {
@@ -84,6 +86,7 @@ protocol SidebarActions: AnyObject {
     func attachRemote(_ machine: RemoteMachine, _ session: SessionInfo)
     func killRemote(_ machine: RemoteMachine, _ id: String)
     func newRemote(_ machine: RemoteMachine, agent: String?, directory: String?)
+    func resumeRemote(_ machine: RemoteMachine, _ item: HistoryItem)
 }
 
 @MainActor
@@ -96,6 +99,18 @@ final class SidebarModel: ObservableObject {
     @Published var sessions: [SessionItem] = []
     @Published var sessionsNote: String?
     @Published var background: [SessionInfo] = []
+    @Published var localClientKinds: [String: [String]] = [:]
+
+    func iPhoneOnTab(_ tab: OpenTab) -> Bool {
+        if tab.hostIDs.contains(where: { localClientKinds[$0]?.contains("iphone") == true }) { return true }
+        return remote.contains { r in r.sessions.contains { tab.remoteIDs.contains("\(r.id)/\($0.id)") && $0.clientKinds?.contains("iphone") == true } }
+    }
+    @Published var localReminders: [ReminderInfo] = []
+
+    var allReminders: [(machine: RemoteMachine?, reminder: ReminderInfo)] {
+        (localReminders.map { (nil as RemoteMachine?, $0) } + remote.flatMap { r in r.reminders.map { (r.machine as RemoteMachine?, $0) } })
+            .sorted { $0.reminder.due < $1.reminder.due }
+    }
     private var loadingBackground = false
     @Published var remote: [RemoteMachineState] = []
     private var monitors: [String: RemoteMonitor] = [:]
@@ -163,6 +178,7 @@ final class SidebarModel: ObservableObject {
         }
         slowTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { _ in
             MainActor.assumeIsolated {
+                SidebarModel.shared.repoCache = [:]
                 SidebarModel.shared.refreshSessions()
                 SidebarModel.shared.refreshIssues()
             }
@@ -208,12 +224,19 @@ final class SidebarModel: ObservableObject {
         loadingBackground = true
         Task.detached(priority: .utility) {
             let all = HostAttachment.list(timeout: 1) ?? []
+            let reminders = HostAttachment.request(Message(op: "reminders"), expecting: ["reminders"], timeout: 1)?.reminders
             await MainActor.run {
                 let model = SidebarModel.shared
                 model.loadingBackground = false
                 let shown = Set(model.tabs.flatMap(\.hostIDs))
                 let free = all.filter { !shown.contains($0.id) }
                 if free != model.background { model.background = free }
+                let kinds = Dictionary(all.map { ($0.id, $0.clientKinds ?? []) }, uniquingKeysWith: { a, _ in a })
+                if kinds != model.localClientKinds { model.localClientKinds = kinds }
+                if let reminders {
+                    if reminders != model.localReminders { model.localReminders = reminders }
+                    ReminderCenter.shared.saw(reminders, machine: nil)
+                }
             }
         }
     }
@@ -227,10 +250,24 @@ final class SidebarModel: ObservableObject {
         for m in machines where monitors[m.id] == nil {
             let mon = RemoteMonitor(machine: m)
             mon.onUpdate = { sessions, note in SidebarModel.shared.remoteUpdate(m.id, sessions: sessions, note: note) }
+            mon.onPlatform = { platform in
+                let model = SidebarModel.shared
+                if let i = model.remote.firstIndex(where: { $0.id == m.id }), model.remote[i].platform != platform { model.remote[i].platform = platform }
+            }
             mon.onProjects = { projects in
                 let model = SidebarModel.shared
-                if let i = model.remote.firstIndex(where: { $0.id == m.id }) { model.remote[i].projects = projects }
+                if let i = model.remote.firstIndex(where: { $0.id == m.id }), model.remote[i].projects != projects { model.remote[i].projects = projects }
             }
+            mon.onHistory = { history in
+                let model = SidebarModel.shared
+                if let i = model.remote.firstIndex(where: { $0.id == m.id }), model.remote[i].history != history { model.remote[i].history = history }
+            }
+            mon.onReminders = { reminders in
+                let model = SidebarModel.shared
+                if let i = model.remote.firstIndex(where: { $0.id == m.id }), model.remote[i].reminders != reminders { model.remote[i].reminders = reminders }
+                ReminderCenter.shared.saw(reminders, machine: m)
+            }
+            mon.onReminderActed = { session in ReminderCenter.shared.acted(session: session, machine: m) }
             monitors[m.id] = mon
             mon.start()
         }
@@ -256,6 +293,55 @@ final class SidebarModel: ObservableObject {
 
     func monitor(_ id: String) -> RemoteMonitor? { monitors[id] }
 
+
+    private var repoCache: [String: Bool] = [:]
+
+    func isRepo(_ path: String) -> Bool {
+        if let known = repoCache[path] { return known }
+        let found = FileManager.default.fileExists(atPath: path + "/.git")
+        repoCache[path] = found
+        return found
+    }
+
+    func repoRoot(_ path: String) -> String? {
+        ProjectGrouping.repoRoot(of: path, home: Self.home, isRepo: isRepo)
+    }
+
+    @Published var commitsSince: [String: Int] = [:]
+    private var headSeen: [String: String] = [:]
+    private var countingCommits = false
+
+    nonisolated static func commitKey(_ s: SessionItem) -> String { "\(s.cwd)|\(Int(s.mtime))" }
+
+    func refreshCommitCounts() {
+        guard !countingCommits else { return }
+        countingCommits = true
+        let items = Array(sessions.filter { $0.pair == nil }.prefix(200))
+        let known = commitsSince, heads = headSeen
+        Task.detached(priority: .background) {
+            var counts = known, seen = heads
+            for (cwd, group) in Dictionary(grouping: items, by: \.cwd) {
+                guard FileManager.default.fileExists(atPath: cwd) else { continue }
+                let head = Git.run(cwd, ["rev-parse", "HEAD"])
+                guard head.status == 0 else { continue }
+                if seen[cwd] != head.output {
+                    seen[cwd] = head.output
+                    for k in counts.keys where k.hasPrefix(cwd + "|") { counts[k] = nil }
+                }
+                for s in group where counts[SidebarModel.commitKey(s)] == nil {
+                    let r = Git.run(cwd, ProjectGrouping.commitsSinceArguments(s.mtime))
+                    if r.status == 0, let n = ProjectGrouping.commitCount(r.output) { counts[SidebarModel.commitKey(s)] = n }
+                }
+            }
+            await MainActor.run {
+                let model = SidebarModel.shared
+                model.countingCommits = false
+                model.headSeen = seen
+                if counts != model.commitsSince { model.commitsSince = counts }
+            }
+        }
+    }
+
     func refreshPair() {
         let (jobs, runs) = SidebarModel.readPair()
         if jobs != self.jobs { self.jobs = jobs }
@@ -276,6 +362,7 @@ final class SidebarModel: ObservableObject {
                 let model = SidebarModel.shared
                 model.loadingSessions = false
                 if items != model.sessions { model.sessions = items }
+                model.refreshCommitCounts()
                 model.sessionsNote = reply == nil ? "Couldn't reach the Terminess service." : (items.isEmpty ? "No sessions yet." : nil)
             }
         }

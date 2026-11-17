@@ -30,6 +30,23 @@ final class AppState: ObservableObject {
             .sorted { ($0.session.active ?? 0) > ($1.session.active ?? 0) }
     }
 
+    var reminders: [(host: SavedHost, reminder: ReminderInfo)] {
+        hosts.flatMap { h in (connections[h.id]?.reminders ?? []).map { (h, $0) } }
+            .sorted { $0.reminder.due < $1.reminder.due }
+    }
+
+    func proceed(_ r: ReminderInfo, on hostID: UUID) async {
+        let c = connection(hostID)
+        if !c.isConnected { await c.connect() }
+        guard let session = await c.actOnReminder(r.id) else { return }
+        await c.refresh()
+        open(SessionTarget(host: hostID, session: session, title: r.title))
+    }
+
+    func dismiss(_ r: ReminderInfo, on hostID: UUID) {
+        Task { await connection(hostID).dismissReminder(r.id) }
+    }
+
     var recent: [(host: SavedHost, item: HistoryItem)] {
         hosts.flatMap { h in (connections[h.id]?.history ?? []).map { (h, $0) } }
             .sorted { $0.item.used > $1.item.used }

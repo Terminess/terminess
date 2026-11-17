@@ -235,26 +235,28 @@ final class PushRegistry {
     }
 
     enum Reason {
-        case finished, needsYou, failed, approval
+        case finished, needsYou, failed, approval, reminder
         var text: String {
             switch self {
             case .finished: return "A session finished"
             case .needsYou: return "A session needs you"
             case .failed: return "A session stopped on an error"
             case .approval: return "A session needs your approval"
+            case .reminder: return "A reminder is due"
             }
         }
     }
 
-    func notify(_ reason: Reason, session: String) {
+    func notify(_ reason: Reason, session: String, reminder: String? = nil) {
         guard !devices.isEmpty, let url = URL(string: relay) else { return }
         for d in devices {
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.timeoutInterval = 10
-            let payload: [String: String] = ["token": d.token, "environment": d.environment, "credential": d.credential ?? "",
+            var payload: [String: String] = ["token": d.token, "environment": d.environment, "credential": d.credential ?? "",
                                              "title": "Terminess", "body": reason.text, "session": session, "host": d.host ?? ""]
+            if let reminder { payload["reminder"] = reminder }
             req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
             let token = d.token
             URLSession.shared.dataTask(with: req) { [weak self] _, response, _ in

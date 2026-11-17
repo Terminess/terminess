@@ -6,6 +6,7 @@ struct ChatView: View {
     let agentName: String
     let working: Bool
     var folder: String? = nil
+    var notice: String? = nil
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -20,6 +21,16 @@ struct ChatView: View {
                                 .font(.callout).foregroundStyle(.tertiary).multilineTextAlignment(.center)
                         }
                         .frame(maxWidth: .infinity).padding(.top, 60)
+                    }
+                    if let notice {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: "clock.arrow.circlepath")
+                            Text(notice)
+                        }
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.surface))
+                        .frame(maxWidth: .infinity)
                     }
                     ForEach(chat.items) { item in
                         ChatItemView(item: item, folder: folder).id(item.id)

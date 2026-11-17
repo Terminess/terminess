@@ -9,23 +9,16 @@ struct SettingsView: View {
     @State private var addingBinding = false
     private let fonts = Settings.monospacedFonts()
     @AppStorage("settingsPage") private var page = "appearance"
-    static let pages = [("appearance", "Appearance"), ("text", "Text"), ("keyboard", "Keyboard"),
-                        ("windows", "Windows"), ("agents", "Agents"), ("models", "Models"), ("machines", "Machines")]
+    static var pages: [(String, String)] { SettingsWindowController.pages.map { ($0.id, $0.label) } }
 
     var body: some View {
         VStack(spacing: 0) {
-        Picker("Page", selection: $page) {
-            ForEach(SettingsView.pages, id: \.0) { Text($0.1).tag($0.0) }
-        }
-        .pickerStyle(.segmented).labelsHidden().controlSize(.small)
-        .frame(width: 480)
-        .padding(.top, 12).padding(.bottom, 2)
         Form {
             if page == "appearance" {
             Section("Style") {
                 Picker("Style", selection: $settings.style) {
-                    Text("Classic").tag("classic")
                     Text("Modern").tag("modern")
+                    Text("Classic").tag("classic")
                 }
                 .pickerStyle(.segmented)
                 Text(settings.isModern
@@ -247,7 +240,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         }
-        .frame(width: 500)
+        .frame(width: SettingsWindowController.width)
         .frame(minHeight: 360, maxHeight: .infinity)
         .sheet(isPresented: $addingBinding) {
             BindingRecorder { b in

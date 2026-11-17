@@ -136,6 +136,11 @@ final class RemoteMonitor {
     private(set) var connected = false
     var onUpdate: ((_ sessions: [SessionInfo]?, _ note: String?) -> Void)?
     var onProjects: (([ProjectInfo]) -> Void)?
+    var onPlatform: ((String?) -> Void)?
+    var onHistory: (([HistoryItem]) -> Void)?
+    var onReminders: (([ReminderInfo]) -> Void)?
+    var onReminderActed: ((String) -> Void)?
+    private var ticks = 0
 
     init(machine: RemoteMachine) { self.machine = machine }
 
@@ -198,21 +203,38 @@ final class RemoteMonitor {
         case "hello":
             connected = true
             backoff = 2
+            onPlatform?(m.platform)
             connection?.send(Message(op: "list"))
             connection?.send(Message(op: "projects"))
+            connection?.send(Message(op: "history"))
+            connection?.send(Message(op: "reminders"))
             timer?.invalidate()
             timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, self.connected else { return }
+                    self.ticks += 1
+                    if self.ticks % 10 == 0 {
+                        self.connection?.send(Message(op: "history"))
+                        self.connection?.send(Message(op: "projects"))
+                    }
                     if SidebarModel.shared.visible || Int(Date().timeIntervalSince1970) % 15 < 3 {
                         self.connection?.send(Message(op: "list"))
                     }
+                    self.connection?.send(Message(op: "reminders"))
                 }
             }
         case "sessions":
             onUpdate?(m.sessions ?? [], nil)
         case "projects":
             onProjects?(m.projects ?? [])
+        case "history":
+            onHistory?(m.history ?? [])
+        case "reminders":
+            onReminders?(m.reminders ?? [])
+        case "reminder-acted":
+            if let session = m.id { onReminderActed?(session) }
+            connection?.send(Message(op: "list"))
+            connection?.send(Message(op: "reminders"))
         default:
             break
         }
@@ -233,8 +255,12 @@ struct RemoteMachineState: Identifiable, Equatable {
     var machine: RemoteMachine
     var sessions: [SessionInfo] = []
     var projects: [ProjectInfo] = []
+    var history: [HistoryItem] = []
+    var reminders: [ReminderInfo] = []
     var note: String?
+    var platform: String?
     var id: String { machine.id }
+    var symbol: String { platform == "macos" ? "laptopcomputer" : "server.rack" }
 }
 
 func remoteTilde(_ p: String) -> String {

@@ -128,9 +128,9 @@ section("In tabs", agentTabs.isEmpty) {
     }
 
     @ViewBuilder private var backgroundSection: some View {
-section("In the background", background.isEmpty) {
+section("Background", background.isEmpty) {
             ForEach(background, id: \.id) { s in
-                card(icon: icon(s.command), title: Self.title(s), detail: SidebarModel.tilde(s.cwd),
+                card(icon: icon(s.command), title: Self.title(s), detail: [SidebarModel.tilde(s.cwd), DeviceBadge.phone(s)?.label].compactMap { $0 }.joined(separator: " \u{00B7} "),
                      status: s.attention == true ? ("Needs you", .orange) : s.busy == true ? ("Working", .green) : ("Idle", .secondary),
                      changes: nil) {
                     Button("Open in a Tab") { model.actions?.attachHost(s) }

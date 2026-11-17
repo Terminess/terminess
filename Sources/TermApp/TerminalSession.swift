@@ -135,6 +135,8 @@ final class TerminalSession {
         a.onPermission = { p in MainActor.assumeIsolated { ref.value?.permissionChanged(p) } }
         a.onQuestion = { q in MainActor.assumeIsolated { ref.value?.questionChanged(q) } }
         a.onNote = { text in MainActor.assumeIsolated { ref.value?.onAgentNote?(text) } }
+        a.onNotice = { text in MainActor.assumeIsolated { ref.value?.noticeChanged(text) } }
+        a.resumeOf = resumeOf
         a.onAgentRequest = { id, tool, args in MainActor.assumeIsolated { ref.value?.onAgentRequest?(id, tool, args) } }
         a.onSize = { cols, rows in
             MainActor.assumeIsolated {
@@ -241,6 +243,18 @@ final class TerminalSession {
     private(set) var permission: PermissionInfo?
     var onPermission: ((PermissionInfo?) -> Void)?
     fileprivate func permissionChanged(_ p: PermissionInfo?) { permission = p; onPermission?(p) }
+
+    var resumeOf: String? {
+        didSet { (process as? HostBackend)?.attachment.resumeOf = resumeOf }
+    }
+    private(set) var notice: String?
+    var noticeDismissed = false
+    var onNotice: ((String?) -> Void)?
+    fileprivate func noticeChanged(_ text: String?) {
+        if text != notice { noticeDismissed = false }
+        notice = text
+        onNotice?(text)
+    }
 
     private(set) var question: QuestionInfo?
     var onQuestion: ((QuestionInfo?) -> Void)?

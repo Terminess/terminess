@@ -8,9 +8,12 @@ final class HostConnection: ObservableObject {
     let hostID: UUID
     @Published var state: State = .idle
     @Published var sessions: [SessionInfo] = []
+    @Published var platform: String?
+    var symbol: String { platform == "macos" ? "laptopcomputer" : "server.rack" }
     @Published var projects: [ProjectInfo] = []
     @Published var models: [String]?
     @Published var history: [HistoryItem] = []
+    @Published var reminders: [ReminderInfo] = []
     private(set) var ssh: SSHConnection?
     private var control: ControlChannel?
     private var poller: Task<Void, Never>?
@@ -68,11 +71,17 @@ final class HostConnection: ObservableObject {
             if AppLock.shared.locked { disconnect(); state = .idle; return }
             state = .connected
             await refresh()
+            await loadPlatform()
             await registerPush()
         } catch {
             ssh = nil
             state = .failed(error.localizedDescription)
         }
+    }
+
+    func loadPlatform() async {
+        guard let reply = await request(Message(op: "hello", version: Wire.version)), reply.op == "hello" else { return }
+        if platform != reply.platform { platform = reply.platform }
     }
 
     func disconnect() {
@@ -109,6 +118,18 @@ final class HostConnection: ObservableObject {
             return
         }
         if reply.op == "sessions" { sessions = reply.sessions ?? [] }
+        if let r = await request(Message(op: "reminders")), r.op == "reminders" { reminders = r.reminders ?? [] }
+    }
+
+    func actOnReminder(_ id: String) async -> String? {
+        guard let reply = await request(Message(op: "reminder-act", id: id)) else { return nil }
+        reminders.removeAll { $0.id == id }
+        return reply.op == "reminder-acted" ? reply.id : nil
+    }
+
+    func dismissReminder(_ id: String) async {
+        _ = await request(Message(op: "reminder-dismiss", id: id))
+        reminders.removeAll { $0.id == id }
     }
 
     func loadProjects() async {
@@ -185,7 +206,9 @@ final class HostConnection: ObservableObject {
 
     func attachment(to target: HostAttachment.Target, cols: Int, rows: Int) async throws -> HostAttachment {
         let fd = try await channel()
-        return HostAttachment(readFD: fd, writeFD: fd, target: target, cols: cols, rows: rows, queue: .main)
+        let a = HostAttachment(readFD: fd, writeFD: fd, target: target, cols: cols, rows: rows, queue: .main)
+        a.clientKind = "iphone"
+        return a
     }
 
     func transcriptChannel(for id: String) async throws -> Connection {
