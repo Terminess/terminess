@@ -420,6 +420,12 @@ case "remind", "reminder", "reminders":
         fail("usage: terminessd remind add|list|cancel|act")
     }
 
+case "handoff":
+    handoffCommand(rest)
+
+case "borrow":
+    borrowCommand(rest)
+
 case "schedule":
     var list = AgentSchedules.load()
     switch rest.first {
@@ -575,7 +581,10 @@ case "-h", "--help", "help":
                                        a reminder: at that time a notification with a Proceed button
                                        that types TEXT into this session (or resumes its conversation)
       terminessd remind list|cancel ID|act ID
-      terminessd mcp                   an MCP server giving agents Terminess tools (tabs, worktrees, notify, ask, remind)
+      terminessd handoff pull HOST SESSION | push SESSION HOST
+                                       move a running agent conversation between machines (see handoff help)
+      terminessd borrow "task"         hand a task to the Mac (its Chrome, its apps) and print the answer
+      terminessd mcp                   an MCP server giving agents Terminess tools (tabs, worktrees, notify, ask, remind, borrow)
     """)
 
 default:

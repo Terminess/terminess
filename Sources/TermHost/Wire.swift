@@ -159,6 +159,7 @@ public struct Message: Codable, Equatable {
     public var token: String?
     public var credential: String?
     public var key: String?
+    public var relay: String?
     public var permission: PermissionInfo?
     public var question: QuestionInfo?
     public var history: [HistoryItem]?

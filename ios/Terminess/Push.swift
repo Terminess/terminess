@@ -16,23 +16,64 @@ final class PushTokens: ObservableObject {
     }
 
     @Published private(set) var credential: String?
-    static let relay = URL(string: "https://push.terminess.com/v1")!
     private var asked: Date?
+
+    enum Mode: String, CaseIterable, Identifiable {
+        case off, terminess, custom
+        var id: String { rawValue }
+        var name: String {
+            switch self {
+            case .off: return "Off"
+            case .terminess: return "Terminess relay"
+            case .custom: return "My own relay"
+            }
+        }
+    }
+    static let terminessRelay = "https://push.terminess.com/v1"
+    static var mode: Mode { Mode(rawValue: UserDefaults.standard.string(forKey: "notificationsMode") ?? "") ?? .terminess }
+    static var customRelay: String { UserDefaults.standard.string(forKey: "customRelay") ?? "" }
+
+    static var relayBase: String? {
+        switch mode {
+        case .off: return nil
+        case .terminess: return terminessRelay
+        case .custom:
+            guard let u = URL(string: customRelay), u.scheme == "https", u.host != nil else { return nil }
+            return customRelay.hasSuffix("/") ? String(customRelay.dropLast()) : customRelay
+        }
+    }
+    static var relay: URL? { relayBase.flatMap(URL.init(string:)) }
 
     init() {
         credential = UserDefaults.standard.string(forKey: "pushCredential")
     }
 
-    private var credentialKey: String { "\(token ?? "")|\(Self.environment)" }
+    private var credentialKey: String { "\(token ?? "")|\(Self.environment)|\(Self.relayBase ?? "")" }
 
     func set(_ data: Data) {
         token = data.map { String(format: "%02x", $0) }.joined()
-        if UserDefaults.standard.string(forKey: "pushCredentialFor") != credentialKey { credential = nil }
-        if credential == nil { requestChallenge() }
+        refreshCredential()
+    }
+
+    func modeChanged() {
+        refreshCredential()
+        Task {
+            for c in AppState.shared.connections.values where c.isConnected {
+                if Self.relay == nil { await c.unregisterPush() } else { await c.registerPush() }
+            }
+        }
+    }
+
+    private func refreshCredential() {
+        if UserDefaults.standard.string(forKey: "pushCredentialFor") != credentialKey {
+            credential = nil
+            asked = nil
+        }
+        if credential == nil, Self.relay != nil { requestChallenge() }
     }
 
     func requestChallenge() {
-        guard let token, asked.map({ Date().timeIntervalSince($0) > 60 }) ?? true else { return }
+        guard Self.relay != nil, let token, asked.map({ Date().timeIntervalSince($0) > 60 }) ?? true else { return }
         asked = Date()
         Task { _ = await Self.post("register", ["token": token, "environment": Self.environment]) }
     }
@@ -51,6 +92,7 @@ final class PushTokens: ObservableObject {
     }
 
     private static func post(_ path: String, _ body: [String: String]) async -> [String: String]? {
+        guard let relay else { return nil }
         var req = URLRequest(url: relay.appendingPathComponent(path))
         req.httpMethod = "POST"
         req.timeoutInterval = 10

@@ -234,6 +234,18 @@ struct SettingsView: View {
                     .help("Shell, Local Model lists the Ollama models on this machine and opens a tab chatting with one.")
                 Text("The first two need \"Keep shells and agents running\", in Windows.").font(.caption).foregroundStyle(.secondary)
             }
+            Section("Operations guide") {
+                Picker("Agent for Terminess jobs", selection: $settings.preferredAgent) {
+                    Text("Claude Code").tag("claude")
+                    Text("Codex").tag("codex")
+                }
+                HStack {
+                    Text("OPERATIONS.md and ORCHESTRATE.md tell every agent how your setup is built and how to work here.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Open Operations Guide…") { OpsGuideWindow.show() }
+                }
+            }
             }
             if page == "models" { ModelRolesSection() }
             if page == "machines" { MachinesSection() }

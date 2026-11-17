@@ -7,6 +7,7 @@ struct RemoteMachine: Codable, Identifiable, Equatable, Hashable {
     var host: String
     var port: Int = 22
     var path: String = "~/.local/bin/terminessd"
+    var repoRoot: String?
 
     var isValid: Bool {
         let h = host.trimmingCharacters(in: .whitespaces)
@@ -208,6 +209,7 @@ final class RemoteMonitor {
             connection?.send(Message(op: "projects"))
             connection?.send(Message(op: "history"))
             connection?.send(Message(op: "reminders"))
+            connection?.send(Message(op: "watch-borrow"))
             timer?.invalidate()
             timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
@@ -231,6 +233,15 @@ final class RemoteMonitor {
             onHistory?(m.history ?? [])
         case "reminders":
             onReminders?(m.reminders ?? [])
+        case "borrow-request":
+            guard let id = m.id, let task = m.message else { break }
+            let machine = self.machine
+            let r = BorrowCenter.Request(id: id, machine: machine, from: m.name ?? machine.name, task: task)
+            BorrowCenter.shared.request(r) { code, text in
+                HandoffCoordinator.onMain {
+                    SidebarModel.shared.monitor(machine.id)?.send(Message(op: "borrow-reply", id: id, code: code, message: text))
+                }
+            }
         case "reminder-acted":
             if let session = m.id { onReminderActed?(session) }
             connection?.send(Message(op: "list"))

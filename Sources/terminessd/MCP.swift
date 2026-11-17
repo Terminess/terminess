@@ -27,6 +27,10 @@ enum MCPServer {
             "body": ["type": "string", "description": "One or two sentences of context"],
             "action_prompt": ["type": "string", "description": "What to type into the session when the person presses the button, for example: It's 10pm, go ahead with the firewall switch-on and run the checks"],
             "action_label": ["type": "string", "description": "Button label (default Proceed)"]]]],
+        ["name": "borrow",
+         "description": "Hand a task to the person's Mac when it needs something only the Mac has: their logged-in Chrome (Claude in Chrome), Mac apps or files there. The Terminess app on the Mac asks the person to allow it, runs it with a local Claude Code and returns its final answer here. Only works while Terminess is open on their Mac. Keep the task self-contained: say exactly what to look at or do and what to report back.",
+         "inputSchema": ["type": "object", "required": ["task"], "properties": [
+            "task": ["type": "string", "description": "What the Mac should do and what to report back, for example: Open https://example.com/dashboard in Chrome (logged in) and report the numbers on the Billing card"]]]],
         ["name": "ask_user",
          "description": "Ask the person a question and wait for the answer, which they can give on their Mac or phone. Offer choices when there are a few clear options. Waits up to nine minutes; if nobody answers, carry on with your best judgement or stop and explain.",
          "inputSchema": ["type": "object", "required": ["question"], "properties": [
@@ -48,7 +52,7 @@ enum MCPServer {
                 reply(id, ["protocolVersion": params["protocolVersion"] as? String ?? "2025-06-18",
                            "capabilities": ["tools": [:]],
                            "serverInfo": ["name": "terminess", "version": "1"],
-                           "instructions": "Tools for working inside Terminess: open tabs, start worktree tabs, notify the person, ask them a question, and schedule a reminder that brings them back to this work later."])
+                           "instructions": "Tools for working inside Terminess: open tabs, start worktree tabs, notify the person, ask them a question, schedule a reminder that brings them back to this work later, and borrow the person's Mac for a task only it can do (their Chrome, Mac apps)."])
             case "ping":
                 reply(id, [:])
             case "tools/list":
@@ -89,7 +93,7 @@ enum MCPServer {
         }
         var decoder = Wire.Decoder()
         var buf = [UInt8](repeating: 0, count: 16384)
-        let deadline = Date().addingTimeInterval(name == "ask_user" ? 560 : 60)
+        let deadline = Date().addingTimeInterval(name == "ask_user" ? 560 : name == "borrow" ? 960 : 60)
         while Date() < deadline {
             var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             guard poll(&p, 1, 1000) >= 0 else { break }

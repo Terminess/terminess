@@ -188,11 +188,24 @@ enum History {
 }
 
 final class PushRegistry {
-    struct Device: Codable { var token: String; var environment: String; var host: String?; var added: Double; var credential: String?; var key: String? }
+    struct Device: Codable { var token: String; var environment: String; var host: String?; var added: Double; var credential: String?; var key: String?; var relay: String? }
     private(set) var devices: [Device] = []
     private let file = HostPaths.stateDirectory + "/push.json"
     private let queue: DispatchQueue
-    let relay = ProcessInfo.processInfo.environment["TERMINESS_PUSH_RELAY"] ?? "https://push.terminess.com/v1/notify"
+    static let defaultRelay: String = {
+        let env = ProcessInfo.processInfo.environment["TERMINESS_PUSH_RELAY"] ?? "https://push.terminess.com/v1"
+        return env.hasSuffix("/notify") ? String(env.dropLast("/notify".count)) : env
+    }()
+
+    static func validRelay(_ s: String?) -> String? {
+        guard let s, !s.isEmpty, let u = URL(string: s), u.scheme == "https", u.host != nil,
+              u.user == nil, u.password == nil, u.query == nil, u.fragment == nil else { return nil }
+        return s.hasSuffix("/") ? String(s.dropLast()) : s
+    }
+
+    private func endpoint(_ d: Device, _ path: String) -> URL? {
+        URL(string: (Self.validRelay(d.relay) ?? Self.defaultRelay) + "/" + path)
+    }
 
     init(queue: DispatchQueue) {
         self.queue = queue
@@ -200,18 +213,18 @@ final class PushRegistry {
            let saved = try? JSONDecoder().decode([Device].self, from: data) { devices = saved }
     }
 
-    func register(token: String, environment: String, host: String?, credential: String?, key: String?) {
+    func register(token: String, environment: String, host: String?, credential: String?, key: String?, relay: String? = nil) {
         let old = devices.first { $0.token == token }
         devices.removeAll { $0.token == token }
         devices.append(Device(token: token, environment: environment, host: host, added: Date().timeIntervalSince1970,
-                              credential: credential ?? old?.credential, key: key ?? old?.key))
+                              credential: credential ?? old?.credential, key: key ?? old?.key,
+                              relay: Self.validRelay(relay)))
         save()
     }
 
     func revoke(key: String) {
-        guard let url = URL(string: relay.replacingOccurrences(of: "/notify", with: "/revoke")) else { return }
         for d in devices where d.key == key && !key.isEmpty {
-            guard let credential = d.credential else { continue }
+            guard let credential = d.credential, let url = endpoint(d, "revoke") else { continue }
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -248,8 +261,9 @@ final class PushRegistry {
     }
 
     func notify(_ reason: Reason, session: String, reminder: String? = nil) {
-        guard !devices.isEmpty, let url = URL(string: relay) else { return }
+        guard !devices.isEmpty else { return }
         for d in devices {
+            guard let url = endpoint(d, "notify") else { continue }
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")

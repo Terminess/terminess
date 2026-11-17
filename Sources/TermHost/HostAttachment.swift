@@ -17,6 +17,7 @@ public final class HostAttachment: @unchecked Sendable {
     private var cols: Int
     private var rows: Int
     public private(set) var sessionID: String?
+    private var early: [[UInt8]] = []
     public private(set) var foreground: ForegroundInfo?
     private var ended = false
     public var resizesAfterReplay = false
@@ -62,6 +63,7 @@ public final class HostAttachment: @unchecked Sendable {
 
     public func write(_ bytes: [UInt8]) {
         guard !bytes.isEmpty else { return }
+        guard sessionID != nil else { early.append(bytes); return }
         connection.send(Wire.Frame(.input, bytes))
     }
 
@@ -130,6 +132,8 @@ public final class HostAttachment: @unchecked Sendable {
             case "attached":
                 sessionID = m.id
                 if let id = m.id { onAttached?(id, m.cols ?? 0, m.rows ?? 0) }
+                for bytes in early { connection.send(Wire.Frame(.input, bytes)) }
+                early.removeAll()
             case "replayed":
                 onReplayed?()
             case "permission":

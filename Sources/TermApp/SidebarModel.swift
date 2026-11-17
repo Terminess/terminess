@@ -87,6 +87,8 @@ protocol SidebarActions: AnyObject {
     func killRemote(_ machine: RemoteMachine, _ id: String)
     func newRemote(_ machine: RemoteMachine, agent: String?, directory: String?)
     func resumeRemote(_ machine: RemoteMachine, _ item: HistoryItem)
+    func moveToMac(_ machine: RemoteMachine, sessionID: String)
+    func moveTab(_ id: ObjectIdentifier, to machine: RemoteMachine)
 }
 
 @MainActor
@@ -187,11 +189,14 @@ final class SidebarModel: ObservableObject {
 
     func refreshIssues(force: Bool = false) {
         guard let dir = currentDirectory?(), let gh = Git.gh else { issues = []; issuesRepo = nil; return }
+        let wanted = visible && (UserDefaults.standard.object(forKey: "sidebar.issuesExpanded") as? Bool ?? false)
         Task.detached(priority: .utility) {
             let repo = Git.githubRepo(dir)
             await MainActor.run {
                 let m = SidebarModel.shared
                 guard let repo else { m.issues = []; m.issuesRepo = nil; return }
+                m.issuesRepo = repo
+                guard wanted else { return }
                 let stale = Date().timeIntervalSince(m.issuesLoadedAt) > 120
                 guard force || repo != m.issuesFor || stale else { return }
                 m.issuesFor = repo

@@ -184,9 +184,12 @@ final class HostConnection: ObservableObject {
 
     func registerPush() async {
         guard let token = PushTokens.shared.token else { return }
-        _ = await request(Message(op: "register-push", name: hostID.uuidString, message: PushTokens.environment, token: token,
-                                  credential: PushTokens.shared.credential,
-                                  key: DeviceKey.authorizedKeyLine().split(separator: " ").dropFirst().first.map(String.init)))
+        guard let base = PushTokens.relayBase else { await unregisterPush(); return }
+        var m = Message(op: "register-push", name: hostID.uuidString, message: PushTokens.environment, token: token,
+                        credential: PushTokens.shared.credential,
+                        key: DeviceKey.authorizedKeyLine().split(separator: " ").dropFirst().first.map(String.init))
+        if base != PushTokens.terminessRelay { m.relay = base }
+        _ = await request(m)
     }
 
     func decide(session: String, requestID: String, answer: String) async {

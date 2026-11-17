@@ -22,6 +22,10 @@ text a request carries, the relay sends one of those, so it can't be used to
 put arbitrary words on someone's phone. Requests are checked strictly and
 limited per device, per sender address and overall; tokens Apple has rejected
 are refused without asking Apple again.
+
+What it keeps: rate-limit counters for one minute and rejected tokens for one
+day, in memory only (a sweep runs every minute); on disk, the tokens of phones
+their owners removed, for one year. Logs carry the request path and status only.
 """
 import base64
 import hashlib
@@ -128,11 +132,38 @@ def remember_rejected(token: str):
         _rejected[token] = time.time()
 
 
+def sweep(now: float | None = None):
+    """Forget what is no longer needed: rate-limit windows older than a minute and
+    rejected tokens older than a day. Runs every minute, so nothing lingers until
+    the relay restarts."""
+    now = time.time() if now is None else now
+    with _recent_lock:
+        for k in [k for k, v in _recent.items() if not v or now - v[-1] >= 60]:
+            _recent.pop(k, None)
+        _overall[:] = [t for t in _overall if now - t < 60]
+        for k in [k for k, v in _rejected.items() if now - v >= 24 * 3600]:
+            _rejected.pop(k, None)
+
+
+def _sweeper():
+    while True:
+        time.sleep(60)
+        sweep()
+
+
+def prune_revoked(data: dict[str, float], now: float | None = None) -> dict[str, float]:
+    """Retention for the revoked list: one year (CREDENTIAL_SECONDS). A credential
+    issued before a revocation has expired by then, so the entry has no use."""
+    now = time.time() if now is None else now
+    return {k: v for k, v in data.items() if now - v < CREDENTIAL_SECONDS}
+
+
 def _load_revoked() -> dict[str, float]:
     try:
         with open(REVOKED_FILE) as f:
             data = json.load(f)
-        return {k: float(v) for k, v in data.items() if isinstance(k, str)} if isinstance(data, dict) else {}
+        loaded = {k: float(v) for k, v in data.items() if isinstance(k, str)} if isinstance(data, dict) else {}
+        return prune_revoked(loaded)
     except (OSError, ValueError):
         return {}
 
@@ -144,10 +175,9 @@ _revoked_lock = threading.Lock()
 def revoke_token(token: str):
     with _revoked_lock:
         _revoked[token] = time.time()
-        if len(_revoked) > MAX_TRACKED:
-            cutoff = time.time() - CREDENTIAL_SECONDS
-            for k in [k for k, v in _revoked.items() if v < cutoff]:
-                _revoked.pop(k, None)
+        kept = prune_revoked(_revoked)
+        _revoked.clear()
+        _revoked.update(kept)
         tmp = REVOKED_FILE + ".tmp"
         with open(tmp, "w") as f:
             json.dump(_revoked, f)
@@ -363,4 +393,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    threading.Thread(target=_sweeper, daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

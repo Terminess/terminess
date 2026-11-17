@@ -29,13 +29,17 @@ final class Dictation: ObservableObject {
 
     private func begin(update: @escaping (String) -> Void) {
         guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable else { problem = "Speech recognition isn't available right now."; return }
+        guard recognizer.supportsOnDeviceRecognition else {
+            problem = "Dictation needs on-device speech recognition for your language."
+            return
+        }
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .measurement, options: .duckOthers)
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
-            if recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
+            req.requiresOnDeviceRecognition = true
             request = req
             let input = engine.inputNode
             input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in req.append(buffer) }

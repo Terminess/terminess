@@ -145,6 +145,8 @@ struct LibraryView: View {
                     ForEach(Library.Kind.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
+                Button { OpsGuideWindow.show() } label: { Label("Operations Guide", systemImage: "book.closed") }
+                    .help("Build or update OPERATIONS.md and ORCHESTRATE.md, the guide every agent reads first")
                 Spacer()
                 Picker("", selection: $model.agentFilter) {
                     ForEach(LibraryModel.AgentFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }

@@ -73,14 +73,7 @@ struct SettingsView: View {
                 .listRowBackground(Theme.surface)
                 KeySection().listRowBackground(Theme.surface)
                 LockSection().listRowBackground(Theme.surface)
-                Section {
-                    Label(push.token == nil ? "Off. Allow them in iOS Settings, Terminess." : "On. You'll hear when an agent finishes or needs you.",
-                          systemImage: push.token == nil ? "bell.slash" : "bell")
-                        .font(.callout)
-                } header: { Text("Notifications") } footer: {
-                    Text("They only say a session finished or needs you. What's in your sessions stays between this iPhone and your machines.")
-                }
-                .listRowBackground(Theme.surface)
+                NotificationsSection(push: push).listRowBackground(Theme.surface)
                 DemoSection().listRowBackground(Theme.surface)
             }
             .scrollContentBackground(.hidden)
@@ -253,6 +246,53 @@ private struct DemoSection: View {
                 }))
         } footer: {
             Text("Adds three pretend machines (a Mac, a Linux PC and a server) with sample sessions, so you can try Terminess without a machine of your own. Nothing runs on them.")
+        }
+    }
+}
+
+private struct NotificationsSection: View {
+    @ObservedObject var push: PushTokens
+    @AppStorage("notificationsMode") private var mode = PushTokens.Mode.terminess.rawValue
+    @AppStorage("customRelay") private var customRelay = ""
+
+    private var current: PushTokens.Mode { PushTokens.Mode(rawValue: mode) ?? .terminess }
+
+    var body: some View {
+        Section {
+            Picker("Deliver through", selection: $mode) {
+                ForEach(PushTokens.Mode.allCases) { Text($0.name).tag($0.rawValue) }
+            }
+            if current == .custom {
+                TextField("https://push.example.com/v1", text: $customRelay)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .onSubmit { push.modeChanged() }
+                if PushTokens.relayBase == nil {
+                    Text("Enter the https address of your relay.").font(.caption).foregroundStyle(Theme.attention)
+                }
+            }
+            Label(statusText, systemImage: current == .off || push.token == nil ? "bell.slash" : "bell").font(.callout)
+        } header: { Text("Notifications") } footer: {
+            Text(footer)
+        }
+        .onChange(of: mode) { _, _ in push.modeChanged() }
+    }
+
+    private var statusText: String {
+        if current == .off { return "Off. Nothing is sent to any relay; you'll see updates while Terminess is open." }
+        if push.token == nil { return "Not allowed yet. Turn them on in iOS Settings, Terminess." }
+        return "On. You'll hear when an agent finishes, needs you or a reminder is due."
+    }
+
+    private var footer: String {
+        switch current {
+        case .off:
+            return "Your machines never contact a relay for this iPhone."
+        case .terminess:
+            return "Each notification passes through the Terminess relay and Apple, and only says a session finished or needs you. What's in your sessions stays between this iPhone and your machines."
+        case .custom:
+            return "For a Terminess you build with your own Apple developer team. Run relay/relay.py from the Terminess source with your own push key, then enter its address here."
         }
     }
 }

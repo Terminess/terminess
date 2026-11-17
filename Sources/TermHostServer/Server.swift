@@ -5,6 +5,7 @@ import Darwin
 #endif
 import Dispatch
 import Foundation
+import TermHandoff
 import TermHost
 import TermPTY
 import TermTranscript
@@ -135,6 +136,10 @@ public final class HostServer: @unchecked Sendable {
         return i
     }
     private var toolWaiters: [String: Connection] = [:]
+    private var handoffOut: [String: Data] = [:]
+    private var handoffIn: [String: Data] = [:]
+    private var borrowWatchers: [ObjectIdentifier] = []
+    static let borrowTimeout: TimeInterval = 15 * 60
     private var nextNumber = 1
     public let socketPath: String
     public var log: (String) -> Void = { _ in }
@@ -230,9 +235,41 @@ public final class HostServer: @unchecked Sendable {
         return line.count > 300 ? String(line.prefix(299)) + "…" : line
     }
 
+
+    private func handoffInfo(_ s: HostSession) -> Result<HandoffInfo, HandoffError> {
+        let agent = s.info.command
+        guard agent == "claude" || agent == "codex" else { return .failure(.noAgent) }
+        return Handoff.info(pid: s.process.foregroundPID, agent: agent)
+    }
+
+    static func json<T: Encodable>(_ v: T) -> String? {
+        (try? JSONEncoder().encode(v)).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    private func borrow(_ m: Message, from conn: Connection) {
+        let args = (m.message.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]) ?? [:]
+        let task = String(((args["task"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(4000))
+        guard !task.isEmpty else { conn.send(Message(op: "agent-result", code: 1, message: "Give a task.")); return }
+        guard let key = borrowWatchers.last(where: { connections[$0] != nil }), let mac = connections[key] else {
+            conn.send(Message(op: "agent-result", code: 1, message: "The Terminess app on the Mac isn't connected to this machine right now, so the task can't be handed to it. Ask the person to open Terminess on their Mac."))
+            return
+        }
+        let req = String(UUID().uuidString.prefix(8)).lowercased()
+        toolWaiters[req] = conn
+        let host = ProcessInfo.processInfo.hostName
+        let from = m.id.flatMap { sessions[$0] }.map { "\(host): \($0.info.cwd)" } ?? host
+        mac.send(Message(op: "borrow-request", host: host, id: req, name: from, message: task))
+        log("borrow \(req): sent to the Mac")
+        queue.asyncAfter(deadline: .now() + Self.borrowTimeout) { [weak self] in
+            guard let w = self?.toolWaiters.removeValue(forKey: req) else { return }
+            w.send(Message(op: "agent-result", code: 1, message: "No answer from the Mac within \(Int(Self.borrowTimeout / 60)) minutes."))
+        }
+    }
+
     private func dropConnection(_ key: ObjectIdentifier) {
         clientKinds[key] = nil
         reminderWatchers.remove(key)
+        borrowWatchers.removeAll { $0 == key }
         for (req, w) in toolWaiters where ObjectIdentifier(w) == key { toolWaiters[req] = nil }
         for s in sessions.values where s.questionWaiter.map(ObjectIdentifier.init) == key { clearQuestion(s) }
         for s in sessions.values {
@@ -319,6 +356,99 @@ public final class HostServer: @unchecked Sendable {
                 conn.send(Message(op: "reminder-acted", id: session, name: r.id))
             } catch {
                 conn.send(Message(op: "error", message: "\(error)"))
+            }
+        case "handoff-info":
+            guard let id = m.id, let s = sessions[id] ?? sessions.values.first(where: { $0.name == id }) else {
+                conn.send(Message(op: "error", message: "no session \(m.id ?? "")")); return
+            }
+            switch handoffInfo(s) {
+            case .success(let info): conn.send(Message(op: "handoff-info", id: s.id, message: Self.json(info)))
+            case .failure(let e): conn.send(Message(op: "error", message: e.description))
+            }
+        case "handoff-export":
+            guard let id = m.id, let s = sessions[id] ?? sessions.values.first(where: { $0.name == id }) else {
+                conn.send(Message(op: "error", message: "no session \(m.id ?? "")")); return
+            }
+            let info: HandoffInfo
+            switch handoffInfo(s) {
+            case .success(let i): info = i
+            case .failure(let e): conn.send(Message(op: "error", message: e.description)); return
+            }
+            let pid = s.process.foregroundPID
+            let sid = s.id
+            DispatchQueue.global().async { [weak self] in
+                let result: Result<Data, HandoffError>
+                if !Handoff.stop(pid: pid) {
+                    result = .failure(.io("The agent didn't stop within 15 seconds, so nothing was moved."))
+                } else {
+                    let fresh = Handoff.describe(agent: info.agent, conversation: info.conversation, cwd: info.cwd, transcript: info.transcriptPath)
+                    switch Handoff.bundle(fresh) {
+                    case .success(let b):
+                        if let d = HandoffTransfer.encode(b) { result = .success(d) } else { result = .failure(.io("Couldn't encode the bundle.")) }
+                    case .failure(let e):
+                        result = .failure(e)
+                    }
+                }
+                self?.queue.async {
+                    guard let self else { return }
+                    switch result {
+                    case .success(let data):
+                        let token = String(UUID().uuidString.prefix(12)).lowercased()
+                        self.handoffOut[token] = data
+                        self.log("handoff export: \(info.agent) \(info.conversation) from session \(sid), \(data.count) bytes")
+                        conn.send(Message(op: "handoff-ready", name: token, code: data.count, message: Self.json(info)))
+                    case .failure(let e):
+                        conn.send(Message(op: "error", message: e.description))
+                    }
+                }
+            }
+        case "handoff-get":
+            guard let token = m.name, let data = handoffOut[token], let offset = m.code, offset >= 0, offset < data.count else {
+                conn.send(Message(op: "error", message: "no such handoff data")); return
+            }
+            var reply = Message(op: "handoff-data", code: offset)
+            reply.data = data[offset..<min(offset + HandoffTransfer.chunk, data.count)].base64EncodedString()
+            conn.send(reply)
+        case "handoff-put":
+            guard let token = m.name, let b64 = m.data, let part = Data(base64Encoded: b64) else {
+                conn.send(Message(op: "error", message: "bad handoff chunk")); return
+            }
+            var have = handoffIn[token] ?? Data()
+            guard (m.code ?? have.count) == have.count, have.count + part.count <= 512 * 1024 * 1024 else {
+                conn.send(Message(op: "error", message: "handoff chunk out of order or too large")); return
+            }
+            have.append(part)
+            handoffIn[token] = have
+            conn.send(Message(op: "ok"))
+        case "handoff-import":
+            guard let token = m.name, let data = handoffIn.removeValue(forKey: token), let bundle = HandoffTransfer.decode(data) else {
+                conn.send(Message(op: "error", message: "no complete handoff bundle")); return
+            }
+            let roots = (m.message.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: String]) ?? [:]
+            let source = roots["sourceRoot"] ?? "~/github"
+            let target = Handoff.expand(roots["targetRoot"] ?? "~/github")
+            DispatchQueue.global().async { [weak self] in
+                let result = Handoff.importBundle(bundle, sourceRoot: source, targetRoot: target)
+                self?.queue.async {
+                    switch result {
+                    case .success(let r):
+                        self?.log("handoff import: \(bundle.info.agent) \(bundle.info.conversation) into \(r.cwd)")
+                        conn.send(Message(op: "handoff-imported", message: Self.json(r)))
+                    case .failure(let e):
+                        conn.send(Message(op: "error", message: e.description))
+                    }
+                }
+            }
+        case "handoff-drop":
+            if let token = m.name { handoffOut[token] = nil; handoffIn[token] = nil }
+            conn.send(Message(op: "ok"))
+        case "watch-borrow":
+            borrowWatchers.removeAll { $0 == key }
+            borrowWatchers.append(key)
+            conn.send(Message(op: "watching"))
+        case "borrow-reply":
+            if let req = m.id, let w = toolWaiters.removeValue(forKey: req) {
+                w.send(Message(op: "agent-result", code: m.code ?? 0, message: m.message ?? ""))
             }
         case "list":
             conn.send(Message(op: "sessions", sessions: order.compactMap { sessions[$0].map(sessionInfo) }))
@@ -416,7 +546,8 @@ public final class HostServer: @unchecked Sendable {
             upload(m, from: conn)
         case "register-push":
             guard let token = m.token, !token.isEmpty else { conn.send(Message(op: "error", message: "no token")); return }
-            push.register(token: token, environment: m.message ?? "production", host: m.name, credential: m.credential, key: m.key)
+            push.register(token: token, environment: m.message ?? "production", host: m.name, credential: m.credential, key: m.key,
+                          relay: m.relay)
             conn.send(Message(op: "ok"))
         case "revoke-push":
             push.revoke(key: m.key ?? "")
@@ -455,6 +586,7 @@ public final class HostServer: @unchecked Sendable {
             raiseAttention(s, .approval)
         case "agent-tool":
             func done(_ text: String, failed: Bool = false) { conn.send(Message(op: "agent-result", code: failed ? 1 : 0, message: text)) }
+            if m.name == "borrow" { borrow(m, from: conn); return }
             guard let id = m.id, let s = sessions[id], let tool = m.name else { done("No such Terminess session.", failed: true); return }
             let args = (m.message.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]) ?? [:]
             switch tool {

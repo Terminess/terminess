@@ -208,6 +208,7 @@ enum DebugScript {
                     MainActor.assumeIsolated {
                         switch what {
                         case "library": app.showLibrary(nil)
+                        case "opsguide": app.showOpsGuide(nil)
                         case "instructions": app.showProjectInstructions(nil)
                         case "issues": app.showIssueBoard(nil)
                         case "settings": app.showSettings(nil)
@@ -260,7 +261,9 @@ enum DebugScript {
             }
         }
         if let host = env["TERMAPP_REMOTE"] {
-            RemoteMachines.all = [RemoteMachine(id: "test", name: host, host: host)]
+            var m = RemoteMachine(id: "test", name: host, host: host)
+            if let path = env["TERMAPP_REMOTE_PATH"] { m.path = path }
+            RemoteMachines.all = [m]
         }
         for step in (env["TERMAPP_REMOTE_AT"] ?? "").split(separator: "|") {
             let parts = step.split(separator: ":", maxSplits: 2).map(String.init)
@@ -272,6 +275,11 @@ enum DebugScript {
                     model.refreshTabs()
                     let key = NSApp.keyWindow?.windowController as? TerminalWindowController
                     switch parts[1] {
+                    case "move-here":
+                        guard let r = model.remote.first, let s = r.sessions.first(where: { $0.name == arg }) else {
+                            print("move-here: no remote session \(arg)"); fflush(stdout); return
+                        }
+                        HandoffCoordinator.moveToMac(r.machine, sessionID: s.id)
                     case "open":
                         guard let r = model.remote.first, let s = r.sessions.first(where: { $0.name == arg }) else {
                             print("remote: no session named \(arg)"); break

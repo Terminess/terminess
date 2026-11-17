@@ -25,7 +25,17 @@ struct MachinesSection: View {
                     Spacer()
                     Button("Remove") { save(machines.filter { $0.id != m.id }) }
                 }
+                TextField("Repositories there", text: Binding(
+                    get: { m.repoRoot ?? "" },
+                    set: { v in save(machines.map { x in var x = x; if x.id == m.id { x.repoRoot = v.isEmpty ? nil : v }; return x }) }),
+                    prompt: Text("~/github"))
+                    .font(.callout)
             }
+            TextField("Repositories on this Mac", text: Binding(
+                get: { HandoffCoordinator.localRoot == "~/github" ? "" : HandoffCoordinator.localRoot },
+                set: { HandoffCoordinator.localRoot = $0 }), prompt: Text("~/github"))
+            Text("Moving a conversation between this Mac and a machine (right-click an agent session) matches repositories by folder name in these folders.")
+                .font(.caption).foregroundStyle(.secondary)
         }
         Section("Add a Machine") {
             TextField("Name", text: $name, prompt: Text("agents"))

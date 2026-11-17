@@ -273,7 +273,7 @@ struct SidebarView: View {
         }
     }
 
-    @AppStorage("sidebar.issuesExpanded") private var issuesExpanded = true
+    @AppStorage("sidebar.issuesExpanded") private var issuesExpanded = false
 
     private var issuesSection: some View {
         Section(isExpanded: $issuesExpanded) {
@@ -290,6 +290,9 @@ struct SidebarView: View {
             }
         } header: {
             Text("Issues · \(model.issuesRepo?.split(separator: "/").last.map(String.init) ?? "")")
+        }
+        .onChange(of: issuesExpanded) { _, open in
+            if open { model.refreshIssues(force: true) }
         }
     }
 
@@ -565,6 +568,15 @@ struct SidebarView: View {
         case .tab(let t), .projectTab(let t):
             Button("Show Tab") { model.actions?.focusTab(t) }
             Button("Rename…") { model.actions?.renameTab(t) }
+            if let tab = model.tabs.first(where: { $0.id == t }), Agent.detect(tab.command) != nil {
+                if let key = tab.remoteIDs.first, let (m, s) = remoteSession(key) {
+                    Button("Move to This Mac") { model.actions?.moveToMac(m, sessionID: s.id) }
+                } else if tab.machineID == nil {
+                    ForEach(model.remote.filter { $0.note == nil }) { r in
+                        Button("Move to \(r.machine.name)") { model.actions?.moveTab(t, to: r.machine) }
+                    }
+                }
+            }
             if model.tabs.first(where: { $0.id == t })?.command == "claude" {
                 Button("Fork Conversation in New Tab") { model.actions?.forkTab(t, inWorktree: false) }
                 Button("Fork Conversation in a Worktree Tab") { model.actions?.forkTab(t, inWorktree: true) }
@@ -607,6 +619,9 @@ struct SidebarView: View {
         case .remote(let key):
             if let (m, s) = remoteSession(key) {
                 Button("Open in a Tab") { model.actions?.attachRemote(m, s) }
+                if Agent.detect(s.command) != nil {
+                    Button("Move to This Mac") { model.actions?.moveToMac(m, sessionID: s.id) }
+                }
                 Divider()
                 Button("End Session on \(m.name)") { model.actions?.killRemote(m, s.id) }
             }

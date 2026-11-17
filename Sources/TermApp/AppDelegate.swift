@@ -115,6 +115,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         c.customTitle = "Terminess Agent"
     }
 
+    @objc func showOpsGuide(_ sender: Any?) {
+        OpsGuideWindow.show()
+    }
+
     @objc func showLibrary(_ sender: Any?) {
         LibraryWindow.show(directory: keyController?.currentDirectory)
     }
@@ -415,6 +419,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let dir = FileManager.default.fileExists(atPath: session.cwd) ? session.cwd : SidebarModel.home
         let c = open(tabbedWith: keyController?.window, directory: dir, command: cmd)
         c.setResumeOf(session.id)
+    }
+
+    func openMoved(directory: String, command: String, conversation: String) {
+        let c = open(tabbedWith: keyController?.window, directory: directory, command: command)
+        c.setResumeOf(conversation)
+    }
+
+    func moveToMac(_ machine: RemoteMachine, sessionID: String) {
+        HandoffCoordinator.moveToMac(machine, sessionID: sessionID)
+    }
+
+    func moveTab(_ id: ObjectIdentifier, to machine: RemoteMachine) {
+        guard let c = controllers.first(where: { ObjectIdentifier($0) == id }) else { return }
+        HandoffCoordinator.moveTab(c, to: machine)
     }
 
     func resumeRemote(_ machine: RemoteMachine, _ item: HistoryItem) {
@@ -730,6 +748,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         window.addItem(withTitle: "Show Next Tab", action: #selector(NSWindow.selectNextTab(_:)), keyEquivalent: "}")
         window.addItem(.separator())
         window.addItem(withTitle: "Library…", action: #selector(showLibrary(_:)), keyEquivalent: "L")
+        window.addItem(withTitle: "Operations Guide…", action: #selector(showOpsGuide(_:)), keyEquivalent: "")
         let agents = window.addItem(withTitle: "Agents", action: #selector(showAgentsDashboard(_:)), keyEquivalent: "a")
         agents.keyEquivalentModifierMask = [.command, .option]
         windowItem.submenu = window
