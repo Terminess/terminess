@@ -124,6 +124,20 @@ final class ContentContainer: NSView {
             needsLayout = true
         }
     }
+    var header: NSView? {
+        didSet {
+            oldValue?.removeFromSuperview()
+            if let header { addSubview(header) }
+            needsLayout = true
+        }
+    }
+    var overlay: NSView? {
+        didSet {
+            oldValue?.removeFromSuperview()
+            if let overlay { addSubview(overlay) }
+            needsLayout = true
+        }
+    }
     var approval: NSView? {
         didSet {
             oldValue?.removeFromSuperview()
@@ -157,7 +171,9 @@ final class ContentContainer: NSView {
             h = min(composer.fittingSize.height, 200)
             composer.frame = NSRect(x: 0, y: 0, width: bounds.width, height: h)
         }
-        if showStrip {
+        let stripShown = showStrip && !(strip.native && composer != nil)
+        strip.isHidden = !stripShown
+        if stripShown {
             let sh = strip.intrinsicContentSize.height
             strip.frame = NSRect(x: 0, y: h, width: bounds.width, height: sh)
             h += sh
@@ -167,7 +183,10 @@ final class ContentContainer: NSView {
             approval.frame = NSRect(x: 0, y: h, width: bounds.width, height: ah)
             h += ah
         }
-        split.frame = NSRect(x: 0, y: h, width: bounds.width, height: bounds.height - h)
+        let top = header == nil ? 0 : chromeTopInset(window)
+        header?.frame = NSRect(x: 0, y: bounds.height - chromeHeaderHeight, width: bounds.width, height: chromeHeaderHeight)
+        split.frame = NSRect(x: 0, y: h, width: bounds.width, height: max(0, bounds.height - h - top))
+        overlay?.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - top))
     }
 }
 
@@ -181,7 +200,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     private(set) var panes: [Pane] = []
     private(set) var focused: Pane!
     private let host = PaneHostView()
-    private let split = NSSplitViewController()
+    private let split = SidebarSplitController()
     private let sidebarItem: NSSplitViewItem
     var onClose: (() -> Void)?
     var worktree: WorktreeInfo? { didSet { SidebarModel.shared.refreshTabs() } }
@@ -199,14 +218,13 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     var session: TerminalSession { focused.session }
     var terminalView: TerminalView { focused.view }
 
-    static let sidebarWidth: CGFloat = 260
-    private static let toggleItem = NSToolbarItem.Identifier("toggleSidebar")
-    private static let modeItem = NSToolbarItem.Identifier("viewMode")
+    static var sidebarWidth: CGFloat { SidebarSplitController.savedWidth }
 
     init(workingDirectory: String?, command: String? = nil, layout: PaneLayout? = nil,
          machine: RemoteMachine? = nil, agent: String? = nil) {
-        let sidebarHost = NSHostingController(rootView: SidebarView(model: SidebarModel.shared, drops: drops))
-        sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarHost)
+        let sidebarHost = NSHostingView(rootView: SidebarView(model: SidebarModel.shared, drops: drops))
+        sidebarHost.safeAreaRegions = []
+        sidebarItem = NSSplitViewItem(viewController: SidebarPaneController(content: sidebarHost))
         sidebarItem.minimumThickness = 220
         sidebarItem.maximumThickness = 420
         sidebarItem.canCollapse = true
@@ -217,21 +235,28 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         container.split.addSubview(host)
         let contentItem = NSSplitViewItem(viewController: content)
         contentItem.minimumThickness = 300
+        sidebarItem.holdingPriority = NSLayoutConstraint.Priority(260)
+        contentItem.holdingPriority = NSLayoutConstraint.Priority(250)
         split.addSplitViewItem(sidebarItem)
         split.addSplitViewItem(contentItem)
+        split.splitView.dividerStyle = .thin
 
         let probe = TerminalView(frame: .zero)
         var size = probe.contentSize(columns: 100, rows: 30)
         if SidebarModel.shared.visible { size.width += TerminalWindowController.sidebarWidth }
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.tabbingMode = .preferred
         window.tabbingIdentifier = "terminal"
         window.title = "Terminess"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.backgroundColor = probe.backgroundNSColor
-        window.contentViewController = split
+        let root = RootViewController(split: split)
+        window.contentViewController = root
         window.setContentSize(size)
+        split.applySavedWidth()
         window.center()
         window.setFrameAutosaveName("TerminalWindow")
         super.init(window: window)
@@ -247,6 +272,24 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         toolbar.displayMode = .iconOnly
         window.toolbar = toolbar
         window.toolbarStyle = .unifiedCompact
+        container.header = header
+        header.sidebarHidden = sidebarItem.isCollapsed
+        sidebarObservation = sidebarItem.observe(\.isCollapsed, options: [.new]) { [weak self] item, _ in
+            let collapsed = item.isCollapsed
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.header.sidebarHidden = collapsed } }
+        }
+        layoutObservation = window.observe(\.contentLayoutRect, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.container.needsLayout = true
+                    self?.sidebarItem.viewController.view.needsLayout = true
+                }
+            }
+        }
+        refreshWhatsNew()
+        NotificationCenter.default.addObserver(forName: WhatsNew.changed, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshWhatsNew() }
+        }
 
         if let layout {
             host.root = build(layout)
@@ -259,8 +302,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         }
         focusPane(panes[0])
         reader.folder = { [weak self] in self?.focused?.currentDirectory }
+        reader.startHere = { [weak self] path in
+            guard let self else { return }
+            self.session.send(Array("cd \(shellQuote(path)) && clear\r".utf8))
+            self.focus()
+        }
         reader.follow { [weak self] in self?.focused?.readerSource() }
         reader.activity = { [weak self] in self?.focused?.session.lastActivity }
+        reader.menuWaiting = { [weak self] in self?.screenMenu != nil }
         reader.onFound = { [weak self] pid, agent, path in
             self?.focused?.transcript = (pid, agent, path)
         }
@@ -272,13 +321,16 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     enum ViewMode: Int { case terminal = 0, split = 1, chat = 2 }
     private(set) var mode: ViewMode = .terminal
-    private var modeControl: NSSegmentedControl?
+    private lazy var header = ContentHeaderView(controller: self)
+    private var sidebarObservation: NSKeyValueObservation?
+    private var layoutObservation: NSKeyValueObservation?
     private var revealedForQuestion = false
+    private var screenMenu: ScreenMenu?
     private var questionTimer: DispatchWorkItem?
 
     func setMode(_ m: ViewMode) {
         mode = m
-        modeControl?.selectedSegment = m.rawValue
+        header.setMode(m.rawValue)
         UserDefaults.standard.set(m.rawValue, forKey: "viewMode")
         revealedForQuestion = false
         switch m {
@@ -324,18 +376,113 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     @objc func showTerminalMode(_ sender: Any?) { setMode(.terminal) }
     @objc func showSplitMode(_ sender: Any?) { setMode(.split) }
     @objc func showChatMode(_ sender: Any?) { setMode(.chat) }
-    @objc func modeChanged(_ sender: NSSegmentedControl) {
-        setMode(ViewMode(rawValue: sender.selectedSegment) ?? .terminal)
+
+    func hideNativeTabBar() {
+        guard let group = window?.tabGroup else { return }
+        if observedGroup !== group {
+            observedGroup = group
+            tabBarObservation = group.observe(\.isTabBarVisible, options: [.initial, .new]) { [weak self] g, _ in
+                guard g.isTabBarVisible else { return }
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.hideTabBarOnce() } }
+            }
+        }
+        hideTabBarOnce()
+    }
+
+    private func hideTabBarOnce() {
+        for w in window?.tabbedWindows ?? [window].compactMap({ $0 }) {
+            guard let frame = w.contentView?.superview else { continue }
+            func walk(_ v: NSView) {
+                if String(describing: type(of: v)) == "NSTitlebarAccessoryClipView" {
+                    let target = v.superview ?? v
+                    if !target.isHidden { target.isHidden = true }
+                    return
+                }
+                v.subviews.forEach(walk)
+            }
+            walk(frame)
+        }
+        (window?.tabbedWindows ?? []).compactMap { $0.windowController as? TerminalWindowController }
+            .forEach { $0.relayoutChrome() }
+    }
+
+    func relayoutChrome() {
+        container.needsLayout = true
+        sidebarItem.viewController.view.needsLayout = true
+    }
+    private weak var observedGroup: NSWindowTabGroup?
+    private var tabBarObservation: NSKeyValueObservation?
+
+
+    func showSettingsPane() {
+        if !(container.overlay is SettingsHostView) {
+            let page = SettingsHostView(rootView: SettingsPane { [weak self] in self?.closePage() })
+            page.safeAreaRegions = []
+            container.overlay = page
+        }
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func showRemindersPage() {
+        if !(container.overlay is RemindersHostView) {
+            let page = RemindersHostView(rootView: RemindersPage { [weak self] in self?.closePage() })
+            page.safeAreaRegions = []
+            container.overlay = page
+        }
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func closeSettingsPane() { closePage() }
+
+    func closePage() {
+        container.overlay = nil
+        focus()
+    }
+
+
+    func showPalette() {
+        guard let root = window?.contentView as? RootView else { return }
+        if root.overlay == nil {
+            let palette = NSHostingView(rootView: CommandPalette(controller: self) { [weak self] in self?.closePalette() })
+            palette.safeAreaRegions = []
+            root.overlay = palette
+        }
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func closePalette() {
+        (window?.contentView as? RootView)?.overlay = nil
+        focus()
+    }
+
+
+    func refreshWhatsNew() {
+        header.whatsNew.isHidden = !WhatsNew.hasUnseen
+    }
+
+    @objc func showWhatsNew(_ sender: Any?) {
+        let anchor: NSView = header.whatsNew.isHidden ? header : header.whatsNew
+        WhatsNew.show(relativeTo: anchor)
     }
 
     private func agentScreenChanged(inputVisible: Bool, status: [Row]) {
         container.strip.palette = session.terminal.palette
         container.strip.native = Settings.shared.statusStyle == "native"
         container.strip.rows = status
+        let summary = StatusSummary(rows: status, palette: session.terminal.palette)
+        if summary != composerState.status { composerState.status = summary }
+        updateComposerPlace()
         container.needsLayout = true
         refreshComposerModel()
+        let menu = mode != .terminal && Agent.detect(session.process?.foregroundCommand) != nil
+            ? ScreenMenu.find(in: session.terminal) : nil
+        if menu != screenMenu { screenMenu = menu; updateApproval() }
         guard mode == .chat, !switchingModel, Agent.detect(session.process?.foregroundCommand) != nil else { return }
         questionTimer?.cancel()
+        if screenMenu != nil {
+            if revealedForQuestion { revealedForQuestion = false; showHost(false) }
+            return
+        }
         if !inputVisible && !revealedForQuestion {
             let work = DispatchWorkItem { [weak self] in
                 MainActor.assumeIsolated {
@@ -365,6 +512,23 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         }
         let pane = ([focused] + panes).compactMap { $0 }.first { $0.session.permission != nil }
         guard let pane, let request = pane.session.permission else {
+            if let menu = screenMenu, let pane = focused {
+                let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
+                container.approval = NSHostingView(rootView: MenuBar(menu: menu, agent: agent) { [weak self, weak pane] index in
+                    guard let pane else { return }
+                    for (i, k) in menu.keys(toChoose: index).enumerated() {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06 * Double(i)) { [weak pane] in
+                            MainActor.assumeIsolated {
+                                guard let s = pane?.session else { return }
+                                s.send(InputEncoder.encode(k, modifiers: [], modes: s.terminal.modes))
+                            }
+                        }
+                    }
+                    self?.screenMenu = nil
+                    self?.updateApproval()
+                })
+                return
+            }
             if let p = ([focused] + panes).compactMap({ $0 }).first(where: { $0.session.notice != nil && !$0.session.noticeDismissed }),
                let text = p.session.notice {
                 container.approval = NSHostingView(rootView: NoticeBar(text: text) { [weak self, weak p] in
@@ -391,6 +555,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         guard visible != readerVisible else { return }
         if visible {
             let v = NSHostingView(rootView: ReaderView(model: reader))
+            v.safeAreaRegions = []
             let split = container.split
             let total = max(split.bounds.width, window?.contentLayoutRect.width ?? 1000)
             let readerWidth = min(520, max(320, total * 0.42))
@@ -424,6 +589,17 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             } : nil
         }
         focused?.view.updateAgentScreen(force: report)
+    }
+
+    func updateComposerPlace() {
+        let machineID = focused?.session.process?.machineID
+        let remote = machineID.flatMap { RemoteMachines.machine($0) }
+        let name = remote?.name ?? "This Mac"
+        let symbol = remote == nil ? "laptopcomputer" : "server.rack"
+        if composerState.machine != name { composerState.machine = name }
+        if composerState.machineSymbol != symbol { composerState.machineSymbol = symbol }
+        let folder = remote == nil ? focused?.currentDirectory : nil
+        if composerState.folderPath != folder { composerState.folderPath = folder }
     }
 
     func setComposer(visible: Bool) {
@@ -464,6 +640,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     func sendFromComposer(_ text: String) {
         guard let pane = focused else { return }
+        reader.addPending(text)
         if pane.parked != nil { resume(pane) }
         if let model = composerState.pendingModel {
             Task { @MainActor in
@@ -474,6 +651,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
                 composerState.pendingModel = nil
                 guard ok else {
                     composerState.draft = text
+                    reader.pending.removeAll { $0.text == text }
                     let alert = NSAlert()
                     alert.messageText = "Couldn't switch to \(model.name)"
                     alert.informativeText = "The agent didn't confirm the change, so your message wasn't sent. It's back in the message box."
@@ -787,9 +965,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         let translucent = Settings.shared.isModern && Settings.shared.backgroundOpacity < 1
         host.translucent = false
         window?.isOpaque = !translucent
-        window?.backgroundColor = translucent
-            ? terminalView.backgroundNSColor.withAlphaComponent(CGFloat(Settings.shared.backgroundOpacity))
-            : terminalView.backgroundNSColor
+        let tint = terminalView.backgroundNSColor.withAlphaComponent(CGFloat(Settings.shared.backgroundOpacity))
+        window?.backgroundColor = translucent ? .clear : terminalView.backgroundNSColor
+        (window?.contentView as? RootView)?.fill = translucent ? tint : nil
         updateInputHiding()
         for p in panes { p.view.needsDisplay = true }
     }
@@ -797,6 +975,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     func setSidebar(visible: Bool, animated: Bool) {
         guard sidebarItem.isCollapsed == visible else { return }
         if animated { sidebarItem.animator().isCollapsed = !visible } else { sidebarItem.isCollapsed = !visible }
+        header.sidebarHidden = !visible
     }
 
     func setResumeOf(_ id: String) {
@@ -834,6 +1013,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         if customTitle?.isEmpty != false, let m = focused.session.machine { title += " · \(m.name)" }
         displayTitle = title
         if window?.title != title { window?.title = title }
+
     }
 
     private(set) var busy = false
@@ -872,45 +1052,19 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     var currentDirectory: String? { focused?.currentDirectory }
 
     func focus() {
-        window?.makeKeyAndOrderFront(nil)
-        window?.makeFirstResponder(terminalView)
+        guard let window else { return }
+        if let group = window.tabGroup, group.selectedWindow !== window { group.selectedWindow = window }
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(terminalView)
     }
 
 
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [TerminalWindowController.toggleItem, .flexibleSpace, TerminalWindowController.modeItem]
-    }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [] }
 
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [TerminalWindowController.toggleItem, .flexibleSpace, TerminalWindowController.modeItem]
-    }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [] }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
-                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        if id == TerminalWindowController.modeItem {
-            let images = ["terminal", "rectangle.split.2x1", "text.bubble"].map {
-                NSImage(systemSymbolName: $0, accessibilityDescription: nil)!
-            }
-            let control = NSSegmentedControl(images: images, trackingMode: .selectOne, target: self, action: #selector(modeChanged(_:)))
-            control.setToolTip("Terminal (Option-Command-1)", forSegment: 0)
-            control.setToolTip("Terminal and Chat (Option-Command-2)", forSegment: 1)
-            control.setToolTip("Chat (Option-Command-3)", forSegment: 2)
-            control.selectedSegment = mode.rawValue
-            modeControl = control
-            let item = NSToolbarItem(itemIdentifier: id)
-            item.view = control
-            item.label = "View"
-            return item
-        }
-        guard id == TerminalWindowController.toggleItem else { return nil }
-        let item = NSToolbarItem(itemIdentifier: id)
-        item.label = "Sidebar"
-        item.toolTip = "Show or hide the sidebar (Control-Command-S)"
-        item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Sidebar")
-        item.action = #selector(AppDelegate.toggleSidebar(_:))
-        item.isBordered = true
-        return item
-    }
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? { nil }
 
 
     func windowWillClose(_ notification: Notification) {
@@ -919,6 +1073,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
+        hideNativeTabBar()
         terminalView.focusChanged(true)
         if let focused, focused.parked != nil { resume(focused) }
         if let focused { AttentionCenter.shared.clear(pane: focused) }
@@ -926,4 +1081,39 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     }
 
     func windowDidResignKey(_ notification: Notification) { terminalView.focusChanged(false) }
+}
+
+@MainActor
+final class SidebarSplitController: NSSplitViewController {
+    static let widthKey = "sidebarWidth"
+    static let defaultWidth: CGFloat = 260
+    static let range: ClosedRange<CGFloat> = 220...420
+
+    static var savedWidth: CGFloat {
+        let w = CGFloat(UserDefaults.standard.double(forKey: widthKey))
+        return w > 0 ? min(max(w, range.lowerBound), range.upperBound) : defaultWidth
+    }
+
+    func applySavedWidth() {
+        guard let item = splitViewItems.first, !item.isCollapsed else { return }
+        splitView.setPosition(Self.savedWidth, ofDividerAt: 0)
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        applySavedWidth()
+    }
+
+    override func toggleSidebar(_ sender: Any?) {
+        (NSApp.delegate as? AppDelegate)?.toggleSidebar(sender)
+    }
+
+    override func splitViewDidResizeSubviews(_ notification: Notification) {
+        super.splitViewDidResizeSubviews(notification)
+        guard let item = splitViewItems.first, !item.isCollapsed,
+              let type = NSApp.currentEvent?.type, type == .leftMouseDragged || type == .leftMouseUp,
+              notification.userInfo?["NSSplitViewDividerIndex"] != nil else { return }
+        let w = item.viewController.view.frame.width
+        if Self.range.contains(w) { UserDefaults.standard.set(Double(w), forKey: Self.widthKey) }
+    }
 }

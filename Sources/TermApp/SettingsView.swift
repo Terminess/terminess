@@ -2,258 +2,242 @@ import SwiftUI
 import TermTranscript
 import UniformTypeIdentifiers
 
+enum SettingsCatalog {
+    struct Entry {
+        let page: String
+        let title: String
+        let detail: String
+    }
+
+    static let entries: [(id: String, entry: Entry)] = [
+        ("style", Entry(page: "appearance", title: "Style", detail: "Modern adds space around text, softer box lines, a translucent window, a gliding cursor and smooth scrolling. Classic is compact, opaque and crisp.")),
+        ("opacity", Entry(page: "appearance", title: "Background opacity", detail: "How much of the desktop shows through the window.")),
+        ("letterSpacing", Entry(page: "appearance", title: "Letter spacing", detail: "Extra room between characters.")),
+        ("mode", Entry(page: "appearance", title: "Mode", detail: "Light, dark, or follow the system.")),
+        ("lightTheme", Entry(page: "appearance", title: "Light theme", detail: "Terminal colours in light mode.")),
+        ("darkTheme", Entry(page: "appearance", title: "Dark theme", detail: "Terminal colours in dark mode.")),
+        ("importColours", Entry(page: "appearance", title: "iTerm2 colours", detail: "Import .itermcolors files as custom themes.")),
+        ("font", Entry(page: "text", title: "Font", detail: "Any monospaced font installed on this Mac.")),
+        ("fontSize", Entry(page: "text", title: "Size", detail: "Text size in points.")),
+        ("lineSpacing", Entry(page: "text", title: "Line spacing", detail: "Space between lines, as a multiple of the font's height.")),
+        ("thinStrokes", Entry(page: "text", title: "Thin strokes", detail: "Draws text without macOS font smoothing, which otherwise makes it look heavier.")),
+        ("hideAgentInput", Entry(page: "text", title: "One place to type", detail: "Hides the agent's own input box while the composer is open. Questions and menus from the agent still show in the terminal.")),
+        ("statusStyle", Entry(page: "text", title: "Status line", detail: "Native redraws the agent's status line as labels and meters under the composer.")),
+        ("editor", Entry(page: "text", title: "Open file paths in", detail: "Hold Command over a path or link and click to open it. Paths like src/app.ts:42 open at that line.")),
+        ("cursorShape", Entry(page: "text", title: "Cursor shape", detail: "Block, bar or underline.")),
+        ("cursorBlink", Entry(page: "text", title: "Blinking cursor", detail: "The cursor blinks while the window is active.")),
+        ("optionKey", Entry(page: "keyboard", title: "Option key", detail: "Meta sends Escape before the key, which shells and editors use for word movement and shortcuts.")),
+        ("naturalText", Entry(page: "keyboard", title: "Natural text editing", detail: "Option-arrows move by word, Command-arrows go to the line's start and end, Option-Delete deletes a word.")),
+        ("keyBindings", Entry(page: "keyboard", title: "Key bindings", detail: "Send text or an escape sequence (\\e for Escape, \\r, \\n, \\t, \\xHH) from a key.")),
+        ("quickTerminal", Entry(page: "keyboard", title: "Quick Terminal", detail: "A hotkey that drops a terminal down from the top of the screen over any app.")),
+        ("startFolder", Entry(page: "windows", title: "New windows open in", detail: "The folder a new window starts in.")),
+        ("restore", Entry(page: "windows", title: "Reopen windows and tabs", detail: "Brings back your windows and tabs when Terminess starts.")),
+        ("keepSessions", Entry(page: "windows", title: "Keep sessions running", detail: "Shells and agents keep running after Terminess quits, and reattach when it reopens. Applies to new tabs.")),
+        ("tabsInFolder", Entry(page: "windows", title: "New tabs use the current folder", detail: "A new tab opens in the folder of the tab you're in.")),
+        ("shellIntegration", Entry(page: "windows", title: "Shell integration (zsh)", detail: "Marks prompts and commands, to jump between prompts, copy the last output and hear when long commands finish. Your dotfiles aren't changed.")),
+        ("scrollback", Entry(page: "windows", title: "Scrollback", detail: "Lines each tab keeps. Applies to new tabs.")),
+        ("parking", Entry(page: "windows", title: "Park idle agent tabs", detail: "Claude Code and Codex tabs left idle in the background stop to free memory, and resume the same conversation when you switch back.")),
+        ("parkingAfter", Entry(page: "windows", title: "Park after", detail: "How long a tab is idle before it's parked.")),
+        ("pairSkill", Entry(page: "agents", title: "Pair skill", detail: "Lets Claude Code and Codex hand work to each other and ask for reviews.")),
+        ("agentTools", Entry(page: "agents", title: "Terminess tools", detail: "Gives the agents Terminess's own tools, such as reminders.")),
+        ("apiKey", Entry(page: "agents", title: "Anthropic API key", detail: "For Terminess agent tabs, billed to your own Anthropic account.")),
+        ("localModels", Entry(page: "agents", title: "Local models on", detail: "Shell, Local Model lists the Ollama models on this Mac or an SSH host, and opens a tab chatting with one.")),
+        ("preferredAgent", Entry(page: "agents", title: "Agent for Terminess jobs", detail: "Which agent runs the jobs Terminess starts for you.")),
+        ("opsGuide", Entry(page: "agents", title: "Operations guide", detail: "OPERATIONS.md and ORCHESTRATE.md tell every agent how your setup is built and how to work here.")),
+        ("modelRoles", Entry(page: "models", title: "Models", detail: "Which model each agent uses for orchestration, building, reviews and handed-off work.")),
+        ("machines", Entry(page: "machines", title: "Machines", detail: "Servers and other computers running terminessd, whose sessions show in the sidebar.")),
+        ("systemNotifications", Entry(page: "notifications", title: "Banners and sounds", detail: "Terminess tells you when an agent needs you or finishes, and when a long command ends. Choose how in System Settings.")),
+        ("agentEvents", Entry(page: "notifications", title: "Agent reports", detail: "Let Claude Code and Codex tell Terminess when they're working, finished or need you. Needs Keep sessions running, in Windows.")),
+        ("updates", Entry(page: "privacy", title: "Updates", detail: "Terminess never checks on its own. It asks terminess.com only when you choose Check for Updates.")),
+        ("pairedPhones", Entry(page: "privacy", title: "Paired iPhones", detail: "Phones that can follow and steer this Mac's sessions. Each one holds its own key, which you can remove.")),
+        ("history", Entry(page: "privacy", title: "Past conversations", detail: "Read from the agents' own folders on this Mac, and listed only for the agents you import.")),
+    ]
+
+    static func entry(_ id: String) -> Entry {
+        entries.first { $0.id == id }?.entry ?? Entry(page: "", title: id, detail: "")
+    }
+
+    static func search(_ query: String) -> [(id: String, entry: Entry)] {
+        let words = query.lowercased().split(separator: " ").map(String.init)
+        guard !words.isEmpty else { return [] }
+        return entries.filter { e in
+            let hay = "\(e.entry.title) \(e.entry.detail) \(SettingsPages.label(e.entry.page))".lowercased()
+            return words.allSatisfy { hay.contains($0) }
+        }
+    }
+}
+
+enum SettingsPages {
+    static let all: [(id: String, label: String, symbol: String)] = [
+        ("appearance", "Appearance", "paintpalette"),
+        ("text", "Text", "textformat"),
+        ("keyboard", "Keyboard", "keyboard"),
+        ("windows", "Windows", "macwindow.on.rectangle"),
+        ("agents", "Agents", "sparkles"),
+        ("models", "Models", "cpu"),
+        ("machines", "Machines", "server.rack"),
+        ("notifications", "Notifications", "bell"),
+        ("privacy", "Privacy", "hand.raised"),
+    ]
+    static func label(_ id: String) -> String { all.first { $0.id == id }?.label ?? id }
+}
+
+struct SettingRow<Control: View>: View {
+    let id: String
+    @ViewBuilder var control: Control
+
+    init(_ id: String, @ViewBuilder control: () -> Control) {
+        self.id = id
+        self.control = control()
+    }
+
+    var body: some View {
+        let e = SettingsCatalog.entry(id)
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(e.title)
+                if !e.detail.isEmpty {
+                    Text(e.detail).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            control.labelsHidden().fixedSize()
+        }
+    }
+}
+
+struct SettingsPane: View {
+    @AppStorage("settingsPage") private var page = "appearance"
+    @State private var query = ""
+    let onClose: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(.secondary)
+                    TextField("Search settings", text: $query).textFieldStyle(.plain).font(.system(size: 13))
+                }
+                .padding(.horizontal, 9).frame(height: 30)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
+                .padding(.bottom, 8)
+                ForEach(SettingsPages.all, id: \.id) { p in
+                    let matches = query.isEmpty || SettingsCatalog.search(query).contains { $0.entry.page == p.id }
+                    Button { page = p.id; query = "" } label: {
+                        HStack(spacing: 9) {
+                            Image(systemName: p.symbol).font(.system(size: 13)).frame(width: 18)
+                                .foregroundStyle(page == p.id && query.isEmpty ? .primary : .secondary)
+                            Text(p.label).font(.system(size: 13))
+                            Spacer()
+                        }
+                        .padding(.horizontal, 9).frame(height: 30)
+                        .contentShape(Rectangle())
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(page == p.id && query.isEmpty ? Color.primary.opacity(0.08) : .clear))
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(matches ? 1 : 0.4)
+                }
+                Spacer()
+            }
+            .padding(12)
+            .frame(width: 214)
+            .background(Color(nsColor: .sidebarPane))
+
+            Rectangle().fill(Color.primary.opacity(0.1)).frame(width: 0.5)
+
+            ZStack(alignment: .topTrailing) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(query.isEmpty ? SettingsPages.label(page) : "Results")
+                        .font(.system(size: 20, weight: .semibold))
+                        .padding(.horizontal, 30).padding(.top, 22).padding(.bottom, 2)
+                    if query.isEmpty {
+                        SettingsPageContent(page: page)
+                    } else {
+                        results
+                    }
+                }
+                Button(action: onClose) {
+                    Image(systemName: "xmark").font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Close Settings (Esc)")
+                .keyboardShortcut(.cancelAction)
+                .padding(.top, 14).padding(.trailing, 14)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .windowBackgroundColor))
+        }
+        .noTopScrollEdge()
+    }
+
+    private var results: some View {
+        let found = SettingsCatalog.search(query)
+        return Form {
+            if found.isEmpty {
+                Text("No settings match \u{201C}\(query)\u{201D}.").foregroundStyle(.secondary)
+            }
+            ForEach(found, id: \.id) { r in
+                Button { page = r.entry.page; query = "" } label: {
+                    LabeledContent {
+                        Text(SettingsPages.label(r.entry.page)).foregroundStyle(.secondary)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(r.entry.title)
+                            Text(r.entry.detail).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+    }
+}
+
+final class SettingsHostView: NSHostingView<SettingsPane> {}
+
 struct SettingsView: View {
+    @AppStorage("settingsPage") private var page = "appearance"
+    static var pages: [(String, String)] { SettingsPages.all.map { ($0.id, $0.label) } }
+
+    var body: some View {
+        SettingsPageContent(page: page)
+            .frame(width: SettingsWindowController.width)
+            .frame(minHeight: 360, maxHeight: .infinity)
+    }
+}
+
+struct SettingsPageContent: View {
+    let page: String
     @ObservedObject var settings = Settings.shared
+    @ObservedObject private var sidebar = SidebarModel.shared
     @State private var editing: Theme?
     @State private var editingForDark = true
     @State private var addingBinding = false
     private let fonts = Settings.monospacedFonts()
-    @AppStorage("settingsPage") private var page = "appearance"
-    static var pages: [(String, String)] { SettingsWindowController.pages.map { ($0.id, $0.label) } }
 
     var body: some View {
-        VStack(spacing: 0) {
         Form {
-            if page == "appearance" {
-            Section("Style") {
-                Picker("Style", selection: $settings.style) {
-                    Text("Modern").tag("modern")
-                    Text("Classic").tag("classic")
-                }
-                .pickerStyle(.segmented)
-                Text(settings.isModern
-                     ? "More space around text, softer box lines, a translucent window, a gliding cursor and smooth scrolling."
-                     : "A traditional terminal: compact, opaque and crisp.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if settings.isModern {
-                    HStack {
-                        Text("Background opacity")
-                        Slider(value: $settings.backgroundOpacity, in: 0.6...1.0, step: 0.02)
-                        Text("\(Int(settings.backgroundOpacity * 100))%").foregroundStyle(.secondary).monospacedDigit()
-                            .frame(width: 40, alignment: .trailing)
-                    }
-                    HStack {
-                        Text("Letter spacing")
-                        Slider(value: $settings.letterSpacing, in: 0...1.5, step: 0.1)
-                        Text(String(format: "%.1f", settings.letterSpacing)).foregroundStyle(.secondary).monospacedDigit()
-                            .frame(width: 40, alignment: .trailing)
-                    }
-                }
+            switch page {
+            case "appearance": appearance
+            case "text": text
+            case "keyboard": keyboard
+            case "windows": windows
+            case "agents": agents
+            case "models": ModelRolesSection()
+            case "machines": MachinesSection()
+            case "notifications": notifications
+            case "privacy": privacy
+            default: EmptyView()
             }
-            }
-
-            if page == "appearance" {
-            Section("Appearance") {
-                Picker("Mode", selection: $settings.appearance) {
-                    Text("Follow System").tag(0)
-                    Text("Light").tag(1)
-                    Text("Dark").tag(2)
-                }
-                .pickerStyle(.segmented)
-                ThemePicker(title: "Light theme", selection: $settings.lightTheme, themes: settings.allThemes) {
-                    edit(settings.theme(named: settings.lightTheme, fallbackDark: false), forDark: false)
-                }
-                ThemePicker(title: "Dark theme", selection: $settings.darkTheme, themes: settings.allThemes) {
-                    edit(settings.theme(named: settings.darkTheme, fallbackDark: true), forDark: true)
-                }
-                HStack {
-                    Button("Import iTerm2 Colours…", action: importITerm)
-                    Spacer()
-                    if !settings.customThemes.isEmpty {
-                        Menu("Delete Custom Theme") {
-                            ForEach(settings.customThemes) { t in
-                                Button(t.name) { settings.deleteCustom(t.name) }
-                            }
-                        }
-                        .fixedSize()
-                    }
-                }
-            }
-            }
-
-            if page == "text" {
-            Section("Text") {
-                Picker("Font", selection: $settings.fontName) {
-                    Text("SF Mono (system)").tag("")
-                    Divider()
-                    ForEach(fonts, id: \.1) { family, ps in
-                        Text(family).tag(ps)
-                    }
-                }
-                Stepper(value: $settings.fontSize, in: 8...36, step: 1) {
-                    HStack {
-                        Text("Size")
-                        Spacer()
-                        Text("\(Int(settings.fontSize)) pt").foregroundStyle(.secondary).monospacedDigit()
-                    }
-                }
-                HStack {
-                    Text("Line spacing")
-                    Slider(value: $settings.lineSpacing, in: 1.0...1.6, step: 0.05)
-                    Text(String(format: "%.2f", settings.lineSpacing)).foregroundStyle(.secondary).monospacedDigit()
-                        .frame(width: 36, alignment: .trailing)
-                }
-                Toggle("Thin strokes", isOn: $settings.thinStrokes)
-                Text("Draws text without macOS font smoothing, which otherwise makes it look heavier. iTerm2 does this by default on Retina screens.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            }
-
-            if page == "text" {
-            Section("Reader and Composer") {
-                Toggle("Hide the agent's own input box while the composer is open", isOn: $settings.composerHidesAgentInput)
-                Text("Leaves one place to type. The agent's status line stays, just above the composer. Questions and menus from the agent still show in the terminal.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Picker("Status line", selection: $settings.statusStyle) {
-                    Text("Native").tag("native")
-                    Text("As in the terminal").tag("terminal")
-                }
-                Text("Native redraws the agent's status line as labels and meters. Esc or Cmd-. in the composer stops the agent while it works.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            }
-
-            if page == "text" {
-            Section("Links") {
-                Picker("Open file paths in", selection: $settings.editor) {
-                    ForEach(Editor.choices, id: \.0) { Text($0.1).tag($0.0) }
-                }
-                Text("Hold Command over a file path or link to underline it, and click to open. Paths like src/app.ts:42 open at that line.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            }
-
-            if page == "text" {
-            Section("Cursor") {
-                Picker("Shape", selection: $settings.cursorShape) {
-                    Text("Block").tag("block")
-                    Text("Bar").tag("bar")
-                    Text("Underline").tag("underline")
-                }
-                .pickerStyle(.segmented)
-                Toggle("Blink", isOn: $settings.cursorBlink)
-            }
-            }
-
-            if page == "keyboard" {
-            Section("Keyboard") {
-                Picker("Option key", selection: $settings.optionKey) {
-                    Text("Left Option is Meta").tag("left")
-                    Text("Both Option keys are Meta").tag("both")
-                    Text("Normal (type special characters)").tag("none")
-                }
-                Text("Meta sends Escape before the key, which shells and editors use for word movement and shortcuts.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Toggle("Natural text editing", isOn: $settings.naturalTextEditing)
-                Text("Option-arrows move by word, Command-arrows go to the line start and end, Option-Delete deletes a word, Command-Delete deletes the line.")
-                    .font(.caption).foregroundStyle(.secondary)
-                ForEach(settings.keyBindings) { b in
-                    HStack {
-                        Text(b.label).monospaced().frame(width: 80, alignment: .leading)
-                        Text(b.text).monospaced().foregroundStyle(.secondary).lineLimit(1)
-                        Spacer()
-                        Button { settings.keyBindings.removeAll { $0.id == b.id } } label: {
-                            Image(systemName: "minus.circle")
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                }
-                Button("Add Key Binding…") { addingBinding = true }
-                Text("Sends text or an escape sequence (\\e for Escape, \\r, \\n, \\t, \\xHH). Menu shortcuts can be changed in System Settings, Keyboard, Keyboard Shortcuts, App Shortcuts.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            }
-
-            if page == "windows" {
-            Section("Memory") {
-                Toggle("Park idle agent tabs", isOn: $settings.idleParking)
-                Picker("After", selection: $settings.idleParkingMinutes) {
-                    Text("10 minutes").tag(10)
-                    Text("30 minutes").tag(30)
-                    Text("1 hour").tag(60)
-                    Text("2 hours").tag(120)
-                }
-                .disabled(!settings.idleParking)
-                Text("Claude Code and Codex tabs left idle in the background are stopped to free memory, and resume the same conversation when you switch back.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            }
-
-            if page == "keyboard" {
-            Section("Quick Terminal") {
-                Picker("Hotkey", selection: $settings.quickTerminalKey) {
-                    Text("Off").tag("off")
-                    ForEach(QuickTerminal.choices, id: \.0) { choice in
-                        Text(choice.1).tag(choice.0)
-                    }
-                }
-                Text("Drops a terminal down from the top of the screen over any app. Press the hotkey again to hide it.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            }
-
-            if page == "windows" {
-            Section("Windows and Tabs") {
-                HStack {
-                    Text("New windows open in")
-                    Spacer()
-                    Text(settings.startFolder.isEmpty ? "Home folder" : abbreviate(settings.startFolder))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                    Button("Choose…", action: chooseFolder)
-                    if !settings.startFolder.isEmpty {
-                        Button("Reset") { settings.startFolder = "" }
-                    }
-                }
-                Toggle("Reopen windows and tabs on launch", isOn: $settings.restoreSession)
-                Toggle("Keep shells and agents running after Terminess quits", isOn: $settings.keepSessions)
-                    .help("Shells run in terminessd, so quitting the app leaves them running and reopening it reattaches. Applies to new tabs.")
-                Toggle("New tabs open in the current tab's folder", isOn: $settings.newTabsInCurrentFolder)
-                Toggle("Shell integration (zsh)", isOn: $settings.shellIntegration)
-                Text("Marks prompts and commands so you can jump between prompts, copy the last output, and be notified when long commands finish. Your dotfiles are not changed. Applies to new tabs.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Picker("Scrollback", selection: $settings.scrollback) {
-                    Text("1,000 lines").tag(1_000)
-                    Text("10,000 lines").tag(10_000)
-                    Text("50,000 lines").tag(50_000)
-                    Text("100,000 lines").tag(100_000)
-                }
-                Text("Scrollback applies to new tabs.").font(.caption).foregroundStyle(.secondary)
-            }
-            }
-            if page == "agents" {
-            Section("Agents") {
-                AgentEventsToggle(agent: .claude).disabled(!settings.keepSessions)
-                AgentEventsToggle(agent: .codex).disabled(!settings.keepSessions)
-                PairSkillToggle(agent: .claude)
-                PairSkillToggle(agent: .codex)
-                AgentToolsToggle(agent: .claude)
-                AgentToolsToggle(agent: .codex)
-                AgentKeyField()
-                TextField("Local models on", text: $settings.localModelsHost, prompt: Text("This Mac, or an SSH host such as my-server"))
-                    .help("Shell, Local Model lists the Ollama models on this machine and opens a tab chatting with one.")
-                Text("The first two need \"Keep shells and agents running\", in Windows.").font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Operations guide") {
-                Picker("Agent for Terminess jobs", selection: $settings.preferredAgent) {
-                    Text("Claude Code").tag("claude")
-                    Text("Codex").tag("codex")
-                }
-                HStack {
-                    Text("OPERATIONS.md and ORCHESTRATE.md tell every agent how your setup is built and how to work here.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Open Operations Guide…") { OpsGuideWindow.show() }
-                }
-            }
-            }
-            if page == "models" { ModelRolesSection() }
-            if page == "machines" { MachinesSection() }
         }
         .formStyle(.grouped)
-        }
-        .frame(width: SettingsWindowController.width)
-        .frame(minHeight: 360, maxHeight: .infinity)
+        .scrollContentBackground(.hidden)
         .sheet(isPresented: $addingBinding) {
             BindingRecorder { b in
                 settings.keyBindings.append(b)
@@ -268,6 +252,276 @@ struct SettingsView: View {
             } onCancel: { editing = nil }
         }
     }
+
+
+    @ViewBuilder private var appearance: some View {
+        Section {
+            SettingRow("style") {
+                Picker("Style", selection: $settings.style) {
+                    Text("Modern").tag("modern")
+                    Text("Classic").tag("classic")
+                }
+                .pickerStyle(.segmented).fixedSize()
+            }
+            if settings.isModern {
+                SettingRow("opacity") {
+                    HStack {
+                        Slider(value: $settings.backgroundOpacity, in: 0.6...1.0, step: 0.02).frame(width: 140)
+                        Text("\(Int(settings.backgroundOpacity * 100))%").foregroundStyle(.secondary).monospacedDigit()
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                }
+                SettingRow("letterSpacing") {
+                    HStack {
+                        Slider(value: $settings.letterSpacing, in: 0...1.5, step: 0.1).frame(width: 140)
+                        Text(String(format: "%.1f", settings.letterSpacing)).foregroundStyle(.secondary).monospacedDigit()
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                }
+            }
+        }
+        Section {
+            SettingRow("mode") {
+                Picker("Mode", selection: $settings.appearance) {
+                    Text("System").tag(0)
+                    Text("Light").tag(1)
+                    Text("Dark").tag(2)
+                }
+                .pickerStyle(.segmented).fixedSize()
+            }
+            SettingRow("lightTheme") {
+                ThemePicker(title: "Light theme", selection: $settings.lightTheme, themes: settings.allThemes) {
+                    edit(settings.theme(named: settings.lightTheme, fallbackDark: false), forDark: false)
+                }
+            }
+            SettingRow("darkTheme") {
+                ThemePicker(title: "Dark theme", selection: $settings.darkTheme, themes: settings.allThemes) {
+                    edit(settings.theme(named: settings.darkTheme, fallbackDark: true), forDark: true)
+                }
+            }
+            SettingRow("importColours") {
+                HStack {
+                    if !settings.customThemes.isEmpty {
+                        Menu("Delete…") {
+                            ForEach(settings.customThemes) { t in
+                                Button(t.name) { settings.deleteCustom(t.name) }
+                            }
+                        }
+                        .fixedSize()
+                    }
+                    Button("Import…", action: importITerm)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var text: some View {
+        Section {
+            SettingRow("font") {
+                Picker("Font", selection: $settings.fontName) {
+                    Text("SF Mono (system)").tag("")
+                    Divider()
+                    ForEach(fonts, id: \.1) { family, ps in
+                        Text(family).tag(ps)
+                    }
+                }
+                .fixedSize()
+            }
+            SettingRow("fontSize") {
+                Stepper(value: $settings.fontSize, in: 8...36, step: 1) {
+                    Text("\(Int(settings.fontSize)) pt").foregroundStyle(.secondary).monospacedDigit()
+                }
+                .fixedSize()
+            }
+            SettingRow("lineSpacing") {
+                HStack {
+                    Slider(value: $settings.lineSpacing, in: 1.0...1.6, step: 0.05).frame(width: 140)
+                    Text(String(format: "%.2f", settings.lineSpacing)).foregroundStyle(.secondary).monospacedDigit()
+                        .frame(width: 36, alignment: .trailing)
+                }
+            }
+            SettingRow("thinStrokes") { Toggle("Thin strokes", isOn: $settings.thinStrokes).toggleStyle(.switch) }
+        }
+        Section("Composer") {
+            SettingRow("hideAgentInput") {
+                Toggle("One place to type", isOn: $settings.composerHidesAgentInput).toggleStyle(.switch)
+            }
+            SettingRow("statusStyle") {
+                Picker("Status line", selection: $settings.statusStyle) {
+                    Text("Native").tag("native")
+                    Text("As in the terminal").tag("terminal")
+                }
+                .fixedSize()
+            }
+        }
+        Section("Links and cursor") {
+            SettingRow("editor") {
+                Picker("Open file paths in", selection: $settings.editor) {
+                    ForEach(Editor.choices, id: \.0) { Text($0.1).tag($0.0) }
+                }
+                .fixedSize()
+            }
+            SettingRow("cursorShape") {
+                Picker("Shape", selection: $settings.cursorShape) {
+                    Text("Block").tag("block")
+                    Text("Bar").tag("bar")
+                    Text("Underline").tag("underline")
+                }
+                .pickerStyle(.segmented).fixedSize()
+            }
+            SettingRow("cursorBlink") { Toggle("Blink", isOn: $settings.cursorBlink).toggleStyle(.switch) }
+        }
+    }
+
+    @ViewBuilder private var keyboard: some View {
+        Section {
+            SettingRow("optionKey") {
+                Picker("Option key", selection: $settings.optionKey) {
+                    Text("Left Option is Meta").tag("left")
+                    Text("Both are Meta").tag("both")
+                    Text("Normal").tag("none")
+                }
+                .fixedSize()
+            }
+            SettingRow("naturalText") {
+                Toggle("Natural text editing", isOn: $settings.naturalTextEditing).toggleStyle(.switch)
+            }
+            SettingRow("quickTerminal") {
+                Picker("Hotkey", selection: $settings.quickTerminalKey) {
+                    Text("Off").tag("off")
+                    ForEach(QuickTerminal.choices, id: \.0) { choice in
+                        Text(choice.1).tag(choice.0)
+                    }
+                }
+                .fixedSize()
+            }
+        }
+        Section {
+            SettingRow("keyBindings") {
+                Button("Add…") { addingBinding = true }
+            }
+            ForEach(settings.keyBindings) { b in
+                HStack {
+                    Text(b.label).monospaced().frame(width: 80, alignment: .leading)
+                    Text(b.text).monospaced().foregroundStyle(.secondary).lineLimit(1)
+                    Spacer()
+                    Button { settings.keyBindings.removeAll { $0.id == b.id } } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var windows: some View {
+        Section {
+            SettingRow("startFolder") {
+                HStack {
+                    Text(settings.startFolder.isEmpty ? "Home folder" : abbreviate(settings.startFolder))
+                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    if !settings.startFolder.isEmpty {
+                        Button("Reset") { settings.startFolder = "" }
+                    }
+                    Button("Choose…", action: chooseFolder)
+                }
+            }
+            SettingRow("restore") { Toggle("Reopen", isOn: $settings.restoreSession).toggleStyle(.switch) }
+            SettingRow("keepSessions") { Toggle("Keep running", isOn: $settings.keepSessions).toggleStyle(.switch) }
+            SettingRow("tabsInFolder") { Toggle("Current folder", isOn: $settings.newTabsInCurrentFolder).toggleStyle(.switch) }
+            SettingRow("shellIntegration") { Toggle("Shell integration", isOn: $settings.shellIntegration).toggleStyle(.switch) }
+            SettingRow("scrollback") {
+                Picker("Scrollback", selection: $settings.scrollback) {
+                    Text("1,000 lines").tag(1_000)
+                    Text("10,000 lines").tag(10_000)
+                    Text("50,000 lines").tag(50_000)
+                    Text("100,000 lines").tag(100_000)
+                }
+                .fixedSize()
+            }
+        }
+        Section("Memory") {
+            SettingRow("parking") { Toggle("Park", isOn: $settings.idleParking).toggleStyle(.switch) }
+            SettingRow("parkingAfter") {
+                Picker("After", selection: $settings.idleParkingMinutes) {
+                    Text("10 minutes").tag(10)
+                    Text("30 minutes").tag(30)
+                    Text("1 hour").tag(60)
+                    Text("2 hours").tag(120)
+                }
+                .fixedSize()
+                .disabled(!settings.idleParking)
+            }
+        }
+    }
+
+    @ViewBuilder private var agents: some View {
+        Section("Skills and tools") {
+            PairSkillToggle(agent: .claude)
+            PairSkillToggle(agent: .codex)
+            AgentToolsToggle(agent: .claude)
+            AgentToolsToggle(agent: .codex)
+        }
+        Section {
+            AgentKeyField()
+            SettingRow("localModels") {
+                TextField("Local models on", text: $settings.localModelsHost, prompt: Text("This Mac, or an SSH host"))
+                    .frame(width: 200)
+            }
+            SettingRow("preferredAgent") {
+                Picker("Agent for Terminess jobs", selection: $settings.preferredAgent) {
+                    Text("Claude Code").tag("claude")
+                    Text("Codex").tag("codex")
+                }
+                .fixedSize()
+            }
+            SettingRow("opsGuide") { Button("Open…") { OpsGuideWindow.show() } }
+        }
+    }
+
+    @ViewBuilder private var notifications: some View {
+        Section {
+            SettingRow("systemNotifications") {
+                Button("Open System Settings…") {
+                    let id = Bundle.main.bundleIdentifier ?? ""
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        }
+        Section("Agent reports") {
+            AgentEventsToggle(agent: .claude).disabled(!settings.keepSessions)
+            AgentEventsToggle(agent: .codex).disabled(!settings.keepSessions)
+            if !settings.keepSessions {
+                Text("Turn on Keep sessions running, in Windows, to use these.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var privacy: some View {
+        Section {
+            SettingRow("updates") {
+                Button("Check Now") {
+                    NSApp.sendAction(#selector(AppDelegate.checkForUpdates(_:)), to: nil, from: nil)
+                }
+            }
+            SettingRow("pairedPhones") {
+                HStack {
+                    Text(sidebar.hasPairedPhone ? "Paired" : "None").foregroundStyle(.secondary)
+                    Button(sidebar.hasPairedPhone ? "Manage…" : "Pair iPhone…") {
+                        NSApp.sendAction(#selector(AppDelegate.showPairPhone(_:)), to: nil, from: nil)
+                    }
+                }
+            }
+            SettingRow("history") {
+                Text(sidebar.importedAgents.isEmpty ? "None imported"
+                     : HistoryImport.agents.filter { sidebar.importedAgents.contains($0) }.map(HistoryImport.name).joined(separator: ", "))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
 
     private func edit(_ theme: Theme, forDark: Bool) {
         var t = theme
@@ -300,6 +554,7 @@ struct SettingsView: View {
         }
     }
 }
+
 
 private struct ThemePicker: View {
     let title: String

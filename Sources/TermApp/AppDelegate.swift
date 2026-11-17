@@ -130,7 +130,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc func showModels(_ sender: Any?) { showSettings(page: "models") }
 
-    @objc func showSettings(_ sender: Any?) { SettingsWindowController.shared.show() }
+    @objc func showSettings(_ sender: Any?) {
+        if let c = keyController ?? controllers.last { c.showSettingsPane() } else { SettingsWindowController.shared.show() }
+    }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(setAppearance(_:)) {
@@ -264,6 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if let host, let window = controller.window {
             host.addTabbedWindow(window, ordered: .above)
         }
+        controller.hideNativeTabBar()
         controller.focus()
         SidebarModel.shared.refreshTabs()
         return controller
@@ -334,7 +337,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                                guard let m = p.session.machine, let id = p.session.process?.hostSessionID else { return nil }
                                return "\(m.id)/\(id)"
                            },
-                           path: dir, machineID: c.session.machine?.id)
+                           path: dir, machineID: c.session.machine?.id,
+                           group: c.window?.tabGroup.map { ObjectIdentifier($0) })
         }
     }
 
@@ -387,6 +391,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         controllers.first { ObjectIdentifier($0) == id }?.focus()
     }
 
+    func reorderTab(_ id: ObjectIdentifier, before target: ObjectIdentifier) {
+        guard let moving = controllers.first(where: { ObjectIdentifier($0) == id })?.window,
+              let anchor = controllers.first(where: { ObjectIdentifier($0) == target })?.window,
+              let group = anchor.tabGroup, moving !== anchor else { return }
+        if moving.tabGroup === group { group.removeWindow(moving) }
+        let index = group.windows.firstIndex(of: anchor) ?? group.windows.count
+        group.insertWindow(moving, at: index)
+        (moving.windowController as? TerminalWindowController)?.focus()
+        SidebarModel.shared.refreshTabs()
+    }
+
+    @objc func selectTabNumber(_ sender: NSMenuItem) {
+        guard let window = keyController?.window else { return }
+        let tabs = window.tabbedWindows ?? [window]
+        guard !tabs.isEmpty else { return }
+        let n = sender.tag == 9 ? tabs.count - 1 : sender.tag - 1
+        guard n >= 0, n < tabs.count, let c = tabs[n].windowController as? TerminalWindowController else { return }
+        c.focus()
+    }
+
+    @objc func showSearch(_ sender: Any?) { keyController?.showPalette() }
+
+    @objc func showReminders(_ sender: Any?) { keyController?.showRemindersPage() }
+
     func attachHost(_ session: SessionInfo) {
         let dir = FileManager.default.fileExists(atPath: session.cwd) ? session.cwd : SidebarModel.home
         open(tabbedWith: keyController?.window, layout: .pane(directory: dir, history: nil, host: session.id))
@@ -415,7 +443,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func resume(_ session: SessionItem) {
-        let cmd = session.tool == "claude" ? "claude --resume \(shellQuote(session.id))" : "codex resume \(shellQuote(session.id))"
+        var cmd = session.tool == "claude" ? "claude --resume \(shellQuote(session.id))" : "codex resume \(shellQuote(session.id))"
+        if session.tool == "gemini" {
+            guard let g = SidebarModel.shared.gemini[session.id], g.resumable else {
+                if let g = SidebarModel.shared.gemini[session.id] { GeminiReader.show(g) }
+                return
+            }
+            cmd = "gemini --resume \(shellQuote(session.id))"
+        }
         let dir = FileManager.default.fileExists(atPath: session.cwd) ? session.cwd : SidebarModel.home
         let c = open(tabbedWith: keyController?.window, directory: dir, command: cmd)
         c.setResumeOf(session.id)
@@ -457,7 +492,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             let command = (args["command"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             let c = open(tabbedWith: controller.window, directory: dir, command: command)
             if let title = args["title"] as? String, !title.isEmpty { c.customTitle = title }
-            controller.window?.makeKeyAndOrderFront(nil)
+            controller.focus()
             reply("Opened a tab in \(dir)" + (command.map { " running \($0)" } ?? "") + ".")
         case "start_worktree":
             guard let branch = (args["branch"] as? String)?.trimmingCharacters(in: .whitespaces), !branch.isEmpty else {
@@ -605,6 +640,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Terminess", action: #selector(showAbout(_:)), keyEquivalent: "")
         appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "What\u{2019}s New", action: #selector(TerminalWindowController.showWhatsNew(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
         appMenu.addItem(withTitle: "Pair iPhone…", action: #selector(showPairPhone(_:)), keyEquivalent: "")
@@ -746,6 +782,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         window.addItem(withTitle: "Minimise", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         window.addItem(withTitle: "Show Previous Tab", action: #selector(NSWindow.selectPreviousTab(_:)), keyEquivalent: "{")
         window.addItem(withTitle: "Show Next Tab", action: #selector(NSWindow.selectNextTab(_:)), keyEquivalent: "}")
+        for n in 1...9 {
+            let item = window.addItem(withTitle: n == 9 ? "Show Last Tab" : "Show Tab \(n)",
+                                      action: #selector(selectTabNumber(_:)), keyEquivalent: "\(n)")
+            item.tag = n
+        }
+        window.addItem(.separator())
+        window.addItem(withTitle: "Search…", action: #selector(showSearch(_:)), keyEquivalent: "k")
+        window.addItem(withTitle: "Reminders", action: #selector(showReminders(_:)), keyEquivalent: "")
         window.addItem(.separator())
         window.addItem(withTitle: "Library…", action: #selector(showLibrary(_:)), keyEquivalent: "L")
         window.addItem(withTitle: "Operations Guide…", action: #selector(showOpsGuide(_:)), keyEquivalent: "")

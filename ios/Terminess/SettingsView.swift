@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import TermHost
 
 struct SettingsView: View {
     @ObservedObject private var store = HostStore.shared
@@ -8,6 +9,7 @@ struct SettingsView: View {
     @State private var editing: SavedHost?
     @Environment(\.dismiss) private var dismiss
     @AppStorage("appearance") private var appearance = Appearance.dark.rawValue
+    @AppStorage(DeviceName.key) private var deviceName = ""
     #if DEBUG
     @State private var demoModels = ProcessInfo.processInfo.environment["TERMINESS_DEMO_MODELS"] != nil
     #endif
@@ -40,7 +42,8 @@ struct SettingsView: View {
                                     .frame(width: 24)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(h.name).foregroundStyle(.primary)
-                                    Text("\(h.user)@\(h.address)").font(.caption).foregroundStyle(.secondary)
+                                    Text([MachineRole.clean(h.role), "\(h.user)@\(h.address)"].compactMap { $0 }.joined(separator: " · "))
+                                        .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 status(app.connection(h.id).state)
@@ -57,6 +60,15 @@ struct SettingsView: View {
                     Text("Machines")
                 } footer: {
                     Text("Quickest: run terminessd pair on the machine and scan the code it shows with the iPhone camera.")
+                }
+                .listRowBackground(Theme.surface)
+                Section {
+                    TextField(DeviceName.model, text: $deviceName)
+                        .textInputAutocapitalization(.words)
+                } header: {
+                    Text("This iPhone's Name")
+                } footer: {
+                    Text("How this iPhone appears on your other devices, for example \"Alex's iPhone 13 Pro\". It goes only to your own machines, over your own SSH.")
                 }
                 .listRowBackground(Theme.surface)
                 Section {
@@ -180,6 +192,20 @@ struct HostEditor: View {
                 TextField("User", text: $host.user)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                 TextField("Port", value: $host.port, format: .number.grouping(.never)).keyboardType(.numberPad)
+                Section {
+                    Picker("Role", selection: Binding(
+                        get: { MachineRole.presets.contains(host.role ?? "") ? (host.role ?? "") : (host.role == nil ? "" : "custom") },
+                        set: { v in host.role = v == "custom" ? (host.role ?? "") : (v.isEmpty ? nil : v) })) {
+                        Text("None").tag("")
+                        ForEach(MachineRole.presets, id: \.self) { Text($0).tag($0) }
+                        Text("Custom").tag("custom")
+                    }
+                    if let role = host.role, !MachineRole.presets.contains(role) {
+                        TextField("Custom role", text: Binding(get: { role }, set: { host.role = $0 }))
+                    }
+                } footer: {
+                    Text("Shown beside the machine's name, so you can tell production, staging and agent machines apart.")
+                }
                 Section("terminessd on the machine") {
                     TextField("Path", text: $host.terminessd)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -200,6 +226,7 @@ struct HostEditor: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         if host.name.isEmpty { host.name = host.address }
+                        host.role = MachineRole.clean(host.role)
                         HostStore.shared.save(host)
                         AppState.shared.connection(host.id).disconnect()
                         Task { await AppState.shared.connection(host.id).connect() }

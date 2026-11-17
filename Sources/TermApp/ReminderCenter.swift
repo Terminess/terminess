@@ -47,6 +47,7 @@ final class ReminderCenter {
     }
 
     func proceed(_ id: String, machine: RemoteMachine?) {
+        record(id, machine, "proceeded")
         clearNotification(id, machine)
         NSApp.activate(ignoringOtherApps: true)
         if let machine {
@@ -63,7 +64,14 @@ final class ReminderCenter {
         }
     }
 
-    func dismiss(_ id: String, machine: RemoteMachine?) {
+    private func record(_ id: String, _ machine: RemoteMachine?, _ outcome: String) {
+        guard let r = SidebarModel.shared.allReminders.first(where: { $0.reminder.id == id && $0.machine?.id == machine?.id })?.reminder
+        else { return }
+        ReminderHistory.record(r, machine: machine, outcome: outcome)
+    }
+
+    func dismiss(_ id: String, machine: RemoteMachine?, remember: Bool = true) {
+        if remember { record(id, machine, "dismissed") }
         clearNotification(id, machine)
         removeShown(id, machine)
         if let machine {

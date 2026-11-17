@@ -1,5 +1,6 @@
 import SwiftUI
 import TermHost
+import TermCore
 
 struct ApprovalBar: View {
     let request: PermissionInfo
@@ -86,6 +87,40 @@ struct NoticeBar: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.10)))
+        .padding(.horizontal, 10).padding(.vertical, 6)
+    }
+}
+
+struct MenuBar: View {
+    let menu: ScreenMenu
+    let agent: String
+    let choose: (Int) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "list.bullet.circle.fill").foregroundStyle(.orange).font(.title3)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(agent) is waiting on a choice").font(.callout.weight(.semibold))
+                    ForEach(Array(menu.text.prefix(4).enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.callout).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                ForEach(Array(menu.options.enumerated()), id: \.offset) { i, option in
+                    if i == menu.selected {
+                        Button(option) { choose(i) }.buttonStyle(.borderedProminent).lineLimit(1)
+                    } else {
+                        Button(option) { choose(i) }.lineLimit(1)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.12)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.orange.opacity(0.35)))
         .padding(.horizontal, 10).padding(.vertical, 6)
     }
 }

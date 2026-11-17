@@ -13,7 +13,8 @@ public struct TranscriptItem: Identifiable, Equatable, Codable, Sendable {
 }
 
 public enum Transcript {
-    public static let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+    public static let home = ProcessInfo.processInfo.environment["TERMAPP_HOME"]
+        ?? ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
 
     public static func claudeSession(pid: Int32, home: String = Transcript.home) -> String? {
         guard pid > 0,

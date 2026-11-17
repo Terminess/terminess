@@ -93,9 +93,6 @@ struct DrawerView: View {
                 CircleButton(symbol: "magnifyingglass") { searching = true }
             }
             .padding(.leading, 20).padding(.trailing, 14).padding(.top, 4).padding(.bottom, 4)
-            if !store.hosts.isEmpty {
-                MachineStrip().font(.footnote).padding(.bottom, 6)
-            }
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -111,9 +108,13 @@ struct DrawerView: View {
                                         dismiss: { app.dismiss(entry.reminder, on: entry.host.id) })
                         }
                     }
-                    if !grouped.loose.isEmpty {
-                        header("Running")
-                        ForEach(grouped.loose, id: \.session.id) { entry in liveRow(entry, showFolder: true) }
+                    if !store.hosts.isEmpty && search.isEmpty {
+                        header("Machines")
+                        ForEach(store.hosts) { h in MachineListRow(host: h, connection: app.connection(h.id)) }
+                        ForEach(connectedMacs, id: \.name) { mac in
+                            DeviceListRow(symbol: "laptopcomputer", name: mac.name,
+                                          detail: mac.viewing.count == 1 ? "viewing \(mac.viewing[0])" : "\(mac.viewing.count) sessions open")
+                        }
                     }
                     ForEach(grouped.groups, id: \.key) { group in
                         GroupHeader(title: group.title, open: isOpen(group.key)) {
@@ -139,6 +140,10 @@ struct DrawerView: View {
                                 .padding(.leading, 48).padding(.vertical, 6)
                             }
                         }
+                    }
+                    if !grouped.loose.isEmpty {
+                        header("Other")
+                        ForEach(grouped.loose, id: \.session.id) { entry in liveRow(entry, showFolder: true) }
                     }
                     ForEach(store.hosts) { h in
                         if case .failed(let message) = app.connection(h.id).state {
@@ -222,17 +227,30 @@ struct DrawerView: View {
     }
 
     private func liveRow(_ entry: Live, showFolder: Bool) -> some View {
-        let others = entry.session.clientKinds.map { $0.contains("other") ? 1 : 0 }
-            ?? (entry.session.clients - (app.current?.session == entry.session.id ? 1 : 0))
+        let others = DevicePresence.others(entry.session, ownKind: "iphone", ownName: DeviceName.current,
+                                           attachedHere: app.current?.session == entry.session.id)
         return SwipeToEnd(busy: entry.session.busy == true) { app.end(entry.session, on: entry.host) } content: {
             Button { app.open(SessionTarget(host: entry.host.id, session: entry.session.id, title: SessionText.title(entry.session))) } label: {
-                RunningRow(session: entry.session, machine: multipleMachines ? entry.host.name : nil,
+                RunningRow(session: entry.session, machine: entry.host.name,
+                           role: MachineRole.clean(entry.host.role),
                            selected: app.current?.session == entry.session.id,
-                           showFolder: showFolder, openElsewhere: others > 0,
-                           machineSymbol: app.connection(entry.host.id).symbol)
+                           showFolder: showFolder, others: others,
+                           machineSymbol: app.connection(entry.host.id).symbol,
+                           machineConnected: app.connection(entry.host.id).state == .connected)
             }
             .buttonStyle(.plain)
         }
+    }
+
+    private var connectedMacs: [(name: String, viewing: [String])] {
+        var byName: [String: [String]] = [:]
+        for entry in app.running {
+            let s = entry.session
+            for d in s.clientDevices ?? (s.clientKinds ?? []).map({ ClientDevice(kind: $0) }) where d.kind == "mac" {
+                byName[DevicePresence.displayName(d), default: []].append(SessionText.title(s))
+            }
+        }
+        return byName.keys.sorted().map { ($0, byName[$0]!.sorted()) }
     }
 
     private func isOpen(_ key: String) -> Bool { !collapsed.contains(key) || !search.isEmpty }
@@ -252,28 +270,38 @@ struct RunningRow: View {
     let machine: String?
     let selected: Bool
     var showFolder = true
-    var openElsewhere = false
+    var others: [ClientDevice] = []
     var machineSymbol = "server.rack"
 
-    private var macConnected: Bool { session.clientKinds?.contains("mac") == true }
+    var machineConnected = false
+
+    init(session: SessionInfo, machine: String?, role: String? = nil, selected: Bool, showFolder: Bool = true,
+         others: [ClientDevice] = [], machineSymbol: String = "server.rack", machineConnected: Bool = false) {
+        self.session = session; self.machine = machine; self.role = role; self.selected = selected
+        self.showFolder = showFolder; self.others = others; self.machineSymbol = machineSymbol
+        self.machineConnected = machineConnected
+    }
+    let role: String?
 
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(SessionText.title(session)).font(.system(size: 17)).lineLimit(1)
                 HStack(spacing: 5) {
-                    if macConnected {
-                        DeviceBadge(symbol: "laptopcomputer", label: "Mac connected", connected: true)
-                    }
                     if let machine {
                         HStack(spacing: 2) {
                             Image(systemName: machineSymbol).font(.system(size: 10, weight: .regular))
-                            Text(machine)
+                            Text(role.map { "\(machine) · \($0)" } ?? machine)
                         }
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(machineConnected ? Color.connected : Color.secondary)
+                        .layoutPriority(2)
                     }
-                    Text([showFolder ? SessionText.folderName(session.cwd) : nil, SessionText.state(session),
-                          openElsewhere && !macConnected ? "open elsewhere" : nil].compactMap { $0 }.joined(separator: " · "))
+                    if let label = DevicePresence.connectedLabel(others) {
+                        DeviceBadge(symbol: DevicePresence.symbol(others), label: label, connected: true)
+                            .layoutPriority(1)
+                    }
+                    Text([showFolder ? SessionText.folderName(session.cwd) : nil, SessionText.state(session)]
+                        .compactMap { $0 }.joined(separator: " · "))
                         .foregroundStyle(.secondary)
                 }
                 .font(.footnote).lineLimit(1)
@@ -303,41 +331,53 @@ struct DeviceBadge: View {
     }
 }
 
-struct MachineStrip: View {
-    @ObservedObject private var app = AppState.shared
-    @ObservedObject private var store = HostStore.shared
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 14) {
-                ForEach(store.hosts) { h in
-                    MachineChip(host: h, connection: app.connection(h.id))
-                }
-            }
-            .padding(.horizontal, 20)
-        }
-    }
-}
-
-private struct MachineChip: View {
+struct MachineListRow: View {
     let host: SavedHost
     @ObservedObject var connection: HostConnection
 
-    var body: some View {
+    private var state: (text: String, color: Color) {
         switch connection.state {
-        case .connected:
-            DeviceBadge(symbol: connection.symbol, label: "\(host.name) connected", connected: true)
-        case .connecting:
-            DeviceBadge(symbol: connection.symbol, label: "\(host.name) connecting", connected: false)
-        case .failed:
-            HStack(spacing: 3) {
-                Image(systemName: connection.symbol).font(.system(size: 10, weight: .regular))
-                Text("\(host.name) offline")
-            }
-            .foregroundStyle(Theme.attention).fixedSize()
-        case .idle:
-            DeviceBadge(symbol: connection.symbol, label: host.name, connected: false)
+        case .connected: return ("connected", Color.connected)
+        case .connecting: return ("connecting", Color.secondary)
+        case .failed: return ("offline", Theme.attention)
+        case .idle: return ("not connected", Color.secondary)
         }
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: connection.symbol).font(.system(size: 15, weight: .regular))
+                .foregroundStyle(connection.state == .connected ? Color.connected : Color.secondary)
+                .frame(width: 22)
+            Text(host.name).font(.system(size: 17)).lineLimit(1)
+            if let role = MachineRole.clean(host.role) {
+                Text(role).font(.caption2).foregroundStyle(.secondary)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.4), lineWidth: 0.5))
+            }
+            Spacer(minLength: 4)
+            Text(state.text).font(.footnote).foregroundStyle(state.color)
+        }
+        .padding(.horizontal, 20).padding(.vertical, 8)
+    }
+}
+
+struct DeviceListRow: View {
+    let symbol: String
+    let name: String
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol).font(.system(size: 15, weight: .regular)).foregroundStyle(Color.connected).frame(width: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name).font(.system(size: 17)).lineLimit(1)
+                Text(detail).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Text("connected").font(.footnote).foregroundStyle(Color.connected)
+        }
+        .padding(.horizontal, 20).padding(.vertical, 8)
     }
 }
 

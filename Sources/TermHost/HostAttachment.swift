@@ -32,6 +32,7 @@ public final class HostAttachment: @unchecked Sendable {
     public var resumeOf: String?
     public var onAgentRequest: ((String, String, String) -> Void)?
     public var clientKind: String?
+    public var deviceName: String?
     public var onOutput: (([UInt8]) -> Void)?
     public var onForeground: ((ForegroundInfo) -> Void)?
     public var onExit: ((Int) -> Void)?
@@ -121,6 +122,7 @@ public final class HostAttachment: @unchecked Sendable {
                     var create = Message(op: "create", host: clientKind, name: name, cwd: cwd, command: command, args: args,
                                          cols: cols, rows: rows, env: env)
                     create.resumeOf = resumeOf
+                    create.deviceName = deviceName
                     connection.send(create)
                 case .attach(let id):
                     sendAttach(id)
@@ -166,11 +168,11 @@ public final class HostAttachment: @unchecked Sendable {
     }
 
     private func sendAttach(_ id: String) {
-        if resizesAfterReplay {
-            connection.send(Message(op: "attach", host: clientKind, id: id))
-        } else {
-            connection.send(Message(op: "attach", host: clientKind, id: id, cols: cols, rows: rows))
-        }
+        var m = resizesAfterReplay
+            ? Message(op: "attach", host: clientKind, id: id)
+            : Message(op: "attach", host: clientKind, id: id, cols: cols, rows: rows)
+        m.deviceName = deviceName
+        connection.send(m)
     }
 
     private func fail(_ message: String) {

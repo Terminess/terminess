@@ -99,9 +99,17 @@ public struct SessionInfo: Codable, Equatable {
 
     public var origin: String?
     public var clientKinds: [String]?
+    public var clientDevices: [ClientDevice]?
+    public var originName: String?
     public init(id: String, name: String, command: String, cwd: String, created: Double, clients: Int) {
         self.id = id; self.name = name; self.command = command; self.cwd = cwd; self.created = created; self.clients = clients
     }
+}
+
+public struct ClientDevice: Codable, Equatable, Hashable, Sendable {
+    public var kind: String
+    public var name: String?
+    public init(kind: String, name: String? = nil) { self.kind = kind; self.name = name }
 }
 
 public struct ProjectInfo: Codable, Equatable, Sendable {
@@ -139,6 +147,7 @@ public struct Message: Codable, Equatable {
     public var op: String
     public var version: Int?
     public var host: String?
+    public var deviceName: String?
     public var platform: String?
     public var id: String?
     public var name: String?
@@ -187,7 +196,8 @@ public struct Message: Codable, Equatable {
 
 public enum HostPaths {
     public static var stateDirectory: String {
-        let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+        let env = ProcessInfo.processInfo.environment
+        let home = env["TERMAPP_HOME"] ?? env["HOME"] ?? NSHomeDirectory()
         let dir = home + "/.local/state/terminess"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])

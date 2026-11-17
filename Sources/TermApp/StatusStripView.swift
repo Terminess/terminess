@@ -12,7 +12,7 @@ final class StatusStripView: NSView {
     private let hintFont = NSFont.systemFont(ofSize: 11.5)
     private var lineHeight: CGFloat { ceil(font.ascender - font.descender + font.leading) + 3 }
 
-    private struct Chip {
+    struct Chip {
         var text: String
         var hint: String
         var color: NSColor?
@@ -43,13 +43,15 @@ final class StatusStripView: NSView {
     }
 
     private func rebuild() {
-        chips = native ? parse(rows) : []
+        chips = native ? Self.parseChips(rows, palette: palette) : []
         invalidateIntrinsicContentSize()
         superview?.needsLayout = true
         needsDisplay = true
     }
 
-    private func color(_ c: RGB, alpha: CGFloat = 1) -> NSColor {
+    private func color(_ c: RGB, alpha: CGFloat = 1) -> NSColor { Self.color(c, alpha: alpha) }
+
+    static func color(_ c: RGB, alpha: CGFloat = 1) -> NSColor {
         NSColor(srgbRed: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255, blue: CGFloat(c.b) / 255, alpha: alpha)
     }
 
@@ -57,7 +59,7 @@ final class StatusStripView: NSView {
     private static let barCharacters = Set("█▉▊▋▌▍▎▏▓▒░■□▰▱▮▯⣿⣀━─".unicodeScalars.map { $0.value })
     private static let models = ["opus", "sonnet", "haiku", "fable", "claude", "gpt", "o3", "o4", "codex"]
 
-    private func parse(_ rows: [Row]) -> [Chip] {
+    static func parseChips(_ rows: [Row], palette: Palette) -> [Chip] {
         var out: [Chip] = []
         for row in rows {
             var parts: [(text: String, fg: RGB?)] = []
@@ -90,7 +92,7 @@ final class StatusStripView: NSView {
         return out
     }
 
-    private func chip(_ raw: String, fg: RGB?, rowStart: Bool) -> Chip {
+    private static func chip(_ raw: String, fg: RGB?, rowStart: Bool) -> Chip {
         var text = raw
         var percent: Double?
         if let r = text.range(of: #"\d+(\.\d+)?%"#, options: .regularExpression) {
@@ -209,6 +211,49 @@ final class StatusStripView: NSView {
                 line.append(NSAttributedString(string: cell.isEmpty ? " " : row.text(at: x), attributes: attrs))
             }
             line.draw(at: NSPoint(x: inset, y: 4 + CGFloat(i) * lineHeight))
+        }
+    }
+}
+
+
+struct StatusSummary: Equatable {
+    var folder: String?
+    var branch: String?
+    var model: String?
+    var mode: String?
+    var shells: String?
+    var context: Double?
+    var contextText: String?
+    var usage: String?
+    var usagePercent: Double?
+    var others: [String] = []
+
+    var isEmpty: Bool { folder == nil && branch == nil && model == nil && mode == nil && context == nil && others.isEmpty }
+
+    var details: String {
+        var lines: [String] = []
+        if let contextText { lines.append("Context: \(contextText)") }
+        if let usage { lines.append("Usage: \(usage)") }
+        lines += others
+        return lines.joined(separator: "\n")
+    }
+
+    init() {}
+
+    init(rows: [Row], palette: Palette) {
+        for chip in StatusStripView.parseChips(rows, palette: palette) {
+            let text = chip.text, lower = text.lowercased()
+            let full = chip.hint.isEmpty ? text : text + " " + chip.hint
+            if chip.symbol == "folder", folder == nil { folder = text }
+            else if chip.symbol == "sparkle", model == nil { model = text }
+            else if chip.symbol == "clock" { usage = full; usagePercent = chip.percent }
+            else if chip.symbol == "forward.fill" { mode = text }
+            else if lower.hasPrefix("branch:") || lower.hasPrefix("\u{2387}") {
+                branch = text.drop { $0 != ":" && $0 != "\u{2387}" }.dropFirst().trimmingCharacters(in: .whitespaces)
+            }
+            else if lower.contains("shell") && lower.count < 14 { shells = text }
+            else if let p = chip.percent, context == nil { context = p; contextText = text }
+            else { others.append(full) }
         }
     }
 }

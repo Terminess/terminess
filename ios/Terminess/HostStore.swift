@@ -9,6 +9,7 @@ struct SavedHost: Codable, Identifiable, Hashable {
     var user: String
     var terminessd = "~/.local/bin/terminessd"
     var hostKey: String?
+    var role: String?
 }
 
 @MainActor

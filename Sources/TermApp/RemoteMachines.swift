@@ -8,6 +8,7 @@ struct RemoteMachine: Codable, Identifiable, Equatable, Hashable {
     var port: Int = 22
     var path: String = "~/.local/bin/terminessd"
     var repoRoot: String?
+    var role: String?
 
     var isValid: Bool {
         let h = host.trimmingCharacters(in: .whitespaces)
@@ -271,7 +272,15 @@ struct RemoteMachineState: Identifiable, Equatable {
     var note: String?
     var platform: String?
     var id: String { machine.id }
-    var symbol: String { platform == "macos" ? "laptopcomputer" : "server.rack" }
+    var symbol: String {
+        switch platform {
+        case "macos": return "laptopcomputer"
+        case "linux", "windows": return "server.rack"
+        default: return "desktopcomputer"
+        }
+    }
+    var displayName: String { machine.name.isEmpty ? machine.host : machine.name }
+    var role: String? { MachineRole.clean(machine.role) }
 }
 
 func remoteTilde(_ p: String) -> String {

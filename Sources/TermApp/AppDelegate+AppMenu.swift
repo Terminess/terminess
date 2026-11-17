@@ -38,8 +38,10 @@ extension AppDelegate {
         }
         switch UpdateCheck.compare(currentBuild: current, latest: info) {
         case .upToDate:
+            WhatsNew.rememberFeed(version: info.version, notes: nil)
             alert("Terminess is up to date", "You have \(version) (\(current ?? "?")), the newest build.")
         case .available(let latest):
+            WhatsNew.rememberFeed(version: "\(latest.version) (\(latest.build))", notes: latest.notes)
             let a = NSAlert()
             a.messageText = "Terminess \(latest.version) (\(latest.build)) is available"
             var text = "You have \(version) (\(current ?? "?"))."

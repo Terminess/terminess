@@ -211,6 +211,36 @@ final class ReminderTests: XCTestCase {
         XCTAssertEqual(try kinds(), ["iphone", "mac", "other"], "unknown clients count as other")
     }
 
+    func testListNamesEachAttachedDeviceAndTheOneThatStartedIt() throws {
+        let (_, socket) = try startServer("tdn")
+        guard let phone = Client(socket) else { return XCTFail("no socket") }
+        var create = Message(op: "create", host: "iphone", name: "cat", cwd: tmp, command: "/bin/cat", args: [], cols: 80, rows: 24)
+        create.deviceName = "Alex's iPhone 13 Pro\u{0007}"
+        phone.send(create)
+        let session = try XCTUnwrap(phone.wait { $0.op == "created" }?.id)
+
+        func info() throws -> SessionInfo? {
+            guard let c = Client(socket) else { XCTFail("no socket"); return nil }
+            c.send(Message(op: "list"))
+            return try XCTUnwrap(c.wait { $0.op == "sessions" }).sessions?.first { $0.id == session }
+        }
+        XCTAssertEqual(try info()?.originName, "Alex's iPhone 13 Pro")
+
+        var attach = Message(op: "attach", host: "iphone", id: session, cols: 80, rows: 24)
+        attach.deviceName = "Alex's iPhone 13 Pro"
+        phone.send(attach)
+        phone.wait { $0.op == "replayed" }
+        guard let mac = Client(socket) else { return XCTFail("no socket") }
+        var macAttach = Message(op: "attach", host: "mac", id: session, cols: 80, rows: 24)
+        macAttach.deviceName = "Alex's MacBook Pro"
+        mac.send(macAttach)
+        mac.wait { $0.op == "replayed" }
+        let s = try XCTUnwrap(try info())
+        XCTAssertEqual(s.clientDevices, [ClientDevice(kind: "iphone", name: "Alex's iPhone 13 Pro"),
+                                         ClientDevice(kind: "mac", name: "Alex's MacBook Pro")])
+        XCTAssertNil(s.originName, "picked up on a Mac: no longer shown as from the phone")
+    }
+
     func testActTypesPromptIntoLiveSession() throws {
         let (_, socket) = try startServer("tra")
         guard let c = Client(socket) else { return XCTFail("no socket") }

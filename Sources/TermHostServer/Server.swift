@@ -25,6 +25,7 @@ final class HostSession {
     var scanner = OutputScanner()
     var title = ""
     var origin: String?
+    var originName: String?
     var notice: String?
     var onTurnEnd: (() -> Void)?
     var busy = false {
@@ -86,6 +87,7 @@ final class HostSession {
         i.question = question
         i.active = active
         i.origin = origin
+        i.originName = origin == nil ? nil : originName
         return i
     }
 
@@ -113,6 +115,7 @@ public final class HostServer: @unchecked Sendable {
     private var connections: [ObjectIdentifier: Connection] = [:]
     private var bindings: [ObjectIdentifier: String] = [:]
     private var clientKinds: [ObjectIdentifier: String] = [:]
+    private var deviceNames: [ObjectIdentifier: String] = [:]
 
     static var platform: String {
         #if os(macOS)
@@ -124,6 +127,13 @@ public final class HostServer: @unchecked Sendable {
         #endif
     }
 
+    static func cleanDeviceName(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let kept = String(String.UnicodeScalarView(raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }))
+        let name = kept.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : String(name.prefix(80))
+    }
+
     func sessionInfo(_ s: HostSession) -> SessionInfo {
         var i = s.info
         let kinds = s.clients.keys.map { k -> String in
@@ -133,6 +143,12 @@ public final class HostServer: @unchecked Sendable {
             }
         }
         i.clientKinds = kinds.isEmpty ? nil : Array(Set(kinds)).sorted()
+        let devices = s.clients.keys.map { k -> ClientDevice in
+            let kind = clientKinds[k]
+            return ClientDevice(kind: kind == "mac" || kind == "iphone" ? kind! : "other", name: deviceNames[k])
+        }
+        i.clientDevices = devices.isEmpty ? nil
+            : Array(Set(devices)).sorted { ($0.kind, $0.name ?? "") < ($1.kind, $1.name ?? "") }
         return i
     }
     private var toolWaiters: [String: Connection] = [:]
@@ -268,6 +284,7 @@ public final class HostServer: @unchecked Sendable {
 
     private func dropConnection(_ key: ObjectIdentifier) {
         clientKinds[key] = nil
+        deviceNames[key] = nil
         reminderWatchers.remove(key)
         borrowWatchers.removeAll { $0 == key }
         for (req, w) in toolWaiters where ObjectIdentifier(w) == key { toolWaiters[req] = nil }
@@ -457,6 +474,7 @@ public final class HostServer: @unchecked Sendable {
                 let s = try createSession(m)
                 if let resumed = m.resumeOf { warnIfOlder(s, resuming: resumed) }
                 s.origin = m.host
+                s.originName = Self.cleanDeviceName(m.deviceName)
                 conn.send(Message(op: "created", id: s.id))
             } catch {
                 conn.send(Message(op: "error", message: "\(error)"))
@@ -470,6 +488,7 @@ public final class HostServer: @unchecked Sendable {
             bindings[key] = s.id
             s.clients[key] = conn
             if let kind = m.host { clientKinds[key] = kind }
+            if let name = Self.cleanDeviceName(m.deviceName) { deviceNames[key] = name }
             if m.host == "mac" { s.origin = nil }
             conn.send(Message(op: "attached", id: s.id, cols: s.cols, rows: s.rows))
             if !s.replay.isEmpty { conn.send(Wire.Frame(.output, s.replay)) }

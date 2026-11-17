@@ -1,4 +1,5 @@
 import SwiftUI
+import TermHost
 
 struct MachinesSection: View {
     @State private var machines = RemoteMachines.all
@@ -18,11 +19,15 @@ struct MachinesSection: View {
             ForEach(machines) { m in
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(m.name)
+                        TextField("Name", text: Binding(
+                            get: { m.name },
+                            set: { v in update(m.id) { $0.name = v } }), prompt: Text(m.host))
+                            .textFieldStyle(.plain)
                         Text(m.host + (m.port == 22 ? "" : ":\(m.port)") + "  " + m.path)
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }
                     Spacer()
+                    RolePicker(role: Binding(get: { m.role }, set: { v in update(m.id) { $0.role = MachineRole.clean(v) } }))
                     Button("Remove") { save(machines.filter { $0.id != m.id }) }
                 }
                 TextField("Repositories there", text: Binding(
@@ -38,7 +43,7 @@ struct MachinesSection: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
         Section("Add a Machine") {
-            TextField("Name", text: $name, prompt: Text("agents"))
+            TextField("Name", text: $name, prompt: Text("my-server"))
             HStack {
                 TextField("SSH host", text: $host, prompt: Text("An alias from ~/.ssh/config, or user@host"))
                 if !aliases.isEmpty {
@@ -93,5 +98,36 @@ struct MachinesSection: View {
     private func save(_ list: [RemoteMachine]) {
         RemoteMachines.all = list
         machines = list
+    }
+
+    private func update(_ id: String, _ change: (inout RemoteMachine) -> Void) {
+        save(machines.map { m in var m = m; if m.id == id { change(&m) }; return m })
+    }
+}
+
+struct RolePicker: View {
+    @Binding var role: String?
+    @State private var custom = ""
+    @State private var editing = false
+
+    var body: some View {
+        Menu {
+            Button("None") { role = nil }
+            Divider()
+            ForEach(MachineRole.presets, id: \.self) { r in Button(r) { role = r } }
+            Divider()
+            Button("Custom…") { custom = role ?? ""; editing = true }
+        } label: {
+            Text(role ?? "Role").foregroundStyle(role == nil ? .secondary : .primary)
+        }
+        .fixedSize()
+        .help("What this machine is for, shown beside its name in the sidebar")
+        .popover(isPresented: $editing) {
+            HStack {
+                TextField("Role", text: $custom).frame(width: 140)
+                Button("Set") { role = MachineRole.clean(custom); editing = false }.keyboardShortcut(.defaultAction)
+            }
+            .padding(10)
+        }
     }
 }

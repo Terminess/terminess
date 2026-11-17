@@ -18,6 +18,7 @@ final class ScreenModel: ObservableObject {
     @Published private(set) var sizedElsewhere = false
     @Published private(set) var fontScale: CGFloat = 1
     @Published private(set) var statusChips: [StatusChip] = []
+    @Published private(set) var menu: ScreenMenu?
     private let events = ScreenEvents()
     private var pendingInput: String?
     private var sizeAfterReplay: (Int, Int)?
@@ -218,6 +219,15 @@ final class ScreenModel: ObservableObject {
         text = out
         let chips = StatusLine.chips(t)
         if chips != statusChips { statusChips = chips }
+        let found = ScreenMenu.find(in: t)
+        if found != menu { menu = found }
+    }
+
+    func choose(_ index: Int) {
+        guard let m = menu else { return }
+        for (i, k) in m.keys(toChoose: index).enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06 * Double(i)) { [weak self] in self?.key(k) }
+        }
     }
 
     private func line(_ row: Row, palette: Palette, cursorX: Int?) -> AttributedString {

@@ -101,6 +101,7 @@ final class TerminalSession {
         }
         a.resizesAfterReplay = true
         a.clientKind = "mac"
+        a.deviceName = DeviceIdentity.name
         let backend = HostBackend(attachment: a, link: link, machineID: remote?.id)
         process = backend
         var attached = false

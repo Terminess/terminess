@@ -210,7 +210,7 @@ struct ConversationView: View {
         case .terminal:
             TerminalScreen(model: model)
         case .chat:
-            ChatView(chat: chat, agentName: agentName, working: model.busy && !asking, folder: sessionFolder, notice: model.notice)
+            ChatView(chat: chat, agentName: agentName, working: model.busy && !asking && model.menu == nil, folder: sessionFolder, notice: model.notice)
                 .safeAreaInset(edge: .bottom) {
                     if let q = question {
                         QuestionCard(question: q, agent: agentName.isEmpty ? "The agent" : agentName) { text in
@@ -222,6 +222,8 @@ struct ConversationView: View {
                             guard let id = model.sessionID else { return }
                             Task { await connection.decide(session: id, requestID: p.id, answer: answer) }
                         }
+                    } else if let m = model.menu {
+                        MenuCard(menu: m, agent: agentName.isEmpty ? "The agent" : agentName) { model.choose($0) }
                     } else if asking {
                         HStack(spacing: 10) {
                             Image(systemName: "questionmark.bubble.fill").foregroundStyle(.orange)
@@ -460,6 +462,11 @@ struct NewChatView: View {
             }
         }
         .background(Theme.background)
+        #if DEBUG
+        .onReceive(NotificationCenter.default.publisher(for: DemoScript.sendText)) { n in
+            if let t = n.object as? String { draft = t; start() }
+        }
+        #endif
         .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item]) { result in
             if case .success(let url) = result { Task { await attachFile(url) } }
@@ -565,6 +572,39 @@ struct ApprovalCard: View {
                 }
             }
             .font(.callout).foregroundStyle(Theme.ink)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Theme.raised))
+        .padding(.horizontal, 12).padding(.bottom, 6)
+    }
+}
+
+
+struct MenuCard: View {
+    let menu: ScreenMenu
+    let agent: String
+    let choose: (Int) -> Void
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "questionmark.bubble.fill").foregroundStyle(.orange)
+                Text("\(agent) is waiting for you").font(.callout.weight(.semibold))
+            }
+            if !menu.text.isEmpty {
+                Text(menu.text.joined(separator: "\n\n"))
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .lineLimit(expanded ? nil : 6)
+                    .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } }
+            }
+            ForEach(Array(menu.options.enumerated()), id: \.offset) { i, option in
+                Button { choose(i) } label: {
+                    Text(option).frame(maxWidth: .infinity).padding(.vertical, 8)
+                        .background(Capsule().strokeBorder(Theme.ink.opacity(0.3)))
+                }
+                .foregroundStyle(Theme.ink)
+            }
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 16).fill(Theme.raised))

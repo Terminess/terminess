@@ -77,7 +77,10 @@ final class DemoPeer: @unchecked Sendable {
         }
         guard let m = f.message else { return }
         switch m.op {
-        case "hello": conn.send(Message(op: "hello", version: Wire.version, host: kind.name))
+        case "hello":
+            var hello = Message(op: "hello", version: Wire.version, host: kind.name)
+            hello.platform = kind == .mac ? "macos" : "linux"
+            conn.send(hello)
         case "list": conn.send(Message(op: "sessions", sessions: s.infos))
         case "projects": conn.send(Message(op: "projects", projects: s.projects))
         case "history": conn.send(Message(op: "history", history: s.history))
@@ -92,6 +95,18 @@ final class DemoPeer: @unchecked Sendable {
             reply.agentModels = m.name == "claude" ? AgentModels.claude : m.name == "codex" ? DemoPeer.codexModels : []
             conn.send(reply)
         case "register-push", "unregister-push", "resize", "detach": conn.send(Message(op: "ok"))
+        case "reminders":
+            var reply = Message(op: "reminders")
+            reply.reminders = s.reminders
+            conn.send(reply)
+        case "watch-reminders": conn.send(Message(op: "watching"))
+        case "reminder-act":
+            let r = s.reminders.first { $0.id == m.id }
+            s.reminders.removeAll { $0.id == m.id }
+            conn.send(Message(op: "reminder-acted", id: r?.sessionId, name: m.id))
+        case "reminder-dismiss", "remind-cancel":
+            s.reminders.removeAll { $0.id == m.id }
+            conn.send(Message(op: "ok"))
         case "create":
             let id = s.newShell(cwd: m.cwd)
             conn.send(Message(op: "created", id: id))
@@ -200,6 +215,7 @@ final class DemoState {
                            codex: ["review": "gpt-6-astra", "work": "gpt-6-luna"])
     private(set) var projects: [ProjectInfo] = []
     private(set) var history: [HistoryItem] = []
+    var reminders: [ReminderInfo] = []
     private(set) var models: [String] = []
     let home: String
     private var shells = 0
@@ -221,6 +237,7 @@ final class DemoState {
                                  created: now - 1800, clients: 1)
         claude.title = "\u{2733} Checkout discount codes"
         claude.active = now - 40
+        claude.clientKinds = ["mac"]
         sessions[claude.id] = Session(info: claude, items: items([
             .user("Add discount codes to checkout. SAVE10 takes 10% off the subtotal before shipping, codes are case-insensitive, and an unknown code is rejected with a clear error. Add tests and run them."),
             .tool(name: "Read", summary: "src/cart.js", detail: "src/cart.js", result: "export function total(items) { ... }"),
@@ -282,6 +299,19 @@ final class DemoState {
             HistoryItem(id: "h3", agent: "codex", cwd: "/Users/demo/code/ledger-api", title: "Add pagination to Ledger.all", used: now - 5400),
             HistoryItem(id: "h4", agent: "claude", cwd: "/Users/demo/code/ledger-api", title: "Add a monthly_totals method to Ledger", used: now - 86400),
         ]
+        for i in history.indices {
+            switch history[i].id {
+            case "h1", "h3": history[i].newest = true
+            case "h2": history[i].commitsSince = 3
+            case "h4": history[i].commitsSince = 7
+            default: break
+            }
+        }
+        reminders = [ReminderInfo(id: "demo-rem", title: "Ship the discount codes",
+                                  body: "Claude asked to pick this up after lunch.", due: now - 120,
+                                  actionPrompt: "Run the tests again, then open the pull request for discount codes.",
+                                  sessionId: "demo-claude", cwd: "/Users/demo/code/brightcart", agent: "claude",
+                                  created: now - 7200, fired: true)]
     }
 
     private func pc(_ now: Double) {

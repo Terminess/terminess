@@ -197,6 +197,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 @MainActor
 enum PushPermission {
     static func askIfUseful() {
+        guard PushTokens.mode != .off else { return }
         guard HostStore.shared.hosts.contains(where: { !DemoMachine.isDemo($0) }) else { return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
             guard granted else { return }

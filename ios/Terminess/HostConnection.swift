@@ -9,7 +9,13 @@ final class HostConnection: ObservableObject {
     @Published var state: State = .idle
     @Published var sessions: [SessionInfo] = []
     @Published var platform: String?
-    var symbol: String { platform == "macos" ? "laptopcomputer" : "server.rack" }
+    var symbol: String {
+        switch platform {
+        case "macos": return "laptopcomputer"
+        case "linux", "windows": return "server.rack"
+        default: return "desktopcomputer"
+        }
+    }
     @Published var projects: [ProjectInfo] = []
     @Published var models: [String]?
     @Published var history: [HistoryItem] = []
@@ -53,6 +59,7 @@ final class HostConnection: ObservableObject {
         if Self.demoSocket != nil || isDemo {
             state = .connected
             await refresh()
+            await loadPlatform()
             return
         }
         ssh?.disconnect()
@@ -211,6 +218,7 @@ final class HostConnection: ObservableObject {
         let fd = try await channel()
         let a = HostAttachment(readFD: fd, writeFD: fd, target: target, cols: cols, rows: rows, queue: .main)
         a.clientKind = "iphone"
+        a.deviceName = DeviceName.current
         return a
     }
 

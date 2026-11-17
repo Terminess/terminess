@@ -5,19 +5,52 @@ import SwiftUI
 
 @MainActor
 final class ReaderModel: ObservableObject {
-    @Published var items: [TranscriptItem] = []
+    @Published var items: [TranscriptItem] = [] { didSet { settlePending() } }
+    @Published var pending: [PendingMessage] = []
+
+    struct PendingMessage: Identifiable {
+        let id = UUID()
+        let text: String
+        let sent = Date()
+        let seenBefore: Int
+    }
+
+    func addPending(_ text: String) {
+        pending.append(PendingMessage(text: text, seenBefore: userCount(text)))
+    }
+
+    private func userCount(_ text: String) -> Int {
+        let t = Self.norm(text)
+        return items.reduce(0) { n, item in
+            if case .user(let u) = item.kind, Self.norm(u) == t { return n + 1 }
+            return n
+        }
+    }
+
+    private static func norm(_ s: String) -> String {
+        s.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    private func settlePending() {
+        guard !pending.isEmpty else { return }
+        let now = Date()
+        let left = pending.filter { p in userCount(p.text) <= p.seenBefore && now.timeIntervalSince(p.sent) < 600 }
+        if left.count != pending.count { pending = left }
+    }
     @Published var agentName = ""
     @Published var agentID = ""
     @Published var live = false
     var drops: WindowLink?
     @Published var working = false
     var activity: (() -> Date?)?
+    var menuWaiting: (() -> Bool)?
     private var watcher: DispatchSourceFileSystemObject?
     private var path: String?
     private var lastMTime: Date?
     private var timer: Timer?
     private var source: (() -> ReaderSource?)?
     var folder: (() -> String?)?
+    var startHere: ((String) -> Void)?
     var onFound: ((Int32, String, String) -> Void)?
     var visible = false { didSet { visible ? start() : stop() } }
 
@@ -40,7 +73,7 @@ final class ReaderModel: ObservableObject {
     }
 
     func refresh(force: Bool = false) {
-        let busy = live && (activity?().map { Date().timeIntervalSince($0) < 2.5 } ?? false)
+        let busy = live && !(menuWaiting?() ?? false) && (activity?().map { Date().timeIntervalSince($0) < 2.5 } ?? false)
         if busy != working { working = busy }
         switch source?() ?? .none {
         case .none:
@@ -113,7 +146,12 @@ struct ReaderView: View {
     @ObservedObject var model: ReaderModel
 
     var body: some View {
+        content.noTopScrollEdge()
+    }
+
+    private var content: some View {
         VStack(spacing: 0) {
+            if !model.agentName.isEmpty || !model.items.isEmpty {
             HStack(spacing: 8) {
                 Image(systemName: "sparkle")
                     .foregroundStyle(model.agentID == "codex" ? Color(nsColor: Agent.codex.tint) : Color(nsColor: Agent.claude.tint))
@@ -129,7 +167,11 @@ struct ReaderView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             Divider()
-            if model.items.isEmpty {
+            }
+            if model.items.isEmpty && model.agentName.isEmpty {
+                NewSessionView(startHere: { model.startHere?($0) })
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.items.isEmpty && model.pending.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "text.bubble").font(.largeTitle).foregroundStyle(.tertiary)
                     Text(model.agentName.isEmpty ? "No agent in this tab" : "No messages yet").font(.headline).foregroundStyle(.secondary)
@@ -145,6 +187,9 @@ struct ReaderView: View {
                         LazyVStack(alignment: .leading, spacing: 16) {
                             ForEach(model.items) { item in
                                 ItemView(item: item, folder: model.folder?()).id(item.id)
+                            }
+                            ForEach(model.pending) { p in
+                                UserBubble(text: p.text, pending: true)
                             }
                             if model.working {
                                 HStack(spacing: 8) {
@@ -162,6 +207,9 @@ struct ReaderView: View {
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
                     }
                     .onChange(of: model.items.count) { _, _ in
+                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
+                    }
+                    .onChange(of: model.pending.count) { _, _ in
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
                     }
                     .onAppear { proxy.scrollTo("end", anchor: .bottom) }
@@ -191,14 +239,7 @@ struct ItemView: View {
     var body: some View {
         switch item.kind {
         case .user(let text):
-            VStack(alignment: .leading, spacing: 4) {
-                Text("You").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.12)))
-            .modifier(RememberMenu(text: text, folder: folder))
+            UserBubble(text: text).modifier(RememberMenu(text: text, folder: folder))
 
         case .assistant(let text):
             MarkdownView(text: text).padding(.horizontal, 12)
@@ -293,6 +334,10 @@ final class ComposerState: ObservableObject {
     @Published var pendingModel: AgentModels.Model?
     @Published var switching = false
     @Published var draft = ""
+    @Published var status = StatusSummary()
+    @Published var machine = "This Mac"
+    @Published var machineSymbol = "laptopcomputer"
+    @Published var folderPath: String?
     var drops: WindowLink?
 }
 
@@ -309,43 +354,114 @@ struct ComposerView: View {
     @State private var height: CGFloat = 22
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-        HStack(alignment: .bottom, spacing: 8) {
-            ZStack(alignment: .topLeading) {
-                if text.isEmpty {
-                    Text(placeholder).foregroundStyle(.tertiary).padding(.leading, 5).padding(.top, 1)
-                }
-                ComposerTextView(text: $state.draft, height: $height, onSend: send, onEscape: escape)
-                    .frame(height: min(max(height, 22), 140))
-            }
-            if state.busy && text.isEmpty {
-                Button(action: onStop) {
-                    Image(systemName: "stop.circle.fill").font(.system(size: 22))
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .bottom, spacing: 10) {
+                Button(action: attach) {
+                    Image(systemName: "plus").font(.system(size: 15, weight: .regular))
+                        .frame(width: 24, height: 24).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.primary)
-                .keyboardShortcut(".", modifiers: .command)
-                .help("Stop the agent (Esc or Cmd-.)")
-            } else {
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
+                .foregroundStyle(.secondary)
+                .help("Add files or images")
+                ZStack(alignment: .topLeading) {
+                    if text.isEmpty {
+                        Text(placeholder).font(.system(size: 14)).foregroundStyle(.tertiary).padding(.leading, 5).padding(.top, 2)
+                    }
+                    ComposerTextView(text: $state.draft, height: $height, onSend: send, onEscape: escape)
+                        .frame(height: min(max(height, 24), 160))
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(text.isEmpty ? Color.secondary : Color.accentColor)
-                .disabled(text.isEmpty)
-                .help("Send (Return)")
+                if state.busy && text.isEmpty {
+                    Button(action: onStop) {
+                        Image(systemName: "stop.circle.fill").font(.system(size: 22))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.primary)
+                    .keyboardShortcut(".", modifiers: .command)
+                    .help("Stop the agent (Esc or Cmd-.)")
+                } else {
+                    Button(action: send) {
+                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(text.isEmpty ? Color.secondary.opacity(0.6) : Color.primary)
+                    .disabled(text.isEmpty)
+                    .help("Send (Return)")
+                }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 11)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.055))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 0.5)))
+
+            controlRow
+                .padding(.horizontal, 6)
         }
-            if state.agentID != nil, !state.models.isEmpty { modelPicker }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.06))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.12), lineWidth: 0.5)))
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
         .padding(.bottom, 10)
-        .padding(.top, 4)
+        .padding(.top, 6)
         .onDrop(of: Drops.utTypes, isTargeted: nil) { _ in state.drops?.dropFromSwiftUI() ?? false }
+    }
+
+    private var controlRow: some View {
+        let st = state.status
+        return HStack(spacing: 14) {
+            ControlLabel(symbol: state.machineSymbol, text: state.machine)
+                .help("Where this session runs")
+            if let folder = st.folder ?? state.folderPath.map(SidebarModel.tilde) {
+                Menu {
+                    if let path = state.folderPath {
+                        Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+                        Button("Copy Path") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(path, forType: .string) }
+                    } else {
+                        Text(folder)
+                    }
+                } label: {
+                    ControlLabel(symbol: "folder", text: (folder as NSString).lastPathComponent.isEmpty ? folder : (folder as NSString).lastPathComponent, chevron: true)
+                }
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                .help(folder)
+            }
+            if let branch = st.branch {
+                ControlLabel(symbol: "arrow.triangle.branch", text: branch).help("Branch")
+            }
+            Spacer(minLength: 8)
+            if let shells = st.shells {
+                Text(shells).help("Background shells")
+            }
+            if let mode = st.mode {
+                Text(Self.shortMode(mode)).help(mode)
+            }
+            if state.agentID != nil, !state.models.isEmpty {
+                modelPicker
+            } else if let model = st.model {
+                Text(model)
+            }
+            if let c = st.context {
+                ContextRing(fraction: c).help(st.details.isEmpty ? "Context" : st.details)
+            } else if !st.details.isEmpty {
+                Image(systemName: "info.circle").help(st.details)
+            }
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+    }
+
+    static func shortMode(_ mode: String) -> String {
+        let m = mode.lowercased()
+        if m.hasPrefix("auto") { return "Auto" }
+        if m.contains("plan") { return "Plan" }
+        if m.contains("accept") { return "Accept edits" }
+        return mode.prefix(1).uppercased() + mode.dropFirst()
+    }
+
+    private func attach() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = true
+        guard panel.runModal() == .OK else { return }
+        let paths = panel.urls.map { $0.path.contains(" ") ? "'\($0.path)'" : $0.path }.joined(separator: " ")
+        text = text.isEmpty ? paths + " " : text + (text.hasSuffix(" ") ? "" : " ") + paths + " "
     }
 
     private var modelPicker: some View {
@@ -360,15 +476,17 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: state.switching ? "arrow.triangle.2.circlepath" : "sparkle").font(.system(size: 10))
-                Text(state.switching ? "Switching to \(shown)…" : shown).font(.system(size: 11, weight: .medium))
+            HStack(spacing: 3) {
+                if state.switching { Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 10)) }
+                Text(state.switching ? "Switching to \(shown)\u{2026}" : shown).font(.system(size: 12))
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
             }
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.visible)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .fixedSize()
-        .foregroundStyle(state.pendingModel != nil ? Color.accentColor : Color.secondary)
+        .foregroundStyle(state.pendingModel != nil ? Color.primary : Color.secondary)
         .disabled(state.switching)
         .help("The model for your next message and the ones after it, in this session only. Your default for new sessions stays as it is.")
     }
@@ -421,10 +539,10 @@ private struct ComposerTextView: NSViewRepresentable {
         if tv.string != text {
             tv.string = text
             tv.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
-            if let lm = tv.layoutManager, let tc = tv.textContainer {
+            DispatchQueue.main.async { [weak tv] in
+                guard let tv, let lm = tv.layoutManager, let tc = tv.textContainer else { return }
                 lm.ensureLayout(for: tc)
-                let h = lm.usedRect(for: tc).height + 6
-                DispatchQueue.main.async { height = h }
+                height = lm.usedRect(for: tc).height + 6
             }
         }
         tv.onSend = onSend
@@ -468,5 +586,57 @@ final class KeyTextView: NSTextView {
             return true
         }
         return super.performDragOperation(sender)
+    }
+}
+
+
+private struct ControlLabel: View {
+    let symbol: String
+    let text: String
+    var chevron = false
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol).font(.system(size: 11))
+            Text(text).truncationMode(.middle)
+            if chevron { Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)) }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+struct ContextRing: View {
+    let fraction: Double
+    var body: some View {
+        let colour: Color = fraction >= 0.8 ? .red : fraction >= 0.5 ? .orange : .secondary
+        ZStack {
+            Circle().stroke(Color.secondary.opacity(0.25), lineWidth: 2)
+            Circle().trim(from: 0, to: max(0.03, fraction)).stroke(colour, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 13, height: 13)
+    }
+}
+
+
+struct UserBubble: View {
+    let text: String
+    var pending = false
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack(spacing: 0) {
+                Spacer(minLength: 96)
+                Text(text)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.accentColor.opacity(0.16)))
+            }
+            if pending {
+                Text("Sent \u{00B7} the agent will pick it up next").font(.caption).foregroundStyle(.tertiary)
+            }
+        }
+        .opacity(pending ? 0.75 : 1)
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }

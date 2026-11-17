@@ -5,6 +5,7 @@ struct ReminderDetailView: View {
     let reminder: ReminderInfo
     let machine: RemoteMachine?
     let close: () -> Void
+    var edit: (() -> Void)? = nil
 
     private var due: Bool { reminder.fired == true }
 
@@ -45,18 +46,20 @@ struct ReminderDetailView: View {
                     close()
                 }
                 Spacer()
-                Button("Close") { close() }.keyboardShortcut(.cancelAction)
-                if due {
-                    Button(reminder.label) {
-                        ReminderCenter.shared.proceed(reminder.id, machine: machine)
-                        close()
-                    }
-                    .keyboardShortcut(.defaultAction)
+                if let edit {
+                    Button("Edit…", action: edit)
+                } else {
+                    Button("Close") { close() }.keyboardShortcut(.cancelAction)
                 }
+                Button(reminder.label) {
+                    ReminderCenter.shared.proceed(reminder.id, machine: machine)
+                    close()
+                }
+                .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
-        .frame(width: 460)
+        .padding(edit == nil ? 20 : 0)
+        .frame(maxWidth: edit == nil ? 460 : .infinity, alignment: .leading)
     }
 
     private func row(_ label: String, _ value: String) -> some View {

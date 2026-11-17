@@ -263,6 +263,7 @@ final class PairModel: ObservableObject {
         let reply = Pairing.reply(code: token, key: key)
         token = ""
         loadPhones()
+        SidebarModel.shared.refreshPair()
         paired = key.split(separator: " ").dropFirst(2).joined(separator: " ")
         if paired?.isEmpty != false { paired = "your iPhone" }
         return (200, ["result": "paired", "proof": reply])

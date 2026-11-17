@@ -18,6 +18,7 @@ struct OpenTab: Identifiable, Equatable {
     var remoteIDs: [String] = []
     var path = ""
     var machineID: String?
+    var group: ObjectIdentifier?
 }
 
 struct PairJob: Identifiable, Equatable {
@@ -100,12 +101,46 @@ final class SidebarModel: ObservableObject {
     @Published var runs: [PairRun] = []
     @Published var sessions: [SessionItem] = []
     @Published var sessionsNote: String?
-    @Published var background: [SessionInfo] = []
-    @Published var localClientKinds: [String: [String]] = [:]
+    @Published var historyCounts: [String: Int] = [:]
+    @Published var importedAgents = HistoryImport.imported
+    var gemini: [String: GeminiHistory.Conversation] = [:]
 
-    func iPhoneOnTab(_ tab: OpenTab) -> Bool {
-        if tab.hostIDs.contains(where: { localClientKinds[$0]?.contains("iphone") == true }) { return true }
-        return remote.contains { r in r.sessions.contains { tab.remoteIDs.contains("\(r.id)/\($0.id)") && $0.clientKinds?.contains("iphone") == true } }
+    func importHistory(_ agent: String) {
+        HistoryImport.markImported(agent)
+        importedAgents = HistoryImport.imported
+        refreshSessions()
+    }
+    @Published var background: [SessionInfo] = []
+    @Published var localSessions: [String: SessionInfo] = [:]
+    @Published var hasPairedPhone = SidebarModel.readHasPairedPhone()
+
+    nonisolated static func readHasPairedPhone() -> Bool {
+        let text = (try? String(contentsOfFile: Transcript.home + "/.ssh/authorized_keys", encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").contains { $0.hasPrefix("restrict,command=\"") && $0.contains("terminessd stdio\"") }
+    }
+
+    var connectedPhones: [(name: String, viewing: [String])] {
+        var byName: [String: [String]] = [:]
+        let all = Array(localSessions.values) + remote.flatMap(\.sessions)
+        for s in all {
+            for d in s.clientDevices ?? (s.clientKinds ?? []).map({ ClientDevice(kind: $0) }) where d.kind == "iphone" {
+                byName[DevicePresence.displayName(d), default: []].append(SessionNames.title(s))
+            }
+        }
+        return byName.keys.sorted().map { ($0, byName[$0]!.sorted()) }
+    }
+
+    func tabDevices(_ tab: OpenTab) -> [ClientDevice] {
+        var out: [ClientDevice] = []
+        for id in tab.hostIDs {
+            if let s = localSessions[id] { out += DevicePresence.others(s, ownKind: "mac", ownName: DeviceIdentity.name, attachedHere: true) }
+        }
+        for r in remote {
+            for s in r.sessions where tab.remoteIDs.contains("\(r.id)/\(s.id)") {
+                out += DevicePresence.others(s, ownKind: "mac", ownName: DeviceIdentity.name, attachedHere: true)
+            }
+        }
+        return out
     }
     @Published var localReminders: [ReminderInfo] = []
 
@@ -236,8 +271,8 @@ final class SidebarModel: ObservableObject {
                 let shown = Set(model.tabs.flatMap(\.hostIDs))
                 let free = all.filter { !shown.contains($0.id) }
                 if free != model.background { model.background = free }
-                let kinds = Dictionary(all.map { ($0.id, $0.clientKinds ?? []) }, uniquingKeysWith: { a, _ in a })
-                if kinds != model.localClientKinds { model.localClientKinds = kinds }
+                let byID = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+                if byID != model.localSessions { model.localSessions = byID }
                 if let reminders {
                     if reminders != model.localReminders { model.localReminders = reminders }
                     ReminderCenter.shared.saw(reminders, machine: nil)
@@ -348,6 +383,8 @@ final class SidebarModel: ObservableObject {
     }
 
     func refreshPair() {
+        let paired = SidebarModel.readHasPairedPhone()
+        if paired != hasPairedPhone { hasPairedPhone = paired }
         let (jobs, runs) = SidebarModel.readPair()
         if jobs != self.jobs { self.jobs = jobs }
         if runs != self.runs { self.runs = runs }
@@ -356,16 +393,32 @@ final class SidebarModel: ObservableObject {
     func refreshSessions() {
         guard !loadingSessions else { return }
         loadingSessions = true
+        let imported = importedAgents
+        let tabPaths = tabs.map(\.path)
         Task.detached(priority: .utility) {
             _ = await MainActor.run { HostService.ensureRunning() }
             let reply = HostRequest.send(Message(op: "history"))
-            let items = (reply?.history ?? []).map { h in
+            let all = (reply?.history ?? []).map { h in
                 SessionItem(tool: h.agent, id: h.id, cwd: h.cwd, repo: (h.cwd as NSString).lastPathComponent,
                             title: h.title, mtime: h.used, linked: [], pair: nil)
+            }
+            let candidates = Array(Set(all.map(\.cwd) + tabPaths))
+            let gemini = GeminiHistory.list(candidates: candidates)
+            var counts = HistoryImport.counts(candidates: candidates)
+            counts["gemini"] = gemini.count
+            var items = all.filter { imported.contains($0.tool) }
+            if imported.contains("gemini") {
+                items += gemini.prefix(40).map { g in
+                    SessionItem(tool: "gemini", id: g.id, cwd: g.cwd, repo: (g.cwd as NSString).lastPathComponent,
+                                title: g.title, mtime: g.used, linked: [], pair: nil)
+                }
+                items.sort { $0.mtime > $1.mtime }
             }
             await MainActor.run {
                 let model = SidebarModel.shared
                 model.loadingSessions = false
+                model.gemini = Dictionary(gemini.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+                if counts != model.historyCounts { model.historyCounts = counts }
                 if items != model.sessions { model.sessions = items }
                 model.refreshCommitCounts()
                 model.sessionsNote = reply == nil ? "Couldn't reach the Terminess service." : (items.isEmpty ? "No sessions yet." : nil)

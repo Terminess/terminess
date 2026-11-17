@@ -30,6 +30,8 @@ targets:
         product: TermPTY
       - package: Terminal
         product: TermHost
+      - package: Terminal
+        product: TermHandoff
       # The session service, shipped next to the app's executable (docs/remote.md).
       - target: terminessd
         link: false
@@ -102,6 +104,8 @@ targets:
         product: TermHost
       - package: Terminal
         product: TermHostServer
+      - package: Terminal
+        product: TermHandoff
     settings:
       base:
         PRODUCT_NAME: terminessd

@@ -1,4 +1,5 @@
 import AppKit
+import TermHost
 
 @MainActor
 enum DebugScript {
@@ -213,6 +214,36 @@ enum DebugScript {
                         case "issues": app.showIssueBoard(nil)
                         case "settings": app.showSettings(nil)
                         case "models": app.showModels(nil)
+                        case "pair": app.showPairPhone(nil)
+                        case "reminders": app.showReminders(nil)
+                        case "search": app.showSearch(nil)
+                        case "hidesidebar": app.toggleSidebar(nil)
+                        case "newtab": app.newWindowForTab(nil)
+                        case "tab1": app.controllers.first?.focus()
+                        case "newreminder":
+                            RemindersPageState.shared.draft = ReminderDraft(title: "Check the SPRING20 rollout",
+                                                                            prompt: "Look at checkout errors since SPRING20 went live and summarise anything odd.")
+                            app.showReminders(nil)
+                        case "reminderdetail":
+                            if let e = SidebarModel.shared.allReminders.first {
+                                RemindersPageState.shared.detail = "\(e.machine?.id ?? "")/\(e.reminder.id)"
+                            }
+                            app.showReminders(nil)
+                        case "demoreminders":
+                            let now = Date().timeIntervalSince1970
+                            let demo: [(String, Double, String)] = [
+                                ("Check the SPRING20 rollout", 2 * 3600, "Look at checkout errors since SPRING20 went live and summarise anything odd."),
+                                ("Ship check before release", 5 * 3600, "Run the full test suite and review the diff since the last release."),
+                                ("Weekly dependency audit", 3 * 86400, "Check dependencies for outdated or vulnerable packages."),
+                            ]
+                            Task.detached {
+                                for (title, after, prompt) in demo {
+                                    var m = Message(op: "remind-add")
+                                    m.reminder = ReminderInfo(id: "", title: title, due: now + after, actionPrompt: prompt, created: now)
+                                    _ = HostAttachment.request(m, expecting: ["reminder-added", "error"], timeout: 3)
+                                }
+                                await MainActor.run { SidebarModel.shared.refreshBackground() }
+                            }
                         default: break
                         }
                     }
@@ -265,6 +296,15 @@ enum DebugScript {
             if let path = env["TERMAPP_REMOTE_PATH"] { m.path = path }
             RemoteMachines.all = [m]
         }
+        if let spec = env["TERMAPP_MACHINES"] {
+            RemoteMachines.all = spec.split(separator: ";").enumerated().map { i, entry in
+                let f = entry.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+                var m = RemoteMachine(id: "test\(i)", name: f[0], host: f.count > 1 ? f[1] : f[0])
+                if f.count > 2, !f[2].isEmpty { m.path = f[2] }
+                if f.count > 3 { m.role = MachineRole.clean(f[3]) }
+                return m
+            }
+        }
         for step in (env["TERMAPP_REMOTE_AT"] ?? "").split(separator: "|") {
             let parts = step.split(separator: ":", maxSplits: 2).map(String.init)
             guard parts.count >= 2, let delay = Double(parts[0]), let app = NSApp.delegate as? AppDelegate else { continue }
@@ -280,6 +320,12 @@ enum DebugScript {
                             print("move-here: no remote session \(arg)"); fflush(stdout); return
                         }
                         HandoffCoordinator.moveToMac(r.machine, sessionID: s.id)
+                    case "openlocal":
+                        guard let s = model.background.first(where: { $0.name == arg || $0.command == arg }) else {
+                            print("local: no background session \(arg)"); break
+                        }
+                        app.attachHost(s)
+                        print("local: opened \(s.id) (\(arg))")
                     case "open":
                         guard let r = model.remote.first, let s = r.sessions.first(where: { $0.name == arg }) else {
                             print("remote: no session named \(arg)"); break
@@ -348,6 +394,14 @@ enum DebugScript {
                             print("machine \(r.machine.name): note=\(r.note ?? "none") unplaced=\(free.map(\.name)) history=\(r.history.count)")
                         }
                         print("background unplaced=\(model.background.filter { !layout.placedHosts.contains($0.id) }.map(\.name))")
+                        for l in layout.other {
+                            switch l {
+                            case .tab(let t): print("other tab: \(t.title)")
+                            case .background(let s): print("other This Mac: \(s.name) \(s.cwd) devices=\(s.clientDevices?.map { "\($0.kind):\($0.name ?? "-")" } ?? [])")
+                            case .remote(let r, let s): print("other \(r.displayName): \(s.name) \(s.cwd)")
+                            }
+                        }
+                        print("phones: \(model.connectedPhones.map { "\($0.name) viewing \($0.viewing)" })")
                     default:
                         for r in model.remote {
                             print("remote: machine \(r.machine.name) note=\(r.note ?? "none") sessions=\(r.sessions.map { "\($0.name)[\(SessionNames.title($0))]" }) free=\(model.remoteFree(r).map(\.name)) projects=\(r.projects.count)")
@@ -364,7 +418,7 @@ enum DebugScript {
                 let path = String(step[step.index(after: colon)...])
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     MainActor.assumeIsolated {
-                        guard let window = NSApp.orderedWindows.first(where: { $0.isVisible }) ?? NSApp.keyWindow,
+                        guard let window = NSApp.keyWindow ?? NSApp.orderedWindows.first(where: { $0.isVisible && ($0.tabGroup?.selectedWindow ?? $0) === $0 }),
                               let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber),
                                                                   [.boundsIgnoreFraming, .bestResolution]) else {
                             print("window shot failed: \(path)"); fflush(stdout); return
@@ -412,6 +466,101 @@ enum DebugScript {
             DispatchQueue.main.asyncAfter(deadline: .now() + quit) {
                 MainActor.assumeIsolated { NSApp.terminate(nil) }
             }
+        }
+        if let file = env["TERMAPP_CONTROL_FILE"] {
+            Control.start(file)
+        }
+    }
+
+    @MainActor
+    enum Control {
+        static var done = 0
+        static var timer: Timer?
+        static var recorder: Timer?
+        static var frame = 0
+
+        static func start(_ file: String) {
+            FileManager.default.createFile(atPath: file, contents: nil)
+            timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+                MainActor.assumeIsolated {
+                    guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { return }
+                    let lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+                    while done < lines.count {
+                        let line = lines[done]
+                        done += 1
+                        perform(line)
+                    }
+                }
+            }
+        }
+
+        static func perform(_ line: String) {
+            let parts = line.split(separator: ":", maxSplits: 1).map(String.init)
+            let action = parts[0], arg = parts.count > 1 ? parts[1] : ""
+            let model = SidebarModel.shared
+            model.refreshTabs()
+            let key = (NSApp.keyWindow?.windowController as? TerminalWindowController)
+                ?? NSApp.orderedWindows.lazy.compactMap { $0.windowController as? TerminalWindowController }.first
+            print("control: \(action)"); fflush(stdout)
+            switch action {
+            case "openlocal":
+                guard let app = NSApp.delegate as? AppDelegate,
+                      let s = model.background.first(where: { $0.name == arg || $0.command == arg }) else {
+                    print("control: no background session \(arg)"); fflush(stdout); return
+                }
+                app.attachHost(s)
+            case "type":
+                let text = arg.replacingOccurrences(of: "\\r", with: "\r")
+                key?.session.send(Array(text.utf8))
+            case "typeto", "modeto":
+                let f = arg.split(separator: ":", maxSplits: 1).map(String.init)
+                guard f.count == 2 else { return }
+                let tab = NSApp.windows.lazy.compactMap { $0.windowController as? TerminalWindowController }
+                    .first { c in c.panes.contains { $0.session.process?.hostSessionID == f[0] } }
+                guard let tab else { print("control: no tab for session \(f[0])"); fflush(stdout); return }
+                if action == "typeto" {
+                    let pane = tab.panes.first { $0.session.process?.hostSessionID == f[0] }
+                    let submit = f[1].hasSuffix("\\r")
+                    let body = submit ? String(f[1].dropLast(2)) : f[1]
+                    pane?.session.send(Array(body.utf8))
+                    if submit {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                            MainActor.assumeIsolated { pane?.session.send([13]) }
+                        }
+                    }
+                } else if let n = Int(f[1]), let mode = TerminalWindowController.ViewMode(rawValue: n) {
+                    tab.setMode(mode)
+                }
+            case "pairopen":
+                if let run = PairRuns.recent().first { PairRunWindows.show(run) }
+            case "main":
+                NSApp.windows.first { $0.windowController is TerminalWindowController }?.makeKeyAndOrderFront(nil)
+            case "record":
+                let f = arg.split(separator: ":").map(String.init)
+                guard let dir = f.first else { return }
+                let every = f.count > 1 ? Double(f[1]) ?? 0.33 : 0.33
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                recorder?.invalidate()
+                recorder = Timer.scheduledTimer(withTimeInterval: every, repeats: true) { _ in
+                    MainActor.assumeIsolated { shot(dir) }
+                }
+            case "recordstop":
+                recorder?.invalidate(); recorder = nil
+                print("control: recorded \(frame) frames"); fflush(stdout)
+            default:
+                print("control: unknown \(line)"); fflush(stdout)
+            }
+        }
+
+        static func shot(_ dir: String) {
+            guard let window = NSApp.orderedWindows.first(where: { $0.isVisible }),
+                  let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber),
+                                                      [.boundsIgnoreFraming, .nominalResolution]) else { return }
+            let rep = NSBitmapImageRep(cgImage: image)
+            guard let data = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) else { return }
+            let ms = Int(Date().timeIntervalSince1970 * 1000)
+            try? data.write(to: URL(fileURLWithPath: "\(dir)/\(ms).jpg"))
+            frame += 1
         }
     }
 }

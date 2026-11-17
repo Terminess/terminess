@@ -5,15 +5,7 @@ import SwiftUI
 final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     static let shared = SettingsWindowController()
 
-    static let pages: [(id: String, label: String, symbol: String)] = [
-        ("appearance", "Appearance", "paintpalette"),
-        ("text", "Text", "textformat"),
-        ("keyboard", "Keyboard", "keyboard"),
-        ("windows", "Windows", "macwindow.on.rectangle"),
-        ("agents", "Agents", "sparkles"),
-        ("models", "Models", "cpu"),
-        ("machines", "Machines", "server.rack"),
-    ]
+    static var pages: [(id: String, label: String, symbol: String)] { SettingsPages.all }
 
     static let width: CGFloat = 680
 
