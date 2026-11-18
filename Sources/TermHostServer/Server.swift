@@ -540,7 +540,9 @@ public final class HostServer: @unchecked Sendable {
         case "untranscript":
             transcriptSubs[key] = nil
         case "projects":
-            conn.send(Message(op: "projects", projects: Projects.recent()))
+            var reply = Message(op: "projects", projects: Projects.recent())
+            reply.folders = Projects.folders()
+            conn.send(reply)
         case "models":
             LocalModels.installed { names in
                 self.queue.async { conn.send(Message(op: "models", args: names ?? [], code: names == nil ? 0 : 1)) }

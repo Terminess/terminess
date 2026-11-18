@@ -303,9 +303,11 @@ final class SidebarModel: ObservableObject {
                 let model = SidebarModel.shared
                 if let i = model.remote.firstIndex(where: { $0.id == m.id }), model.remote[i].platform != platform { model.remote[i].platform = platform }
             }
-            mon.onProjects = { projects in
+            mon.onProjects = { projects, folders in
                 let model = SidebarModel.shared
-                if let i = model.remote.firstIndex(where: { $0.id == m.id }), model.remote[i].projects != projects { model.remote[i].projects = projects }
+                guard let i = model.remote.firstIndex(where: { $0.id == m.id }) else { return }
+                if model.remote[i].projects != projects { model.remote[i].projects = projects }
+                if model.remote[i].folders != folders { model.remote[i].folders = folders }
             }
             mon.onHistory = { history in
                 let model = SidebarModel.shared

@@ -104,6 +104,24 @@ enum Projects {
             .prefix(limit).map { $0 }
     }
 
+    static func folders(home: String = Transcript.home, limit: Int = 400) -> [String] {
+        let fm = FileManager.default
+        func subfolders(_ dir: String) -> [String] {
+            ((try? fm.contentsOfDirectory(atPath: dir)) ?? [])
+                .filter { !$0.hasPrefix(".") }
+                .map { dir + "/" + $0 }
+                .filter { var d: ObjCBool = false; return fm.fileExists(atPath: $0, isDirectory: &d) && d.boolValue }
+                .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        }
+        let top = subfolders(home)
+        var out = top
+        let roots: Set<String> = ["github", "GitHub", "Projects", "projects", "code", "Code", "Developer", "src", "repos", "work"]
+        for dir in top where roots.contains((dir as NSString).lastPathComponent) {
+            out += subfolders(dir)
+        }
+        return Array(out.prefix(limit))
+    }
+
     private static func recordedCwd(_ path: String) -> String? {
         guard let h = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? h.close() }

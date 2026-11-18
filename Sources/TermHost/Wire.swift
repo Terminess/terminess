@@ -165,6 +165,7 @@ public struct Message: Codable, Equatable {
     public var signal: String?
     public var items: [TranscriptItem]?
     public var projects: [ProjectInfo]?
+    public var folders: [String]?
     public var data: String?
     public var token: String?
     public var credential: String?

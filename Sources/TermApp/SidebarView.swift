@@ -220,6 +220,21 @@ struct SidebarView: View {
                 newRemoteItems(r, directory: p.path, label: nil)
             }
         }
+        let tree = r.folderTree
+        if !tree.isEmpty {
+            Divider()
+            Menu("All folders") {
+                ForEach(tree, id: \.path) { node in
+                    Menu((node.path as NSString).lastPathComponent) {
+                        newRemoteItems(r, directory: node.path, label: nil)
+                        if !node.children.isEmpty { Divider() }
+                        ForEach(node.children, id: \.self) { c in
+                            Menu((c as NSString).lastPathComponent) { newRemoteItems(r, directory: c, label: nil) }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder

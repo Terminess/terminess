@@ -102,6 +102,26 @@ struct NewSessionView: View {
                     ForEach(Array(recent), id: \.path) { p in
                         Button((p.path as NSString).lastPathComponent) { open(r, p.path) }
                     }
+                    let tree = r.folderTree
+                    if !tree.isEmpty {
+                        Divider()
+                        Section("All folders") {
+                            ForEach(tree, id: \.path) { node in
+                                let name = (node.path as NSString).lastPathComponent
+                                if node.children.isEmpty {
+                                    Button(name) { open(r, node.path) }
+                                } else {
+                                    Menu(name) {
+                                        Button("Work in \(name)") { open(r, node.path) }
+                                        Divider()
+                                        ForEach(node.children, id: \.self) { c in
+                                            Button((c as NSString).lastPathComponent) { open(r, c) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } label: {
                     ActionLabel(symbol: "folder", tint: .secondary, title: "Choose a folder on \(r.displayName)")
                 }

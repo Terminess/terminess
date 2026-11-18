@@ -137,7 +137,7 @@ final class RemoteMonitor {
     private var stopped = false
     private(set) var connected = false
     var onUpdate: ((_ sessions: [SessionInfo]?, _ note: String?) -> Void)?
-    var onProjects: (([ProjectInfo]) -> Void)?
+    var onProjects: (([ProjectInfo], [String]) -> Void)?
     var onPlatform: ((String?) -> Void)?
     var onHistory: (([HistoryItem]) -> Void)?
     var onReminders: (([ReminderInfo]) -> Void)?
@@ -229,7 +229,7 @@ final class RemoteMonitor {
         case "sessions":
             onUpdate?(m.sessions ?? [], nil)
         case "projects":
-            onProjects?(m.projects ?? [])
+            onProjects?(m.projects ?? [], m.folders ?? [])
         case "history":
             onHistory?(m.history ?? [])
         case "reminders":
@@ -267,6 +267,7 @@ struct RemoteMachineState: Identifiable, Equatable {
     var machine: RemoteMachine
     var sessions: [SessionInfo] = []
     var projects: [ProjectInfo] = []
+    var folders: [String] = []
     var history: [HistoryItem] = []
     var reminders: [ReminderInfo] = []
     var note: String?
@@ -281,6 +282,19 @@ struct RemoteMachineState: Identifiable, Equatable {
     }
     var displayName: String { machine.name.isEmpty ? machine.host : machine.name }
     var role: String? { MachineRole.clean(machine.role) }
+}
+
+extension RemoteMachineState {
+    var folderTree: [(path: String, children: [String])] {
+        let set = Set(folders)
+        var children: [String: [String]] = [:]
+        var tops: [String] = []
+        for f in folders {
+            let parent = (f as NSString).deletingLastPathComponent
+            if set.contains(parent) { children[parent, default: []].append(f) } else { tops.append(f) }
+        }
+        return tops.map { ($0, children[$0] ?? []) }
+    }
 }
 
 func remoteTilde(_ p: String) -> String {
