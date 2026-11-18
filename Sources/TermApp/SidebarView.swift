@@ -49,6 +49,13 @@ struct SidebarView: View {
                               badge: pending.count) {
                     NSApp.sendAction(#selector(AppDelegate.showReminders(_:)), to: nil, from: nil)
                 }
+                let working = model.tabs.filter { $0.busy || $0.attention }.count
+                    + model.background.filter { $0.busy == true || $0.attention == true }.count
+                SidebarAction(title: "Agents", symbol: "sparkles",
+                              help: "Every agent at work: in tabs, in the background, parallel jobs and pair runs.",
+                              detail: working > 0 ? "\(working) working" : nil) {
+                    AgentsDashboardWindow.show()
+                }
                 SidebarAction(title: "Library", symbol: "books.vertical",
                               help: "The skills, slash commands, subagents and MCP servers Claude Code and Codex load, in one place.") {
                     NSApp.sendAction(#selector(AppDelegate.showLibrary(_:)), to: nil, from: nil)
@@ -131,6 +138,7 @@ struct SidebarView: View {
                 Image(systemName: "gearshape").font(.system(size: 13)).frame(width: 24, height: 24).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .hoverIcon()
             .help("Settings (Cmd-,)")
         }
         .font(.system(size: 12))
@@ -148,7 +156,7 @@ struct SidebarView: View {
         return f.string(from: d)
     }
 
-    static let openListsEveryTab = false
+    static let openListsEveryTab = true
 
     @ViewBuilder
     private func openSection(_ layout: Layout) -> some View {
@@ -158,6 +166,7 @@ struct SidebarView: View {
             if openExpanded {
             ForEach(tabs) { tab in
                 let agent = Agent.detect(tab.command)
+                let remoteMachine = tab.machineID.flatMap { id in model.remote.first { $0.id == id } }
                 Row(symbol: tab.attention ? "circle.fill" : (tab.parked ? "moon.zzz" : (agent != nil ? "sparkle" : "terminal")),
                     tint: tab.attention ? .orange : (agent.map { Color(nsColor: $0.tint) } ?? .secondary),
                     title: tab.title,
@@ -166,6 +175,8 @@ struct SidebarView: View {
                                tab.parked ? "parked" : nil].compactMap { $0 }.joined(separator: " · "),
                     busy: tab.busy && !tab.attention,
                     current: tab.id == drops?.owner,
+                    machine: remoteMachine.map { DeviceBadge.machine($0) } ?? .thisMac,
+                    badge: DeviceBadge.connected(model.tabDevices(tab)),
                     actions: [
                         RowAction(symbol: "pencil", help: "Rename") { model.actions?.renameTab(tab.id) },
                         RowAction(symbol: "xmark", help: "Close tab") { model.actions?.closeTab(tab.id) },
@@ -495,18 +506,15 @@ struct SidebarView: View {
         }
         func name(_ path: String) -> String { (path as NSString).lastPathComponent }
 
-        let listed = model.filteredSessions.filter { $0.pair == nil && $0.title != "(no messages)" }
+        let open = model.tabs.flatMap(\.conversations)
+        let listed = model.filteredSessions.filter { s in
+            s.pair == nil && s.title != "(no messages)" && !open.contains { $0.contains(s.id) }
+        }
         for s in listed where searching || !model.pinned.contains(s.id) {
             add(s.cwd, s.repo)
             past[s.cwd, default: []].append(.local(s))
         }
         if !searching {
-            for tab in model.tabs where tab.machineID == nil {
-                guard let root = model.repoRoot(tab.path) else { continue }
-                add(root, name(root))
-                live[root, default: []].append(.tab(tab))
-                layout.placedTabs.insert(tab.id)
-            }
             for s in model.background {
                 guard let root = model.repoRoot(s.cwd) else { continue }
                 add(root, name(root))
@@ -527,9 +535,6 @@ struct SidebarView: View {
                 return k
             }
             if !searching {
-                for tab in model.tabs where tab.machineID == r.id {
-                    if let k = key(tab.path) { live[k, default: []].append(.tab(tab)); layout.placedTabs.insert(tab.id) }
-                }
                 for s in model.remoteFree(r) {
                     guard let k = key(s.cwd) else { continue }
                     live[k, default: []].append(.remote(r, s))
@@ -1028,6 +1033,7 @@ private struct PairMenu: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .hoverIcon()
         .disabled(SidebarModel.pairTool == nil)
         .help("Ask, review, hand off or run in parallel, in this tab's folder")
     }

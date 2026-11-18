@@ -8,12 +8,13 @@ public enum DevicePresence {
         } else if let kinds = s.clientKinds {
             devices = kinds.map { ClientDevice(kind: $0) }
         } else {
-            devices = s.clients > 0 ? [ClientDevice(kind: "other")] : []
+            devices = Array(repeating: ClientDevice(kind: "other"), count: max(0, s.clients))
         }
         guard attachedHere else { return devices }
         var rest = devices
         if let i = rest.firstIndex(where: { $0.kind == ownKind && $0.name != nil && $0.name == ownName })
-            ?? rest.firstIndex(where: { $0.kind == ownKind }) {
+            ?? rest.firstIndex(where: { $0.kind == ownKind })
+            ?? rest.firstIndex(where: { $0.kind == "other" && $0.name == nil }) {
             rest.remove(at: i)
         }
         return rest

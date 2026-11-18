@@ -7,10 +7,10 @@ final class OpsGuideModel: ObservableObject {
     @Published private(set) var status: OperationsGuide.Status
     @Published var message: String?
     @Published var busy = false
-    private let home = NSHomeDirectory()
+    private let home = Transcript.home
 
     init() {
-        status = OperationsGuide.locate(home: NSHomeDirectory(), configured: Settings.shared.guideFolder)
+        status = OperationsGuide.locate(home: Transcript.home, configured: Settings.shared.guideFolder)
     }
 
     func reload() {
@@ -161,61 +161,75 @@ final class OpsGuideModel: ObservableObject {
 struct OpsGuideView: View {
     @ObservedObject var model: OpsGuideModel
     @ObservedObject var settings = Settings.shared
+    var onClose: () -> Void = {}
     @State private var confirmPointer = false
     @State private var confirmCopy = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Operations guide").font(.title2).fontWeight(.semibold)
-                Text("Two files every agent reads first: how your setup is built, and how agents should work here. \(model.agentName) builds them with you; \(model.reviewerName) reviews.")
-                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            VStack(spacing: 0) {
-                fileRow(model.status.operations, "The facts: accounts, machines, domains, deploys, where secrets live, gotchas.")
-                Divider()
-                fileRow(model.status.orchestrate, "The rules: who leads, pairing, where work runs, what needs your go-ahead.")
-            }
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.06)))
-            HStack(spacing: 8) {
-                Button(model.status.exists ? "Rebuild My Guide" : "Build My Guide") { model.build() }
-                    .keyboardShortcut(model.status.exists ? nil : .defaultAction)
-                Button("Update My Guide") { model.update() }
-                    .disabled(!model.status.exists)
-                    .keyboardShortcut(model.status.exists ? .defaultAction : nil)
-                Spacer()
-                Picker("Agent", selection: $settings.preferredAgent) {
-                    Text("Claude Code").tag("claude")
-                    Text("Codex").tag("codex")
+        PageShell(onClose: onClose) {
+            PageTitle(title: "Operations guide",
+                      subtitle: "Two files every agent reads first: how your setup is built, and how agents should work here. \(model.agentName) builds them with you; \(model.reviewerName) reviews.") {
+                Button(model.status.exists ? "Update My Guide" : "Build My Guide") {
+                    if model.status.exists { model.update() } else { model.build() }
                 }
-                .fixedSize()
+                .buttonStyle(.primary)
+                .keyboardShortcut(.defaultAction)
+            }
+            PageSection(title: "Files") {
+                PageGroup {
+                    fileRow(model.status.operations, "The facts: accounts, machines, domains, deploys, where secrets live, gotchas.")
+                    fileRow(model.status.orchestrate, "The rules: who leads, pairing, where work runs, what needs your go-ahead.")
+                }
+            }
+            PageSection(title: "Build") {
+                PageGroup {
+                    PageRow(symbol: "sparkles", title: "Agent that builds it", detail: "\(model.reviewerName) reviews what it writes.") {
+                        Picker("Agent", selection: $settings.preferredAgent) {
+                            Text("Claude Code").tag("claude")
+                            Text("Codex").tag("codex")
+                        }
+                        .labelsHidden().fixedSize()
+                    }
+                    if model.status.exists {
+                        PageRow(symbol: "arrow.clockwise", title: "Start over", detail: "Rebuild both files from a fresh scan of your setup.") {
+                            Button("Rebuild My Guide") { model.build() }.buttonStyle(.quiet)
+                        }
+                    }
+                }
             }
             if model.status.exists {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Make sure every agent finds it").font(.headline)
-                    HStack(spacing: 8) {
-                        Button("Add Pointer to CLAUDE.md and AGENTS.md…") { confirmPointer = true }
-                        Button("Copy to Machines…") { confirmCopy = true }
-                            .disabled(model.machines.isEmpty || model.busy)
-                        if model.busy { ProgressView().controlSize(.small) }
+                PageSection(title: "Make sure every agent finds it") {
+                    PageGroup {
+                        PageRow(symbol: "link", title: "Point CLAUDE.md and AGENTS.md at it",
+                                detail: "Adds one line under an \u{201C}Operations guide\u{201D} heading.") {
+                            Button("Add Pointer\u{2026}") { confirmPointer = true }.buttonStyle(.quiet)
+                        }
+                        PageRow(symbol: "server.rack", title: "Copy to your machines",
+                                detail: model.machines.isEmpty ? "No machines added yet." : model.machines.map(\.name).joined(separator: ", ")) {
+                            if model.busy { ProgressView().controlSize(.small) }
+                            Button("Copy\u{2026}") { confirmCopy = true }.buttonStyle(.quiet)
+                                .disabled(model.machines.isEmpty || model.busy)
+                        }
                     }
                 }
             }
             if let m = model.message {
                 Text(m).font(.callout).foregroundStyle(.secondary)
             }
-            Divider()
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Folder").foregroundStyle(.secondary)
-                TextField("Found automatically", text: $settings.guideFolder, prompt: Text(OperationsGuide.tilde(model.status.folder, home: NSHomeDirectory())))
-                    .onSubmit { model.reload() }
-                Button("Reveal") { model.reveal() }.disabled(!model.status.exists)
+            PageSection(title: "Where it lives") {
+                PageGroup {
+                    PageRow(symbol: "folder", title: "Folder", detail: "Found automatically unless you set one.") {
+                        TextField("Found automatically", text: $settings.guideFolder,
+                                  prompt: Text(OperationsGuide.tilde(model.status.folder, home: Transcript.home)))
+                            .frame(width: 200)
+                            .onSubmit { model.reload() }
+                        Button("Reveal") { model.reveal() }.buttonStyle(.quiet).disabled(!model.status.exists)
+                    }
+                }
             }
-            Text("Keeping it current: \"Update My Guide\" re-scans and proposes changes for you to approve. Automatic upkeep (collecting changes from every session and proposing a daily update) is planned.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Update My Guide re-scans and proposes changes for you to approve. Automatic upkeep, collecting changes from every session and proposing a daily update, is planned.")
+                .font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        .padding(20)
-        .frame(width: 560)
         .onAppear { model.reload() }
         .onChange(of: settings.guideFolder) { _, _ in model.reload() }
         .sheet(isPresented: $confirmPointer) { pointerSheet }
@@ -228,21 +242,12 @@ struct OpsGuideView: View {
     }
 
     private func fileRow(_ f: OperationsGuide.FileStatus, _ detail: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: f.exists ? "doc.text" : "doc.badge.plus")
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                Text((f.path as NSString).lastPathComponent).fontWeight(.medium)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
-                Text(f.exists ? "\(OperationsGuide.tilde(f.path, home: NSHomeDirectory())) · \(f.lines) lines · updated \(Self.relative(f.modified))"
-                              : "Not built yet")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if f.exists { Button("Open") { model.open(f) } }
+        PageRow(symbol: f.exists ? "doc.text" : "doc.badge.plus", title: (f.path as NSString).lastPathComponent,
+                detail: detail,
+                mono: f.exists ? "\(OperationsGuide.tilde(f.path, home: Transcript.home)) \u{00B7} \(f.lines) lines \u{00B7} updated \(Self.relative(f.modified))"
+                               : "Not built yet") {
+            if f.exists { Button("Open") { model.open(f) }.buttonStyle(.quiet) }
         }
-        .padding(12)
     }
 
     private var pointerSheet: some View {
@@ -257,7 +262,7 @@ struct OpsGuideView: View {
             ForEach(model.pointerTargets) { t in
                 HStack(spacing: 6) {
                     Image(systemName: t.alreadyPoints ? "checkmark" : "plus").foregroundStyle(.secondary).frame(width: 14)
-                    Text(OperationsGuide.tilde(t.path, home: NSHomeDirectory())).font(.system(.callout, design: .monospaced))
+                    Text(OperationsGuide.tilde(t.path, home: Transcript.home)).font(.system(.callout, design: .monospaced))
                     Text(t.alreadyPoints ? "already points at the guide" : (t.exists ? "will be added" : (t.folderExists ? "will be created" : "skipped: \(t.agent) isn't set up")))
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -284,18 +289,12 @@ struct OpsGuideView: View {
 
 @MainActor
 enum OpsGuideWindow {
-    private static var window: NSWindow?
     private static let model = OpsGuideModel()
 
     static func show() {
         model.reload()
-        if let window { window.makeKeyAndOrderFront(nil); return }
-        let w = NSWindow(contentViewController: NSHostingController(rootView: OpsGuideView(model: model)))
-        w.title = "Operations Guide"
-        w.styleMask.remove(.resizable)
-        w.isReleasedWhenClosed = false
-        window = w
-        w.center()
-        w.makeKeyAndOrderFront(nil)
+        (NSApp.delegate as? AppDelegate)?.showPage("opsguide") { c in
+            OpsGuideView(model: model, onClose: { [weak c] in c?.closePage() })
+        }
     }
 }

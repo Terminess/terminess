@@ -73,19 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     private var doctorWindow: NSWindow?
-    private var pairWindow: NSWindow?
 
     @objc func showPairPhone(_ sender: Any?) {
-        if pairWindow == nil {
-            let w = NSWindow(contentViewController: NSHostingController(rootView: PairPhoneView()))
-            w.title = "Pair iPhone"
-            w.styleMask = [.titled, .closable]
-            w.isReleasedWhenClosed = false
-            w.center()
-            pairWindow = w
-        }
-        pairWindow?.makeKeyAndOrderFront(nil)
-        PairModel.shared.start()
+        showPage("pair") { c in PairPhoneView(onClose: { [weak c] in c?.closePage() }) }
     }
 
     @objc func showDoctor(_ sender: Any?) {
@@ -178,7 +168,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 MainActor.assumeIsolated { (NSApp.delegate as? AppDelegate)?.saveSession() }
             }
         }
-        NSApp.activate(ignoringOtherApps: true)
+        if ProcessInfo.processInfo.environment["TERMAPP_BACKGROUND"] == nil {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -243,6 +235,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         open(tabbedWith: NSApp.keyWindow)
     }
 
+    func pageController() -> TerminalWindowController {
+        keyController ?? open(tabbedWith: nil)
+    }
+
+    func showPage<V: View>(_ id: String, shouldClose: @escaping () -> Bool = { true },
+                           _ make: (TerminalWindowController) -> V) {
+        let c = pageController()
+        c.showPage(id, shouldClose: shouldClose) { make(c) }
+    }
+
     var keyController: TerminalWindowController? {
         controllers.first { $0.window?.isKeyWindow == true } ?? controllers.last
     }
@@ -264,7 +266,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let theme = self.theme(for: controller)
         controller.apply(scheme: theme.isDark ? .dark : .light, palette: theme.palette, appearance: forcedAppearance)
         if let host, let window = controller.window {
-            host.addTabbedWindow(window, ordered: .above)
+            let last = host.tabbedWindows?.last ?? host
+            last.addTabbedWindow(window, ordered: .above)
         }
         controller.hideNativeTabBar()
         controller.focus()
@@ -339,7 +342,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                                return "\(m.id)/\(id)"
                            },
                            path: dir, machineID: c.session.machine?.id,
-                           group: c.window?.tabGroup.map { ObjectIdentifier($0) })
+                           group: c.window?.tabGroup.map { ObjectIdentifier($0) },
+                           conversations: c.panes.compactMap { $0.transcript?.path })
         }
     }
 

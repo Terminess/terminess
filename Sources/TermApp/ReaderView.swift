@@ -15,6 +15,14 @@ final class ReaderModel: ObservableObject {
         let seenBefore: Int
     }
 
+    @Published private(set) var queued: [String] = []
+
+    func setQueued(_ texts: [String]) {
+        let sent = Set(pending.map { Self.norm($0.text) })
+        let list = texts.filter { !sent.contains(Self.norm($0)) }
+        if list != queued { queued = list }
+    }
+
     func addPending(_ text: String) {
         pending.append(PendingMessage(text: text, seenBefore: userCount(text)))
     }
@@ -181,7 +189,7 @@ struct ReaderView: View {
             if model.items.isEmpty && model.agentName.isEmpty {
                 NewSessionView(gate: model.gate, startHere: { model.startHere?($0) })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if model.items.isEmpty && model.pending.isEmpty {
+            } else if model.items.isEmpty && model.pending.isEmpty && model.queued.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "text.bubble").font(.largeTitle).foregroundStyle(.tertiary)
                     Text(model.agentName.isEmpty ? "No agent in this tab" : "No messages yet").font(.headline).foregroundStyle(.secondary)
@@ -197,6 +205,9 @@ struct ReaderView: View {
                         LazyVStack(alignment: .leading, spacing: 16) {
                             ForEach(model.items) { item in
                                 ItemView(item: item, folder: model.folder?()).id(item.id)
+                            }
+                            ForEach(Array(model.queued.enumerated()), id: \.offset) { _, text in
+                                UserBubble(text: text, pending: true)
                             }
                             ForEach(model.pending) { p in
                                 UserBubble(text: p.text, pending: true)
@@ -219,7 +230,7 @@ struct ReaderView: View {
                     .onChange(of: model.items.count) { _, _ in
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
                     }
-                    .onChange(of: model.pending.count) { _, _ in
+                    .onChange(of: model.pending.count + model.queued.count) { _, _ in
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
                     }
                     .onAppear { proxy.scrollTo("end", anchor: .bottom) }

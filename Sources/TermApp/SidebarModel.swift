@@ -19,6 +19,7 @@ struct OpenTab: Identifiable, Equatable {
     var path = ""
     var machineID: String?
     var group: ObjectIdentifier?
+    var conversations: [String] = []
 }
 
 struct PairJob: Identifiable, Equatable {
@@ -180,7 +181,11 @@ final class SidebarModel: ObservableObject {
     nonisolated static let home = Transcript.home
 
     nonisolated static func tilde(_ p: String) -> String {
-        for h in Set([home, NSHomeDirectory()]) where p == h || p.hasPrefix(h + "/") { return "~" + p.dropFirst(h.count) }
+        func plain(_ s: String) -> String { s.hasPrefix("/private/") ? String(s.dropFirst("/private".count)) : s }
+        let path = plain(p)
+        for h in Set([home, NSHomeDirectory()].map(plain)) where path == h || path.hasPrefix(h + "/") {
+            return "~" + path.dropFirst(h.count)
+        }
         return p
     }
     nonisolated static let pairState = home + "/.local/state/pair"

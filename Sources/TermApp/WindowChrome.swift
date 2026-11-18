@@ -23,7 +23,7 @@ extension NSColor {
 
 final class HeaderIconButton: NSButton {
     var isActive = false { didSet { needsDisplay = true; updateTint() } }
-    private var hovering = false { didSet { needsDisplay = true } }
+    private var hovering = false { didSet { needsDisplay = true; updateTint() } }
 
     init(symbol: String, tooltip: String, target: AnyObject?, action: Selector) {
         super.init(frame: NSRect(x: 0, y: 0, width: 28, height: 26))
@@ -62,7 +62,9 @@ final class HeaderIconButton: NSButton {
         }
     }
 
-    private func updateTint() { contentTintColor = isActive ? .labelColor : .secondaryLabelColor }
+    private func updateTint() { contentTintColor = isActive || hovering ? .labelColor : .secondaryLabelColor }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 
     override func draw(_ dirtyRect: NSRect) {
         if isActive || hovering || pressed {
@@ -261,5 +263,14 @@ extension NSLayoutConstraint {
     func withPriority(_ p: Float) -> NSLayoutConstraint {
         priority = NSLayoutConstraint.Priority(p)
         return self
+    }
+}
+
+final class PageGapView: NSView {
+    override var isOpaque: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.windowBackgroundColor.setFill()
+        dirtyRect.fill()
     }
 }

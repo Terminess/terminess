@@ -287,58 +287,65 @@ final class PairModel: ObservableObject {
 
 struct PairPhoneView: View {
     @ObservedObject var model = PairModel.shared
+    var onClose: () -> Void = {}
     @State private var confirmRemove: PairModel.PairedPhone?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Pair your iPhone").font(.title2.bold())
-            Text("Pick up what's running on this Mac from Terminess for iPhone.").foregroundStyle(.secondary)
-            step(1, model.remoteLogin ? "Remote Login is on." : "Turn on Remote Login, so your iPhone can connect over SSH.") {
-                if model.remoteLogin {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                } else {
-                    Button("Open Sharing Settings") { model.openSharingSettings() }
+        PageShell(onClose: onClose) {
+            PageTitle("Pair iPhone", subtitle: "Pick up what's running on this Mac from Terminess for iPhone.")
+            PageSection(title: "Steps") {
+                PageGroup {
+                    PageRow(symbol: model.remoteLogin ? "checkmark.circle" : "1.circle",
+                            tint: model.remoteLogin ? .connected : .secondary,
+                            title: model.remoteLogin ? "Remote Login is on" : "Turn on Remote Login",
+                            detail: "Your iPhone connects to this Mac over SSH.") {
+                        if !model.remoteLogin {
+                            Button("Open Sharing Settings") { model.openSharingSettings() }.buttonStyle(.quiet)
+                        }
+                    }
+                    PageRow(symbol: model.paired != nil ? "checkmark.circle" : "2.circle",
+                            tint: model.paired != nil ? .connected : .secondary,
+                            title: "Scan the code with your iPhone's camera",
+                            detail: "Then open it in Terminess. The code works once and changes every ten minutes.")
                 }
             }
-            step(2, "Scan this code with your iPhone's camera, then open it in Terminess.") { EmptyView() }
             HStack {
                 Spacer()
                 Group {
                     if let qr = model.qr {
-                        Image(nsImage: qr).interpolation(.none).resizable().frame(width: 230, height: 230)
-                            .padding(14).background(RoundedRectangle(cornerRadius: 12).fill(.white))
+                        Image(nsImage: qr).interpolation(.none).resizable().frame(width: 220, height: 220)
+                            .padding(14)
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
                     } else {
-                        ProgressView().frame(width: 258, height: 258)
+                        ProgressView().frame(width: 248, height: 248)
                     }
                 }
                 Spacer()
             }
+            .padding(.vertical, 4)
             if let paired = model.paired {
-                Label("Paired with \(paired). Your sessions here now show on the phone.", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                Label("Paired with \(paired). Your sessions here now show on the phone.", systemImage: "checkmark.circle")
+                    .foregroundStyle(Color.connected)
             } else {
                 Text("Your iPhone connects to \(model.address.isEmpty ? "this Mac" : model.address). It needs to be on the same Wi-Fi, or both devices on Tailscale.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(.system(size: 12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .center).multilineTextAlignment(.center)
             }
             if let problem = model.problem { Text(problem).font(.callout).foregroundStyle(.red) }
             if !model.phones.isEmpty {
-                Divider()
-                Text("Paired phones").font(.headline)
-                ForEach(model.phones) { phone in
-                    HStack {
-                        Image(systemName: "iphone")
-                        Text(phone.name)
-                        Text(String(phone.id.suffix(8))).font(.caption.monospaced()).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Remove", role: .destructive) { confirmRemove = phone }
+                PageSection(title: "Paired phones", count: model.phones.count) {
+                    PageGroup {
+                        ForEach(model.phones) { phone in
+                            PageRow(symbol: "iphone", title: phone.name, mono: "key \u{2026}" + String(phone.id.suffix(8))) {
+                                Button("Remove\u{2026}") { confirmRemove = phone }.buttonStyle(.quiet)
+                            }
+                        }
                     }
+                    Text("Remove a phone you've lost or replaced. It's disconnected straight away and can't connect again.")
+                        .font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                Text("Remove a phone you've lost or replaced. It's disconnected straight away and can't connect again.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(24)
-        .frame(width: 420)
         .confirmationDialog("Remove \(confirmRemove?.name ?? "this phone")?", isPresented: Binding(
             get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } }
         ), presenting: confirmRemove) { phone in
@@ -346,14 +353,5 @@ struct PairPhoneView: View {
         } message: { _ in Text("It won't be able to connect to this Mac until you pair it again.") }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
-    }
-
-    private func step<Accessory: View>(_ n: Int, _ text: String, @ViewBuilder accessory: () -> Accessory) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text("\(n)").font(.callout.bold()).frame(width: 22, height: 22).background(Circle().fill(.quaternary))
-            Text(text).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            accessory()
-        }
     }
 }

@@ -7,6 +7,15 @@ enum DebugScript {
     static func run(on controller: TerminalWindowController) {
         let env = ProcessInfo.processInfo.environment
         var last = 0.0
+        if env["TERMAPP_BACKGROUND"] != nil {
+            for delay in [0.2, 1.5, 4.5] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    MainActor.assumeIsolated {
+                        for w in NSApp.windows where w.isVisible && (w.tabGroup?.selectedWindow ?? w) === w { w.orderFrontRegardless() }
+                    }
+                }
+            }
+        }
         if let script = env["TERMAPP_SCRIPT"] {
             for step in script.split(separator: "|") {
                 guard let colon = step.firstIndex(of: ":"), let delay = Double(step[..<colon]) else { continue }
@@ -219,10 +228,11 @@ enum DebugScript {
                         case "reminders": app.showReminders(nil)
                         case "search": app.showSearch(nil)
                         case "hidesidebar": app.toggleSidebar(nil)
-                        case "newtab": app.newWindowForTab(nil)
+                        case "newtab": app.open(tabbedWith: NSApp.keyWindow ?? app.keyController?.window)
                         case "agenttab":
                             let cmd = env["TERMAPP_AGENT_CMD"] ?? "claude"
                             app.open(tabbedWith: app.keyController?.window, directory: env["TERMAPP_AGENT_DIR"], command: cmd)
+                        case "agents": AgentsDashboardWindow.show()
                         case "tab1": app.controllers.first?.focus()
                         case "newreminder":
                             RemindersPageState.shared.draft = ReminderDraft(title: "Check the SPRING20 rollout",

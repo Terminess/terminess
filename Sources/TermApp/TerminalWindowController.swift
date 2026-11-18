@@ -131,6 +131,7 @@ final class ContentContainer: NSView {
             needsLayout = true
         }
     }
+    private let pageGap = PageGapView()
     var overlay: NSView? {
         didSet {
             oldValue?.removeFromSuperview()
@@ -186,7 +187,25 @@ final class ContentContainer: NSView {
         let top = header == nil ? 0 : chromeTopInset(window)
         header?.frame = NSRect(x: 0, y: bounds.height - chromeHeaderHeight, width: bounds.width, height: chromeHeaderHeight)
         split.frame = NSRect(x: 0, y: h, width: bounds.width, height: max(0, bounds.height - h - top))
-        overlay?.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - top))
+        let paged = overlay != nil
+        split.isHidden = paged
+        composer?.isHidden = paged
+        approval?.isHidden = paged
+        if paged { strip.isHidden = true }
+        var pageTop = top
+        if paged, let window {
+            let layoutHeight = window.contentLayoutRect.height
+            let reserved = window.frame.height - layoutHeight
+            if !window.styleMask.contains(.fullScreen), layoutHeight > 0, reserved > top, reserved <= top + 48 {
+                pageTop = reserved
+            }
+        }
+        pageGap.isHidden = !paged || pageTop <= top
+        if paged {
+            if pageGap.superview !== self { addSubview(pageGap, positioned: .below, relativeTo: header) }
+            pageGap.frame = NSRect(x: 0, y: bounds.height - pageTop, width: bounds.width, height: pageTop - top)
+        }
+        overlay?.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - pageTop))
     }
 }
 
@@ -264,6 +283,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         window.tabbingIdentifier = "terminal"
         window.title = "Terminess"
         window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
         window.titleVisibility = .hidden
         window.backgroundColor = probe.backgroundNSColor
         let root = RootViewController(split: split)
@@ -436,6 +456,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
 
     func showSettingsPane() {
+        if let p = container.overlay as? PageHostView, !p.shouldClose() { return }
         if !(container.overlay is SettingsHostView) {
             let page = SettingsHostView(rootView: SettingsPane { [weak self] in self?.closePage() })
             page.safeAreaRegions = []
@@ -445,6 +466,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     }
 
     func showRemindersPage() {
+        if let p = container.overlay as? PageHostView, !p.shouldClose() { return }
         if !(container.overlay is RemindersHostView) {
             let page = RemindersHostView(rootView: RemindersPage { [weak self] in self?.closePage() })
             page.safeAreaRegions = []
@@ -455,7 +477,24 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     func closeSettingsPane() { closePage() }
 
+    func showPage<V: View>(_ id: String, shouldClose: @escaping () -> Bool = { true }, _ make: () -> V) {
+        if let p = container.overlay as? PageHostView, p.pageID == id {
+            window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        if let p = container.overlay as? PageHostView, !p.shouldClose() { return }
+        let host = PageHostView(rootView: AnyView(make()))
+        host.safeAreaRegions = []
+        host.pageID = id
+        host.shouldClose = shouldClose
+        container.overlay = host
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    var pageID: String? { (container.overlay as? PageHostView)?.pageID }
+
     func closePage() {
+        if let p = container.overlay as? PageHostView, !p.shouldClose() { return }
         container.overlay = nil
         focus()
     }
@@ -625,6 +664,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             let isAgent = agent == "claude" || agent == "codex"
             p.view.hideAgentInput = on && isAgent
             p.view.hideAgentStatus = on && isAgent
+            p.view.onQueued = p === focused ? { [weak self] queued in self?.reader.setQueued(queued) } : nil
             p.view.onAgentScreen = p === focused ? { [weak self] visible, status, busy in
                 guard let self else { return }
                 if self.composerState.busy != busy { self.composerState.busy = busy }
@@ -1049,8 +1089,50 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         sendName(locked: false)
     }
 
+    func nameFromTranscriptIfNeeded(retry: Bool = true) {
+        guard customTitle?.isEmpty != false, decidedName == nil, !readingNameFromTranscript,
+              let pane = focused, pane.session.machine == nil, let process = pane.session.process,
+              let agent = Agent.detect(process.foregroundCommand), agent.id == "claude" || agent.id == "codex",
+              let dir = pane.currentDirectory else { return }
+        readingNameFromTranscript = true
+        let pid = process.foregroundPID
+        let pinned = pane.transcript.flatMap { $0.pid == pid ? $0.path : nil }
+        let started = Date(timeIntervalSince1970: process.foregroundStartTime ?? Date().timeIntervalSince1970)
+        let args = process.foregroundArguments
+        PerfCounters.tick("name.transcriptRead")
+        Task.detached(priority: .utility) {
+            let path = pinned
+                ?? (agent.id == "claude" ? Transcript.claudeSession(pid: pid) : nil)
+                ?? Transcript.locate(agent: agent.id, directory: dir, started: started, arguments: args, pid: pid)
+            var first: String?
+            if let path, let handle = FileHandle(forReadingAtPath: path) {
+                let data = handle.readData(ofLength: 256 * 1024)
+                try? handle.close()
+                for item in Transcript.parse(data: data, agent: agent.id).items {
+                    if case .user(let text) = item.kind { first = text; break }
+                }
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.readingNameFromTranscript = false
+                if let first {
+                    self.nameFromFirstMessage(first)
+                } else if retry {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+                        MainActor.assumeIsolated { self?.nameFromTranscriptIfNeeded(retry: false) }
+                    }
+                }
+            }
+        }
+    }
+    private var readingNameFromTranscript = false
+
     private func sendName(locked: Bool) {
-        guard let focused, let id = focused.session.process?.hostSessionID else { return }
+        guard let focused, let id = focused.session.process?.hostSessionID else {
+            nameWaitingForSession = locked ? .locked : .decided
+            return
+        }
+        nameWaitingForSession = nil
         var m = Message(op: "set-name", id: id, name: locked ? (customTitle ?? "") : (decidedName ?? ""))
         m.code = locked ? 1 : (customTitle == nil && lockSent ? 2 : 0)
         lockSent = locked
@@ -1061,6 +1143,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         }
     }
     private var lockSent = false
+    private enum PendingName { case decided, locked }
+    private var nameWaitingForSession: PendingName?
 
     func refreshTitle() {
         guard let focused else { return }
@@ -1084,6 +1168,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             updateTabBadge()
             if let id = found?.id { AgentEvents.started(id) }
             updateInputHiding()
+            if found != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                    MainActor.assumeIsolated { self?.nameFromTranscriptIfNeeded() }
+                }
+            }
+        }
+        if let pending = nameWaitingForSession, focused.session.process?.hostSessionID != nil {
+            sendName(locked: pending == .locked)
         }
         if customTitle?.isEmpty != false, let m = focused.session.machine { title += " \u{00B7} \(m.name)" }
         guard title != displayTitle else { return }
@@ -1100,6 +1192,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         if now != busy {
             busy = now
             updateTabBadge()
+            if !now { nameFromTranscriptIfNeeded() }
         }
     }
 
@@ -1158,6 +1251,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     }
 
     func windowDidResignKey(_ notification: Notification) { terminalView.focusChanged(false) }
+
+    func windowDidResize(_ notification: Notification) { hideNativeTabBar() }
+    func windowDidEnterFullScreen(_ notification: Notification) { hideNativeTabBar() }
+    func windowDidExitFullScreen(_ notification: Notification) { hideNativeTabBar() }
 
     func windowDidChangeOcclusionState(_ notification: Notification) {
         guard let window else { return }

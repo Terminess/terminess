@@ -245,71 +245,80 @@ final class ProjectInstructionsModel: ObservableObject {
 
 struct ProjectInstructionsView: View {
     @ObservedObject var model: ProjectInstructionsModel
+    var onClose: () -> Void = {}
     @State private var window: NSWindow?
 
+    private var projectName: String { (model.root as NSString).lastPathComponent }
+
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Picker("", selection: $model.scope) {
-                    Text("This Project").tag(ProjectInstructionsModel.Scope.project)
-                    Text("All Projects").tag(ProjectInstructionsModel.Scope.user)
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-                Spacer()
-                Picker("", selection: $model.tab) {
-                    Text("AGENTS.md").tag(ProjectInstructionsModel.Tab.agents)
-                    Text("CLAUDE.md").tag(ProjectInstructionsModel.Tab.claude)
-                    if model.scope == .project { Text("Memory").tag(ProjectInstructionsModel.Tab.memory) }
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-            }
-            .padding(.horizontal, 16).padding(.vertical, 10)
+        PageShell(onClose: onClose, scrolls: false) {
+            PageSideHeading(title: "This project")
+            side("AGENTS.md", "doc.text", .project, .agents)
+            side("CLAUDE.md", "doc.text", .project, .claude)
+            side("Memory", "brain", .project, .memory)
+            PageSideHeading(title: "All projects")
+            side("AGENTS.md", "doc.text", .user, .agents)
+            side("CLAUDE.md", "doc.text", .user, .claude)
+        } main: {
+            PageTitle("Instructions",
+                      subtitle: model.scope == .project
+                        ? "What Claude Code and Codex read in \(projectName) (\(abbreviated(model.root)))."
+                        : "What Claude Code and Codex read in every project.")
             if model.scope == .project { shareBanner }
-            Divider()
             if let doc = model.current {
                 DocumentEditor(doc: doc, shared: model.scope == .project && model.shared, window: window)
                     .id(doc.path)
             } else {
                 MemoryView(model: model)
             }
-            if model.scope == .project {
-                Divider()
-                rememberFooter
-            }
+            if model.scope == .project { rememberFooter }
         }
-        .frame(minWidth: 620, minHeight: 460)
         .background(WindowFinder(window: $window))
+        .onAppear { model.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: .instructionsChanged)) { _ in model.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            if (note.object as? NSWindow) === window { model.refresh() }
+        }
         .onChange(of: model.scope) { _, scope in
             if scope == .user && model.tab == .memory { model.tab = .agents }
+        }
+    }
+
+    private func side(_ title: String, _ symbol: String, _ scope: ProjectInstructionsModel.Scope,
+                      _ tab: ProjectInstructionsModel.Tab) -> some View {
+        PageSideItem(symbol: symbol, title: title, selected: model.scope == scope && model.tab == tab) {
+            model.scope = scope
+            model.tab = tab
         }
     }
 
     private var shareBanner: some View {
         HStack(spacing: 8) {
             if model.shared {
-                Image(systemName: "link").foregroundStyle(.green)
+                Image(systemName: "link").foregroundStyle(Color.connected)
                 Text(model.linked
                      ? "Shared: CLAUDE.md is a link to AGENTS.md, so Claude Code and Codex read the same instructions."
                      : "Shared: CLAUDE.md imports AGENTS.md, so Claude Code and Codex read the same instructions.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.system(size: 12.5)).foregroundStyle(.secondary)
                 Spacer()
             } else {
                 Image(systemName: "arrow.triangle.merge").foregroundStyle(.secondary)
-                Text("Claude Code reads CLAUDE.md and Codex reads AGENTS.md.").font(.callout).foregroundStyle(.secondary)
+                Text("Claude Code reads CLAUDE.md and Codex reads AGENTS.md.").font(.system(size: 12.5)).foregroundStyle(.secondary)
                 Spacer()
                 Button("Share One Set of Instructions") { model.share(window: window) }
+                    .buttonStyle(.quiet)
                     .help("Make AGENTS.md the instructions and CLAUDE.md a one-line import of it, so both agents read the same file.")
             }
         }
-        .padding(.horizontal, 16).padding(.bottom, 10)
         .help(model.root)
     }
 
     private var rememberFooter: some View {
         HStack(spacing: 8) {
-            Text("Remember This in Chat adds notes to").font(.caption).foregroundStyle(.secondary)
+            Image(systemName: "text.badge.plus").font(.system(size: 12)).foregroundStyle(.secondary)
+            Text("Remember This in Chat adds notes to").font(.system(size: 12)).foregroundStyle(.secondary)
             if model.shared {
-                Text("AGENTS.md (shared)").font(.caption.weight(.medium))
+                Text("AGENTS.md (shared)").font(.system(size: 12, weight: .medium))
             } else {
                 Picker("", selection: $model.rememberTarget) {
                     Text("Ask Me").tag("ask")
@@ -320,9 +329,7 @@ struct ProjectInstructionsView: View {
                 .labelsHidden().fixedSize().controlSize(.small)
             }
             Spacer()
-            Text(abbreviated(model.root)).font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.head)
         }
-        .padding(.horizontal, 16).padding(.vertical, 8)
     }
 }
 
@@ -334,32 +341,34 @@ private struct DocumentEditor: View {
     let window: NSWindow?
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: "doc.text").font(.system(size: 14)).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(abbreviated(doc.path)).font(.system(size: 12, design: .monospaced)).lineLimit(1).truncationMode(.head)
+                    HStack(spacing: 8) {
+                        Text(abbreviated(doc.path)).font(.system(size: 12.5, design: .monospaced)).lineLimit(1).truncationMode(.head)
                         status
                     }
-                    Text(caption).font(.caption).foregroundStyle(.secondary)
+                    Text(caption).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer()
                 if !doc.exists && doc.text.isEmpty {
-                    Button("Start from Template") { doc.text = doc.template }
+                    Button("Start from Template") { doc.text = doc.template }.buttonStyle(.quiet)
                 }
                 Button("Open in Editor") { Editor.open(doc.path, line: nil, column: nil) }
-                    .disabled(!doc.exists)
-                Button("Revert") { doc.revert() }.disabled(!doc.dirty)
+                    .buttonStyle(.quiet).disabled(!doc.exists)
+                Button("Revert") { doc.revert() }.buttonStyle(.quiet).disabled(!doc.dirty)
                 Button(doc.exists ? "Save" : "Create") { doc.save() }
+                    .buttonStyle(.primary)
                     .keyboardShortcut("s", modifiers: .command)
                     .disabled(!doc.dirty || doc.unreadable)
             }
-            .padding(.horizontal, 16).padding(.vertical, 8)
             if let error = doc.error {
                 Text(error).font(.caption).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16).padding(.bottom, 6)
             }
             PlainTextEditor(text: $doc.text, editable: !doc.unreadable)
+                .padding(8)
+                .pageCard(padding: 0)
         }
     }
 
@@ -373,8 +382,7 @@ private struct DocumentEditor: View {
 
     @ViewBuilder private var status: some View {
         if !doc.exists {
-            Text("Not created").font(.caption2.weight(.medium)).padding(.horizontal, 6).padding(.vertical, 1)
-                .background(Capsule().fill(.quaternary))
+            Text("Not created").font(.system(size: 11.5)).foregroundStyle(.secondary)
         } else if doc.dirty {
             Text("Edited").font(.caption2.weight(.medium)).foregroundStyle(.orange)
         }
@@ -386,36 +394,42 @@ private struct MemoryView: View {
 
     var body: some View {
         if let dir = model.memoryFolder, !model.memoryFiles.isEmpty {
-            HSplitView {
-                List(model.memoryFiles, id: \.self, selection: $model.memorySelection) { name in
-                    Label(name, systemImage: "doc.text").lineLimit(1)
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(model.memoryFiles, id: \.self) { name in
+                        PageSideItem(symbol: "doc.text", title: name, selected: model.memorySelection == name) {
+                            model.memorySelection = name
+                        }
+                    }
+                    Spacer(minLength: 0)
                 }
-                .frame(minWidth: 160, idealWidth: 200, maxWidth: 280)
-                VStack(spacing: 0) {
+                .frame(width: 190)
+                VStack(alignment: .leading, spacing: 10) {
                     if let name = model.memorySelection {
                         let path = dir + "/" + name
-                        HStack {
+                        HStack(spacing: 8) {
                             Text("Claude Code writes these itself; edit them in your editor if you need to.")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.system(size: 11.5)).foregroundStyle(.secondary)
                             Spacer()
                             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
-                            Button("Open in Editor") { Editor.open(path, line: nil, column: nil) }
+                                .buttonStyle(.quiet)
+                            Button("Open in Editor") { Editor.open(path, line: nil, column: nil) }.buttonStyle(.quiet)
                         }
-                        .padding(.horizontal, 12).padding(.vertical, 8)
                         PlainTextEditor(text: .constant(InstructionFiles.read(path) ?? ""), editable: false)
+                            .padding(8)
+                            .pageCard(padding: 0)
                             .id(path)
                     } else {
                         Spacer()
                     }
                 }
-                .frame(minWidth: 300)
             }
         } else {
-            VStack(spacing: 8) {
-                Image(systemName: "brain").font(.largeTitle).foregroundStyle(.tertiary)
-                Text("No memories yet").font(.headline).foregroundStyle(.secondary)
+            VStack(spacing: 10) {
+                Image(systemName: "brain").font(.system(size: 30, weight: .light)).foregroundStyle(.secondary)
+                Text("No memories yet").font(.system(size: 15, weight: .medium))
                 Text("Claude Code hasn't saved any notes of its own for this project.")
-                    .font(.callout).foregroundStyle(.tertiary).multilineTextAlignment(.center).frame(maxWidth: 300)
+                    .font(.system(size: 12.5)).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 320)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -478,60 +492,35 @@ private struct WindowFinder: NSViewRepresentable {
 
 @MainActor
 enum ProjectInstructionsWindows {
-    private static var open: [String: (NSWindow, CloseGuard)] = [:]
+    private static var models: [String: ProjectInstructionsModel] = [:]
 
     static func show(folder: String) {
-        if let (w, _) = open[InstructionFiles.projectRoot(folder)] { w.makeKeyAndOrderFront(nil); return }
-        let model = ProjectInstructionsModel(folder: folder)
-        let w = NSWindow(contentViewController: NSHostingController(rootView: ProjectInstructionsView(model: model)))
-        w.title = "Instructions: " + (model.root as NSString).lastPathComponent
-        w.setContentSize(NSSize(width: 760, height: 620))
-        w.isReleasedWhenClosed = false
-        let guardian = CloseGuard(model: model)
-        w.delegate = guardian
-        open[model.root] = (w, guardian)
-        let root = model.root
-        guardian.tokens = [
-            NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: w, queue: .main) { _ in
-                MainActor.assumeIsolated { model.refresh() }
-            },
-            NotificationCenter.default.addObserver(forName: .instructionsChanged, object: nil, queue: .main) { _ in
-                MainActor.assumeIsolated { model.refresh() }
-            },
-            NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { _ in
-                MainActor.assumeIsolated {
-                    open[root]?.1.tokens.forEach(NotificationCenter.default.removeObserver)
-                    open[root] = nil
-                }
-            },
-        ]
-        w.center()
-        w.makeKeyAndOrderFront(nil)
+        let root = InstructionFiles.projectRoot(folder)
+        let model = models[root] ?? ProjectInstructionsModel(folder: folder)
+        models[root] = model
+        model.refresh()
+        (NSApp.delegate as? AppDelegate)?.showPage("instructions:" + root, shouldClose: { canClose(model) }) { c in
+            ProjectInstructionsView(model: model, onClose: { [weak c] in c?.closePage() })
+        }
     }
 
-    final class CloseGuard: NSObject, NSWindowDelegate {
-        let model: ProjectInstructionsModel
-        var tokens: [NSObjectProtocol] = []
-        init(model: ProjectInstructionsModel) { self.model = model }
-
-        func windowShouldClose(_ sender: NSWindow) -> Bool {
-            MainActor.assumeIsolated {
-                let dirty = model.documents.filter(\.dirty)
-                guard !dirty.isEmpty else { return true }
-                let a = NSAlert()
-                a.messageText = "Save your changes?"
-                a.informativeText = dirty.map { abbreviated($0.path) }.joined(separator: "\n")
-                a.addButton(withTitle: "Save")
-                a.addButton(withTitle: "Don't Save")
-                a.addButton(withTitle: "Cancel")
-                switch a.runModal() {
-                case .alertFirstButtonReturn:
-                    dirty.forEach { $0.save() }
-                    return dirty.allSatisfy { !$0.dirty }
-                case .alertSecondButtonReturn: return true
-                default: return false
-                }
-            }
+    static func canClose(_ model: ProjectInstructionsModel) -> Bool {
+        let dirty = model.documents.filter(\.dirty)
+        guard !dirty.isEmpty else { return true }
+        let a = NSAlert()
+        a.messageText = "Save your changes?"
+        a.informativeText = dirty.map { abbreviated($0.path) }.joined(separator: "\n")
+        a.addButton(withTitle: "Save")
+        a.addButton(withTitle: "Don't Save")
+        a.addButton(withTitle: "Cancel")
+        switch a.runModal() {
+        case .alertFirstButtonReturn:
+            dirty.forEach { $0.save() }
+            return dirty.allSatisfy { !$0.dirty }
+        case .alertSecondButtonReturn:
+            dirty.forEach { $0.revert() }
+            return true
+        default: return false
         }
     }
 }

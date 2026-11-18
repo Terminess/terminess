@@ -27,6 +27,15 @@ final class DevicePresenceTests: XCTestCase {
                        [ClientDevice(kind: "mac", name: "Studio")])
     }
 
+    func testOlderServiceCountsThisAppOnlyOnce() {
+        var s = SessionInfo(id: "a", name: "1", command: "claude", cwd: "/x", created: 0, clients: 1)
+        XCTAssertEqual(DevicePresence.others(s, ownKind: "mac", ownName: "Alex's MacBook Pro", attachedHere: true), [])
+        s.clients = 2
+        XCTAssertEqual(DevicePresence.others(s, ownKind: "mac", ownName: "Alex's MacBook Pro", attachedHere: true),
+                       [ClientDevice(kind: "other")])
+        XCTAssertEqual(DevicePresence.others(s, ownKind: "mac", ownName: "Alex's MacBook Pro", attachedHere: false).count, 2)
+    }
+
     func testSeveralDevicesAndUnknownOnes() {
         XCTAssertEqual(DevicePresence.connectedLabel([ClientDevice(kind: "iphone", name: "A"), ClientDevice(kind: "mac", name: "B")]), "A, B connected")
         XCTAssertEqual(DevicePresence.connectedLabel([ClientDevice(kind: "iphone", name: "A"), ClientDevice(kind: "mac", name: "B"),

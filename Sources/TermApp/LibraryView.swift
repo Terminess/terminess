@@ -131,133 +131,136 @@ final class LibraryModel: ObservableObject {
 
 struct LibraryView: View {
     @ObservedObject var model: LibraryModel
-    @State private var selection: Library.Item.ID?
+    var onClose: () -> Void = {}
     @State private var showNew = false
     @State private var showImport = false
     @State private var showAddMCP = false
 
-    private var selected: Library.Item? { model.items.first { $0.id == selection } }
+    static func symbol(_ kind: Library.Kind) -> String {
+        switch kind {
+        case .skills: return "wand.and.stars"
+        case .commands: return "command"
+        case .agents: return "person.2"
+        case .mcp: return "server.rack"
+        }
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Picker("", selection: $model.kind) {
-                    ForEach(Library.Kind.allCases) { Text($0.rawValue).tag($0) }
+        PageShell(onClose: onClose) {
+            ForEach(Library.Kind.allCases) { k in
+                PageSideItem(symbol: Self.symbol(k), title: k.rawValue, count: model.count(k), selected: model.kind == k) {
+                    model.kind = k
                 }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-                Button { OpsGuideWindow.show() } label: { Label("Operations Guide", systemImage: "book.closed") }
-                    .help("Build or update OPERATIONS.md and ORCHESTRATE.md, the guide every agent reads first")
-                Spacer()
-                Picker("", selection: $model.agentFilter) {
-                    ForEach(LibraryModel.AgentFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .labelsHidden().fixedSize()
-                Picker("", selection: $model.scopeFilter) {
-                    ForEach(LibraryModel.ScopeFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .labelsHidden().fixedSize()
-                HStack(spacing: 4) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search", text: $model.search).textFieldStyle(.plain)
-                }
-                .padding(.horizontal, 6).padding(.vertical, 3)
-                .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.5)))
-                .frame(width: 170)
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            Divider()
-            table
-            Divider()
-            footer
+            PageSideHeading(title: "Guide")
+            PageSideItem(symbol: "book.closed", title: "Operations guide", selected: false) { OpsGuideWindow.show() }
+        } main: {
+            PageTitle(title: "Library",
+                      subtitle: "The skills, slash commands, subagents and MCP servers Claude Code and Codex load. "
+                        + (model.project.map { "Project: " + Library.abbreviate($0) } ?? "Project items show when the front tab is in a project folder.")) {
+                HStack(spacing: 8) {
+                    if model.kind != .mcp {
+                        Button { showImport = true } label: { Label("Import\u{2026}", systemImage: "square.and.arrow.down") }
+                            .buttonStyle(.quiet)
+                            .help("Import a skill, command or agent from GitHub")
+                    }
+                    Button { if model.kind == .mcp { showAddMCP = true } else { showNew = true } } label: {
+                        Label(model.kind == .mcp ? "Add Server\u{2026}" : "New\u{2026}", systemImage: "plus")
+                    }
+                    .buttonStyle(.primary)
+                }
+            }
+            filters
+            list
         }
-        .frame(minWidth: 760, minHeight: 420)
         .sheet(isPresented: $showNew) { NewItemSheet(model: model, kind: model.kind == .mcp ? .skills : model.kind) }
         .sheet(isPresented: $showImport) { ImportSheet(model: model) }
         .sheet(isPresented: $showAddMCP) { AddMCPSheet(model: model) }
-        .onChange(of: model.kind) { _, _ in selection = nil }
     }
 
-    private var table: some View {
-        Table(model.visible, selection: $selection) {
-            TableColumn("Name") { item in
-                HStack(spacing: 6) {
-                    Text(item.name).fontWeight(.medium)
-                    if !item.enabled {
-                        Text("Disabled").font(.caption2).padding(.horizontal, 4)
-                            .background(RoundedRectangle(cornerRadius: 3).fill(.quaternary))
-                    }
+    private var filters: some View {
+        HStack(spacing: 10) {
+            Picker("", selection: $model.agentFilter) {
+                ForEach(LibraryModel.AgentFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .labelsHidden().fixedSize()
+            Picker("", selection: $model.scopeFilter) {
+                ForEach(LibraryModel.ScopeFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .labelsHidden().fixedSize()
+            if model.busy { ProgressView().controlSize(.small) }
+            Spacer()
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.secondary)
+                TextField("Search", text: $model.search).textFieldStyle(.plain).font(.system(size: 12.5))
+            }
+            .padding(.horizontal, 8).frame(width: 200, height: 26)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
+            Button { model.reload() } label: { Image(systemName: "arrow.clockwise") }
+                .buttonStyle(.plain).foregroundStyle(.secondary).help("Look again")
+        }
+    }
+
+    @ViewBuilder private var list: some View {
+        let items = model.visible
+        if items.isEmpty {
+            Text(emptyText).font(.system(size: 13)).foregroundStyle(.secondary).padding(.vertical, 24)
+                .frame(maxWidth: .infinity)
+        } else {
+            PageGroup {
+                ForEach(items) { item in
+                    LibraryRow(item: item, model: model)
                 }
-                .foregroundStyle(item.enabled ? .primary : .secondary)
-                .help(item.name)
-            }
-            .width(min: 120, ideal: 170)
-            TableColumn(model.kind == .mcp ? "Command" : "Description") { item in
-                Text(item.detail).foregroundStyle(item.enabled ? .primary : .secondary).lineLimit(2).help(item.detail)
-            }
-            .width(min: 180, ideal: 330)
-            TableColumn("Agent") { Text($0.agent.rawValue) }.width(min: 50, ideal: 60)
-            TableColumn("Scope") { Text($0.scope.rawValue) }.width(min: 50, ideal: 60)
-            TableColumn("Path") { item in
-                Text(Library.abbreviate(item.location ?? item.file)).font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.head).help(item.location ?? item.file)
-            }
-            .width(min: 120, ideal: 220)
-        }
-        .contextMenu(forSelectionType: Library.Item.ID.self) { ids in
-            if let id = ids.first, let item = model.items.first(where: { $0.id == id }) { menu(item) }
-        } primaryAction: { ids in
-            if let id = ids.first, let item = model.items.first(where: { $0.id == id }) { model.open(item) }
-        }
-        .overlay {
-            if model.visible.isEmpty {
-                Text(emptyText).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(40)
             }
         }
     }
 
     private var emptyText: String {
         if !model.search.isEmpty { return "Nothing matches \u{201C}\(model.search)\u{201D}." }
-        return "No \(model.kind.rawValue.lowercased()) here yet." + (model.project == nil ? "\nProject items show when the key terminal is in a project folder." : "")
+        return "No \(model.kind.rawValue.lowercased()) here yet."
+    }
+}
+
+private struct LibraryRow: View {
+    let item: Library.Item
+    @ObservedObject var model: LibraryModel
+    @State private var hovering = false
+
+    var body: some View {
+        PageRow(symbol: LibraryView.symbol(item.kind), tint: item.enabled ? .secondary : Color.secondary.opacity(0.5),
+                title: item.name,
+                status: item.enabled ? nil : ("Disabled", Color.secondary.opacity(0.5)),
+                detail: item.detail,
+                mono: "\(item.agent.rawValue) \u{00B7} \(item.scope.rawValue) \u{00B7} \(Library.abbreviate(item.location ?? item.file))",
+                dimmed: !item.enabled) {
+            if hovering {
+                Button(item.kind == .mcp ? "Open Config" : "Open") { model.open(item) }.buttonStyle(.quiet)
+                Menu {
+                    menu
+                } label: {
+                    Image(systemName: "ellipsis").frame(width: 22, height: 22).contentShape(Rectangle())
+                }
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                .help("More")
+            }
+        }
+        .background(hovering ? Color.primary.opacity(0.03) : .clear)
+        .onHover { hovering = $0 }
+        .onTapGesture(count: 2) { model.open(item) }
+        .contextMenu { menu }
+        .help(item.location ?? item.file)
     }
 
-    @ViewBuilder private func menu(_ item: Library.Item) -> some View {
+    @ViewBuilder private var menu: some View {
         Button(item.kind == .mcp ? "Open Config File" : "Open in Editor") { model.open(item) }
         Button("Reveal in Finder") { model.reveal(item) }
         Divider()
         if item.kind == .mcp {
-            Button("Remove Server…") { model.removeMCP(item) }
+            Button("Remove Server\u{2026}") { model.removeMCP(item) }
         } else {
             Button(item.enabled ? "Disable" : "Enable") { model.toggle(item) }
-            Button("Move to Trash…") { model.trash(item) }
+            Button("Move to Trash\u{2026}") { model.trash(item) }
         }
-    }
-
-    private var footer: some View {
-        HStack(spacing: 8) {
-            if model.kind == .mcp {
-                Button { showAddMCP = true } label: { Label("Add Server…", systemImage: "plus") }
-            } else {
-                Button { showNew = true } label: { Label("New…", systemImage: "plus") }
-                Button { showImport = true } label: { Label("Import from GitHub…", systemImage: "square.and.arrow.down") }
-            }
-            if model.busy { ProgressView().controlSize(.small) }
-            Spacer()
-            if let item = selected {
-                Button(item.kind == .mcp ? "Open Config" : "Open") { model.open(item) }
-                Button("Reveal") { model.reveal(item) }
-                if item.kind == .mcp {
-                    Button("Remove…") { model.removeMCP(item) }
-                } else {
-                    Button(item.enabled ? "Disable" : "Enable") { model.toggle(item) }
-                    Button("Move to Trash…") { model.trash(item) }
-                }
-            } else {
-                Text(model.project.map { "Project: " + Library.abbreviate($0) } ?? "No project folder")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
-                Button { model.reload() } label: { Image(systemName: "arrow.clockwise") }.help("Look again")
-            }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
     }
 }
 
@@ -469,31 +472,13 @@ private struct ImportSheet: View {
 
 @MainActor
 enum LibraryWindow {
-    private static var window: NSWindow?
     private static let model = LibraryModel()
 
     static func show(directory: String?) {
         model.setDirectory(directory)
-        if let window { model.reload(); window.makeKeyAndOrderFront(nil); return }
-        let w = NSWindow(contentViewController: NSHostingController(rootView: LibraryView(model: model)))
-        w.title = "Library"
-        w.setContentSize(NSSize(width: 900, height: 540))
-        w.isReleasedWhenClosed = false
-        window = w
         model.reload()
-        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { note in
-            nonisolated(unsafe) let object = note.object
-            MainActor.assumeIsolated {
-                guard let win = object as? NSWindow else { return }
-                if let c = win.windowController as? TerminalWindowController {
-                    model.setDirectory(c.currentDirectory)
-                } else if win === window {
-                    model.reload()
-                }
-            }
+        (NSApp.delegate as? AppDelegate)?.showPage("library") { c in
+            LibraryView(model: model, onClose: { [weak c] in c?.closePage() })
         }
-        w.center()
-        w.setFrameAutosaveName("Library")
-        w.makeKeyAndOrderFront(nil)
     }
 }

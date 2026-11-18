@@ -1,3 +1,4 @@
+import TermTranscript
 import AppKit
 import CoreText
 import TermCore
@@ -352,6 +353,9 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var analysisScheduled = false
     var hostWindowShowing: (() -> Bool)?
 
+    var onQueued: (([String]) -> Void)?
+    private var lastQueued: [String] = []
+
     func updateAgentScreen(force: Bool = false) {
         guard let t = terminal else { return }
         let input = detectInputBand(t)
@@ -368,6 +372,17 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         let text = status.map { $0.plainText() }.joined(separator: "\n")
         let visible = input != nil
         let busy = agentLooksBusy()
+        if let report = onQueued {
+            var queued: [String] = []
+            if let input {
+                let top = max(0, input.lowerBound - 40)
+                queued = QueuedMessages.parse(t.screen.rows[top..<input.lowerBound].map { $0.plainText() })
+            }
+            if queued != lastQueued {
+                lastQueued = queued
+                report(queued)
+            }
+        }
         if force || text != lastStatusText || visible != lastInputVisible || busy != lastBusy {
             lastStatusText = text
             lastInputVisible = visible
