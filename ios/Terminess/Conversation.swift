@@ -464,7 +464,20 @@ struct NewChatView: View {
         .background(Theme.background)
         #if DEBUG
         .onReceive(NotificationCenter.default.publisher(for: DemoScript.sendText)) { n in
-            if let t = n.object as? String { draft = t; start() }
+            if let t = n.object as? String { if !t.isEmpty { draft = t }; start() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: DemoScript.typeText)) { n in
+            guard let t = n.object as? String else { return }
+            draft = ""
+            Task { @MainActor in
+                var i = t.startIndex
+                while i < t.endIndex {
+                    let next = t.index(i, offsetBy: 3, limitedBy: t.endIndex) ?? t.endIndex
+                    draft += t[i..<next]
+                    i = next
+                    try? await Task.sleep(for: .milliseconds(40))
+                }
+            }
         }
         #endif
         .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)

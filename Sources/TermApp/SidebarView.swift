@@ -16,7 +16,8 @@ enum SidebarID: Hashable {
 }
 
 struct SidebarView: View {
-    @ObservedObject var model: SidebarModel
+    let model: SidebarModel
+    @ObservedObject var gate: ViewGate
     var drops: WindowLink?
     @State private var selection: SidebarID?
     @State private var openReminder: String?
@@ -27,6 +28,7 @@ struct SidebarView: View {
     @AppStorage("sidebar.otherExpanded") private var otherExpanded = true
 
     var body: some View {
+        let _ = PerfCounters.tick("body.sidebar")
         VStack(spacing: 0) {
             VStack(spacing: 1) {
                 SidebarAction(title: "New session", symbol: "plus", emphasised: true,
@@ -881,7 +883,7 @@ private struct Row: View {
         HStack(spacing: 9) {
             Group {
                 if busy {
-                    ProgressView().controlSize(.mini).tint(tint)
+                    WorkingMark(tint: tint)
                 } else {
                     Image(systemName: symbol)
                         .font(.system(size: 12.5, weight: .regular))

@@ -13,6 +13,7 @@ import TermTranscript
 final class HostSession {
     let id: String
     var name: String
+    var nameLocked = false
     let created: Double
     let process: PTYProcess
     let initialCommand: String
@@ -88,6 +89,7 @@ final class HostSession {
         i.active = active
         i.origin = origin
         i.originName = origin == nil ? nil : originName
+        i.nameLocked = nameLocked ? true : nil
         return i
     }
 
@@ -543,6 +545,16 @@ public final class HostServer: @unchecked Sendable {
             LocalModels.installed { names in
                 self.queue.async { conn.send(Message(op: "models", args: names ?? [], code: names == nil ? 0 : 1)) }
             }
+        case "set-name":
+            guard let id = m.id, let s = sessions[id], let name = m.name?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                conn.send(Message(op: "error", message: "no session \(m.id ?? "")")); return
+            }
+            let lock = m.code == 1
+            if !s.nameLocked || lock || m.code == 2 {
+                s.name = name
+                s.nameLocked = lock && !name.isEmpty
+            }
+            conn.send(Message(op: "ok", id: id))
         case "history":
             conn.send(Message(op: "history", history: commits.annotate(historyProvider())))
         case "model-roles", "set-model-role":

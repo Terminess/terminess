@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 
@@ -45,12 +46,27 @@ final class HeaderIconButton: NSButton {
     override var mouseDownCanMoveWindow: Bool { false }
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
+    private var pressed = false { didSet { needsDisplay = true } }
+    override func mouseDown(with event: NSEvent) { pressed = true }
+    override func mouseDragged(with event: NSEvent) {
+        pressed = bounds.contains(convert(event.locationInWindow, from: nil))
+    }
+    override func mouseUp(with event: NSEvent) {
+        let inside = bounds.contains(convert(event.locationInWindow, from: nil))
+        pressed = false
+        if inside, let action {
+            let sent = NSApp.sendAction(action, to: target, from: self)
+            if ProcessInfo.processInfo.environment["TERMAPP_CLICK_AT"] != nil {
+                print("click: header button sent \(NSStringFromSelector(action)): \(sent)"); fflush(stdout)
+            }
+        }
+    }
 
     private func updateTint() { contentTintColor = isActive ? .labelColor : .secondaryLabelColor }
 
     override func draw(_ dirtyRect: NSRect) {
-        if isActive || hovering {
-            NSColor.labelColor.withAlphaComponent(isActive ? 0.10 : 0.06).setFill()
+        if isActive || hovering || pressed {
+            NSColor.labelColor.withAlphaComponent(isActive || pressed ? 0.10 : 0.06).setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 6, yRadius: 6).fill()
         }
         super.draw(dirtyRect)
@@ -77,7 +93,7 @@ final class SidebarPaneController: NSViewController {
 final class SidebarPaneView: NSView {
     var content: NSView?
     let toggle = HeaderIconButton(symbol: "sidebar.left", tooltip: "Hide the sidebar (Control-Command-S)",
-                                  target: nil, action: #selector(AppDelegate.toggleSidebar(_:)))
+                                  target: nil, action: #selector(AppDelegate.showHideSidebar(_:)))
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
@@ -109,7 +125,7 @@ final class ContentHeaderView: NSView {
 
     init(controller: TerminalWindowController) {
         toggle = HeaderIconButton(symbol: "sidebar.left", tooltip: "Show the sidebar (Control-Command-S)",
-                                  target: nil, action: #selector(AppDelegate.toggleSidebar(_:)))
+                                  target: nil, action: #selector(AppDelegate.showHideSidebar(_:)))
         modeButtons = [
             HeaderIconButton(symbol: "apple.terminal", tooltip: "Terminal (Option-Command-1)",
                              target: controller, action: #selector(TerminalWindowController.showTerminalMode(_:))),
@@ -119,7 +135,7 @@ final class ContentHeaderView: NSView {
                              target: controller, action: #selector(TerminalWindowController.showChatMode(_:))),
         ]
         let owner = ObjectIdentifier(controller)
-        let host = TabStripHostingView(rootView: TabStripView(owner: owner, group: { [weak controller] in
+        let host = TabStripHostingView(rootView: TabStripView(gate: controller.gate, owner: owner, group: { [weak controller] in
             controller?.window?.tabGroup.map { ObjectIdentifier($0) }
         }))
         host.sizingOptions = []
@@ -151,8 +167,8 @@ final class ContentHeaderView: NSView {
             stripLeading,
             strip.centerYAnchor.constraint(equalTo: centerYAnchor),
             strip.heightAnchor.constraint(equalToConstant: 30),
-            strip.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -12),
-            right.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            strip.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -12).withPriority(999),
+            right.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12).withPriority(999),
             right.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
         toggle.isHidden = true
@@ -218,4 +234,32 @@ extension View {
 final class TabStripHostingView<Content: View>: NSHostingView<Content> {
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+@MainActor
+final class ViewGate: ObservableObject {
+    private var subscription: AnyCancellable?
+    private var missed = false
+    var active = true {
+        didSet {
+            guard active != oldValue else { return }
+            if active && missed { missed = false; objectWillChange.send() }
+        }
+    }
+
+    init() {
+        subscription = SidebarModel.shared.objectWillChange.sink { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.active { self.objectWillChange.send() } else { self.missed = true }
+            }
+        }
+    }
+}
+
+extension NSLayoutConstraint {
+    func withPriority(_ p: Float) -> NSLayoutConstraint {
+        priority = NSLayoutConstraint.Priority(p)
+        return self
+    }
 }

@@ -42,6 +42,7 @@ struct PairRun: Identifiable, Equatable {
     let state: String
     let started: Date
     let transcript: String?
+    var repoPath = ""
 }
 
 struct IssueItem: Identifiable, Equatable, Decodable {
@@ -253,7 +254,10 @@ final class SidebarModel: ObservableObject {
 
     func refreshTabs() {
         let new = tabProvider?() ?? []
-        if new != tabs { tabs = new }
+        if new != tabs {
+            PerfCounters.tick(new.map(\.title) != tabs.map(\.title) ? "tabs.publish.title" : "tabs.publish.other")
+            tabs = new
+        }
     }
 
     func refreshBackground() {
@@ -383,12 +387,21 @@ final class SidebarModel: ObservableObject {
     }
 
     func refreshPair() {
-        let paired = SidebarModel.readHasPairedPhone()
-        if paired != hasPairedPhone { hasPairedPhone = paired }
-        let (jobs, runs) = SidebarModel.readPair()
-        if jobs != self.jobs { self.jobs = jobs }
-        if runs != self.runs { self.runs = runs }
+        guard !loadingPair else { return }
+        loadingPair = true
+        Task.detached(priority: .utility) {
+            let paired = SidebarModel.readHasPairedPhone()
+            let (jobs, runs) = SidebarModel.readPair()
+            await MainActor.run {
+                let m = SidebarModel.shared
+                m.loadingPair = false
+                if paired != m.hasPairedPhone { m.hasPairedPhone = paired }
+                if jobs != m.jobs { m.jobs = jobs }
+                if runs != m.runs { m.runs = runs }
+            }
+        }
     }
+    private var loadingPair = false
 
     func refreshSessions() {
         guard !loadingSessions else { return }
@@ -440,7 +453,7 @@ final class SidebarModel: ObservableObject {
     }
 
 
-    static func readPair() -> ([PairJob], [PairRun]) {
+    nonisolated static func readPair() -> ([PairJob], [PairRun]) {
         let fm = FileManager.default
         var jobs: [PairJob] = []
         let parallel = pairState + "/parallel"

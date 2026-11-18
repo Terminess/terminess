@@ -1,3 +1,4 @@
+import Combine
 import AppKit
 import TermHost
 
@@ -219,6 +220,9 @@ enum DebugScript {
                         case "search": app.showSearch(nil)
                         case "hidesidebar": app.toggleSidebar(nil)
                         case "newtab": app.newWindowForTab(nil)
+                        case "agenttab":
+                            let cmd = env["TERMAPP_AGENT_CMD"] ?? "claude"
+                            app.open(tabbedWith: app.keyController?.window, directory: env["TERMAPP_AGENT_DIR"], command: cmd)
                         case "tab1": app.controllers.first?.focus()
                         case "newreminder":
                             RemindersPageState.shared.draft = ReminderDraft(title: "Check the SPRING20 rollout",
@@ -250,6 +254,18 @@ enum DebugScript {
                 }
             }
         }
+        if let spec = env["TERMAPP_CLICK_AT"] {
+            for step in spec.split(separator: "|") {
+                let parts = step.split(separator: ":")
+                guard parts.count == 2, let delay = Double(parts[0]) else { continue }
+                let xy = parts[1].split(separator: ",").compactMap { Double($0) }
+                guard xy.count == 2 else { continue }
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    MainActor.assumeIsolated { DebugClick.click(x: xy[0], y: xy[1]) }
+                }
+            }
+        }
+        if env["TERMAPP_PERF"] != nil { PerfCounters.start() }
         for (key, isModel) in [("TERMAPP_MODEL_AT", true), ("TERMAPP_COMPOSE_AT", false)] {
             guard let spec = env[key], let colon = spec.firstIndex(of: ":"), let delay = Double(spec[..<colon]) else { continue }
             let value = String(spec[spec.index(after: colon)...])
@@ -529,10 +545,27 @@ enum DebugScript {
                         }
                     }
                 } else if let n = Int(f[1]), let mode = TerminalWindowController.ViewMode(rawValue: n) {
+                    if let w = tab.window, let group = w.tabGroup, group.selectedWindow !== w { group.selectedWindow = w }
                     tab.setMode(mode)
                 }
             case "pairopen":
-                if let run = PairRuns.recent().first { PairRunWindows.show(run) }
+                guard let run = PairRuns.recent().first else { return }
+                PairRunWindows.show(run)
+                if let main = mainWindow, let w = NSApp.windows.first(where: { $0.isVisible && $0 !== main && !($0.windowController is TerminalWindowController) && $0.title.contains(run.brief) }) {
+                    let m = main.frame, size = w.frame.size
+                    w.setFrameOrigin(NSPoint(x: m.midX - size.width / 2, y: m.midY - size.height / 2))
+                }
+            case "pairclose":
+                for w in NSApp.windows where w.isVisible && !(w.windowController is TerminalWindowController) && w.title.hasPrefix("Codex") { w.close() }
+            case "applyfix":
+                guard let run = PairRuns.recent().first,
+                      let data = FileManager.default.contents(atPath: run.dir + "/findings.json"),
+                      let found = try? JSONDecoder().decode(ReviewFindings.self, from: data) else {
+                    print("control: no findings"); fflush(stdout); return
+                }
+                let n = Int(arg) ?? 0
+                guard found.findings.indices.contains(n) else { return }
+                FindingsView.apply(found.findings[n], run: run, tabbedWith: mainWindow)?.setMode(.terminal)
             case "main":
                 NSApp.windows.first { $0.windowController is TerminalWindowController }?.makeKeyAndOrderFront(nil)
             case "record":
@@ -552,15 +585,91 @@ enum DebugScript {
             }
         }
 
+        static var mainWindow: NSWindow? {
+            NSApp.orderedWindows.first { $0.isVisible && $0.windowController is TerminalWindowController }
+        }
+
         static func shot(_ dir: String) {
-            guard let window = NSApp.orderedWindows.first(where: { $0.isVisible }),
-                  let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber),
-                                                      [.boundsIgnoreFraming, .nominalResolution]) else { return }
+            guard let main = mainWindow else { return }
+            let above = NSApp.orderedWindows.filter { $0.isVisible }.prefix { $0 !== main }
+            let ids = (Array(above) + [main]).map { CGWindowID($0.windowNumber) }
+            let screenH = NSScreen.screens.first?.frame.height ?? 0
+            let f = main.frame
+            let rect = CGRect(x: f.minX, y: screenH - f.maxY, width: f.width, height: f.height)
+            var raw = ids.map { UnsafeRawPointer(bitPattern: UInt($0)) }
+            guard let array = CFArrayCreate(nil, &raw, raw.count, nil) else { return }
+            let options: CGWindowImageOption = [.boundsIgnoreFraming, .nominalResolution]
+            guard let image = ids.count == 1
+                    ? CGWindowListCreateImage(.null, .optionIncludingWindow, ids[0], options)
+                    : CGImage(windowListFromArrayScreenBounds: rect, windowArray: array, imageOption: options)
+            else { return }
             let rep = NSBitmapImageRep(cgImage: image)
             guard let data = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) else { return }
             let ms = Int(Date().timeIntervalSince1970 * 1000)
             try? data.write(to: URL(fileURLWithPath: "\(dir)/\(ms).jpg"))
             frame += 1
+        }
+    }
+}
+
+@MainActor
+enum DebugClick {
+    static func click(x: Double, y: Double) {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.orderedWindows.first(where: { $0.isVisible && $0.windowController is TerminalWindowController }), let frame = window.contentView?.superview else {
+            print("click: no window"); fflush(stdout); return
+        }
+        let point = NSPoint(x: x, y: window.frame.height - y)
+        let hit = frame.hitTest(point)
+        let before = window.title
+        var chain: [String] = []
+        var v = hit
+        while let view = v, chain.count < 8 { chain.append("\(type(of: view))\(view.frame)"); v = view.superview }
+        print("click: chain " + chain.joined(separator: " < "))
+        print("click: at \(x),\(y) hits \(hit.map { String(describing: type(of: $0)) } ?? "nothing"); showing \(before)")
+        fflush(stdout)
+        let t = ProcessInfo.processInfo.systemUptime
+        func event(_ type: NSEvent.EventType, _ dt: Double) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: t + dt,
+                               windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                               clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)
+        }
+        if let up = event(.leftMouseUp, 0.05) { NSApp.postEvent(up, atStart: false) }
+        if let down = event(.leftMouseDown, 0) { NSApp.sendEvent(down) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            MainActor.assumeIsolated {
+                let now = NSApp.keyWindow?.title ?? "none"
+                print("click: after, showing \(now) (\(now == before ? "unchanged" : "changed")); sidebar \(SidebarModel.shared.visible ? "shown" : "hidden")")
+                fflush(stdout)
+            }
+        }
+    }
+}
+
+@MainActor
+enum PerfCounters {
+    private static var counts: [String: Int] = [:]
+    private static var cancellables: [AnyCancellable] = []
+    static let enabled = ProcessInfo.processInfo.environment["TERMAPP_PERF"] != nil
+
+    static func tick(_ name: String) {
+        guard enabled else { return }
+        counts[name, default: 0] += 1
+    }
+
+    static func watch<O: ObservableObject>(_ object: O, _ name: String) {
+        guard enabled else { return }
+        cancellables.append(object.objectWillChange.sink { _ in MainActor.assumeIsolated { tick(name) } })
+    }
+
+    static func start() {
+        watch(SidebarModel.shared, "publish.sidebarModel")
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                let line = counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+                print("perf(5s): \(line)")
+                fflush(stdout)
+                counts = [:]
+            }
         }
     }
 }

@@ -3,7 +3,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct TabStripView: View {
-    @ObservedObject var model = SidebarModel.shared
+    private var model: SidebarModel { SidebarModel.shared }
+    @ObservedObject var gate: ViewGate
     let owner: ObjectIdentifier
     let group: () -> ObjectIdentifier?
 
@@ -14,6 +15,7 @@ struct TabStripView: View {
     }
 
     var body: some View {
+        let _ = PerfCounters.tick("body.tabStrip")
         let tabs = self.tabs
         HStack(spacing: 0) {
             ViewThatFits(in: .horizontal) {
@@ -77,7 +79,7 @@ private struct TabItem: View {
         HStack(spacing: 6) {
             Group {
                 if tab.busy && !tab.attention {
-                    ProgressView().controlSize(.mini)
+                    WorkingMark(tint: .secondary)
                 } else {
                     Image(systemName: tab.parked ? "moon.zzz" : (agent != nil ? "sparkle" : "apple.terminal"))
                         .font(.system(size: 11))

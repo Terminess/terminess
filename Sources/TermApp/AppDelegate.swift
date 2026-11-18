@@ -302,6 +302,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         controllers.first { ObjectIdentifier($0) == id }?.themeOverride = name
     }
 
+    @objc func showHideSidebar(_ sender: Any?) { toggleSidebar(sender) }
+
     @objc func toggleSidebar(_ sender: Any?) {
         let model = SidebarModel.shared
         model.visible.toggle()
@@ -322,7 +324,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private func openTabs() -> [OpenTab] {
         let home = SidebarModel.home
         return tabOrder.map { c in
-            c.refreshTitle()
             c.refreshBusy()
             let dir = c.currentDirectory ?? ""
             let shown = c.session.machine.map { "\($0.name): " + remoteTilde(dir) } ?? SidebarModel.tilde(dir)
@@ -454,6 +455,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let dir = FileManager.default.fileExists(atPath: session.cwd) ? session.cwd : SidebarModel.home
         let c = open(tabbedWith: keyController?.window, directory: dir, command: cmd)
         c.setResumeOf(session.id)
+        c.nameFromConversation(session.title)
     }
 
     func openMoved(directory: String, command: String, conversation: String) {
@@ -474,6 +476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let cmd = item.agent == "claude" ? "claude --resume \(shellQuote(item.id))" : "codex resume \(shellQuote(item.id))"
         let c = open(tabbedWith: keyController?.window, directory: item.cwd, machine: machine, agent: cmd)
         c.setResumeOf(item.id)
+        c.nameFromConversation(item.title)
     }
 
 
@@ -752,7 +755,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             view.addItem(item)
         }
         view.addItem(.separator())
-        let sidebarItem = NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleSidebar(_:)), keyEquivalent: "s")
+        let sidebarItem = NSMenuItem(title: "Toggle Sidebar", action: #selector(showHideSidebar(_:)), keyEquivalent: "s")
         sidebarItem.keyEquivalentModifierMask = [.control, .command]
         view.addItem(sidebarItem)
         let instructionsItem = NSMenuItem(title: "Project Instructions…", action: #selector(showProjectInstructions(_:)), keyEquivalent: "i")

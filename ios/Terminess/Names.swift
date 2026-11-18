@@ -21,9 +21,9 @@ enum SessionText {
     }
 
     static func title(_ s: SessionInfo) -> String {
+        if let n = givenName(s) { return n }
         let t = topic(s.title)
         if let agent = agentName(s.command) { return t.isEmpty || t.lowercased() == agent.lowercased() ? agent : t }
-        if let n = givenName(s) { return n }
         if ["zsh", "bash", "fish", "sh"].contains(s.command) { return "Shell" }
         return t.isEmpty ? s.command : t
     }

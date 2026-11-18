@@ -36,7 +36,8 @@ enum PairRuns {
         if brief.count > 90 { brief = String(brief.prefix(89)) + "…" }
         return PairRun(id: name, from: parts[1], to: parts[2], mode: parts[3],
                        repo: (repo as NSString).lastPathComponent, brief: brief.isEmpty ? parts[3] : brief,
-                       dir: dir, state: state(dir), started: started, transcript: transcript)
+                       dir: dir, state: state(dir), started: started, transcript: transcript,
+                       repoPath: repo.hasPrefix("/") ? repo : "")
     }
 
     nonisolated static func taskText(_ prompt: String) -> String {
@@ -55,8 +56,8 @@ enum PairRuns {
             if tail.contains("\"type\":\"turn.failed\"") { return "failed" }
             if tail.contains("\"type\":\"result\"") { return tail.contains("\"is_error\":true") ? "failed" : "done" }
         }
-        if FileManager.default.fileExists(atPath: dir + "/result.md") { return "done" }
-        if let m = Transcript.mtime(events), Date().timeIntervalSince(m) < 600 { return "running" }
+        if let size = (try? FileManager.default.attributesOfItem(atPath: dir + "/result.md"))?[.size] as? UInt64, size > 0 { return "done" }
+        if let m = Transcript.mtime(events) ?? Transcript.mtime(dir + "/prompt.md"), Date().timeIntervalSince(m) < 600 { return "running" }
         return "stopped"
     }
 
@@ -257,16 +258,19 @@ struct FindingsView: View {
         severity == "high" ? .red : severity == "medium" ? .orange : .secondary
     }
 
-    private var repoPath: String {
-        run.repo.hasPrefix("/") ? run.repo : (Git.root(of: FileManager.default.currentDirectoryPath) ?? run.repo)
-    }
-
     private func open(_ f: ReviewFindings.Finding) {
-        NSWorkspace.shared.open(URL(fileURLWithPath: (repoPath as NSString).appendingPathComponent(f.file)))
+        NSWorkspace.shared.open(URL(fileURLWithPath: (Self.repoPath(run) as NSString).appendingPathComponent(f.file)))
     }
 
-    private func apply(_ f: ReviewFindings.Finding) {
-        guard let pair = SidebarModel.pairTool, let app = NSApp.delegate as? AppDelegate else { return }
+    private func apply(_ f: ReviewFindings.Finding) { Self.apply(f, run: run, tabbedWith: NSApp.keyWindow) }
+
+    static func repoPath(_ run: PairRun) -> String {
+        !run.repoPath.isEmpty ? run.repoPath : (Git.root(of: FileManager.default.currentDirectoryPath) ?? run.repo)
+    }
+
+    @discardableResult
+    static func apply(_ f: ReviewFindings.Finding, run: PairRun, tabbedWith host: NSWindow?) -> TerminalWindowController? {
+        guard let pair = SidebarModel.pairTool, let app = NSApp.delegate as? AppDelegate else { return nil }
         let brief = """
             Goal: apply one fix from a code review of this repo.
             File: \(f.file)\(f.line > 0 ? " (around line \(f.line))" : "")
@@ -275,10 +279,11 @@ struct FindingsView: View {
             Done when: the fix is made, nothing unrelated is changed, and the relevant tests pass.
             """
         let file = NSTemporaryDirectory() + "terminess-fix-\(UUID().uuidString.prefix(8)).md"
-        guard (try? brief.write(toFile: file, atomically: true, encoding: .utf8)) != nil else { return }
+        guard (try? brief.write(toFile: file, atomically: true, encoding: .utf8)) != nil else { return nil }
         let target = run.to == "claude" ? "claude" : "codex"
-        let c = app.open(tabbedWith: NSApp.keyWindow, directory: repoPath,
+        let c = app.open(tabbedWith: host, directory: repoPath(run),
                          command: "\(shellQuote(pair)) handoff \(target) --from user --brief-file \(shellQuote(file))")
         c.customTitle = "Fix: " + f.title
+        return c
     }
 }

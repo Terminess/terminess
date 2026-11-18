@@ -299,6 +299,7 @@ enum SessionNames {
     }
 
     static func title(_ s: SessionInfo) -> String {
+        if let n = given(s) { return n }
         let agent = Agent.detect(s.command)
         if let agent, let t = s.title, let topic = Agent.topic(fromTitle: t, agentName: agent.name),
            topic.contains(where: \.isLetter) { return topic }

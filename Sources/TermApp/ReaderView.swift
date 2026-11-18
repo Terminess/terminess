@@ -51,6 +51,8 @@ final class ReaderModel: ObservableObject {
     private var source: (() -> ReaderSource?)?
     var folder: (() -> String?)?
     var startHere: ((String) -> Void)?
+    var gate = ViewGate()
+    var onUserMessage: ((String) -> Void)?
     var onFound: ((Int32, String, String) -> Void)?
     var visible = false { didSet { visible ? start() : stop() } }
 
@@ -115,18 +117,21 @@ final class ReaderModel: ObservableObject {
     private func clear(agent: String? = nil) {
         watcher?.cancel()
         watcher = nil
-        items = []
+        if !items.isEmpty { items = [] }
         path = nil
         lastMTime = nil
-        agentID = agent ?? ""
-        agentName = agent == "claude" ? "Claude Code" : agent == "codex" ? "Codex" : agent == "ollama" ? "Local model" : agent == "harness" ? "Terminess Agent" : ""
-        live = false
+        let id = agent ?? ""
+        let name = agent == "claude" ? "Claude Code" : agent == "codex" ? "Codex" : agent == "ollama" ? "Local model" : agent == "harness" ? "Terminess Agent" : ""
+        if agentID != id { agentID = id }
+        if agentName != name { agentName = name }
+        if live { live = false }
     }
 
     private func show(agent: String, path: String, live: Bool, force: Bool) {
-        agentID = agent
-        agentName = agent == "claude" ? "Claude Code" : agent == "ollama" ? "Local model" : agent == "harness" ? "Terminess Agent" : "Codex"
-        self.live = live
+        let name = agent == "claude" ? "Claude Code" : agent == "ollama" ? "Local model" : agent == "harness" ? "Terminess Agent" : "Codex"
+        if agentID != agent { agentID = agent }
+        if agentName != name { agentName = name }
+        if self.live != live { self.live = live }
         let mtime = Transcript.mtime(path)
         guard force || path != self.path || mtime != lastMTime else { return }
         if path != self.path { watch(path, agent: agent) }
@@ -135,8 +140,12 @@ final class ReaderModel: ObservableObject {
         Task.detached(priority: .utility) {
             let parsed = Transcript.parse(path, agent: agent)
             await MainActor.run { [weak self] in
-                guard self?.path == path else { return }
-                self?.items = Array(parsed.suffix(400))
+                guard let self, self.path == path else { return }
+                let latest = Array(parsed.suffix(400))
+                if latest != self.items { self.items = latest }
+                for item in parsed {
+                    if case .user(let text) = item.kind { self.onUserMessage?(text); break }
+                }
             }
         }
     }
@@ -146,6 +155,7 @@ struct ReaderView: View {
     @ObservedObject var model: ReaderModel
 
     var body: some View {
+        let _ = PerfCounters.tick("body.reader")
         content.noTopScrollEdge()
     }
 
@@ -169,7 +179,7 @@ struct ReaderView: View {
             Divider()
             }
             if model.items.isEmpty && model.agentName.isEmpty {
-                NewSessionView(startHere: { model.startHere?($0) })
+                NewSessionView(gate: model.gate, startHere: { model.startHere?($0) })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.items.isEmpty && model.pending.isEmpty {
                 VStack(spacing: 8) {

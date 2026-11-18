@@ -19,8 +19,17 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var fakeBold = false
     private var fakeItalic = false
     private var ascent: CGFloat = 0
+    private struct LineKey: Hashable {
+        let text: String
+        let face: Int
+        let color: RGB
+        let faint: Bool
+        let bold: Bool
+        let kern: CGFloat
+    }
+    private var lineCache: [LineKey: CTLine] = [:]
     private(set) var cellSize = NSSize(width: 8, height: 16)
-    var padding: CGFloat { Settings.shared.isModern ? 18 : 6 }
+    private(set) var padding: CGFloat = 6
     private var kern: CGFloat = 0
     private var cursorShown: CGPoint?
     private var cursorTimer: Timer?
@@ -126,6 +135,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         let natural = ceil(ascent + CTFontGetDescent(regular) + CTFontGetLeading(regular))
         let height = ceil(max(natural, ceil(size * 1.2)) * CGFloat(Settings.shared.lineSpacing))
         kern = Settings.shared.isModern ? CGFloat(Settings.shared.letterSpacing) : 0
+        padding = Settings.shared.isModern ? 18 : 6
+        lineCache.removeAll()
         cellSize = NSSize(width: advance.width + kern, height: height)
     }
 
@@ -188,7 +199,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     func terminalDidUpdate() {
         guard !flushScheduled else { return }
         let since = Date().timeIntervalSince(lastFlush)
-        let frame = 1.0 / 120
+        let onScreenFrame = NSApp.isActive ? 1.0 / 60 : 1.0 / 20
+        let frame: TimeInterval = isOnScreen ? onScreenFrame : (window == nil && hostWindowShowing?() == true ? 0.1 : 1.0)
         if since >= frame {
             flushUpdates()
         } else {
@@ -220,17 +232,22 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         let scrolled = t.screen.scrolledOff - lastScrolledOff
         lastScrolledOff = t.screen.scrolledOff
         let dirty = t.takeDirtyRows()
-        if hideAgentInput || onAgentScreen != nil { updateAgentScreen() }
+        if hideAgentInput || onAgentScreen != nil { analyseAgentScreen() }
         if scrollOffset > 0 {
             scrollOffset = min(scrollOffset + max(0, scrolled), t.screen.scrollback.count)
             needsDisplay = true
-        } else if hiddenBand != nil || hideAgentInput {
+        } else if !isOnScreen {
+            staleWhileHidden = true
+        } else if hiddenBand != nil || hideAgentInput || staleWhileHidden {
+            staleWhileHidden = false
             needsDisplay = true
         } else {
             for y in dirty { setNeedsDisplay(rowRect(y)) }
         }
         let c = (t.cursor.x, t.cursor.y)
-        if c != lastCursor && Settings.shared.isModern { glideCursor(to: c, from: lastCursor) }
+        if c != lastCursor && Settings.shared.isModern {
+            if isOnScreen && NSApp.isActive { glideCursor(to: c, from: lastCursor) } else { cursorShown = nil }
+        }
         if c != lastCursor {
             setNeedsDisplay(rowRect(lastCursor.y))
             setNeedsDisplay(rowRect(c.1))
@@ -297,6 +314,43 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         }
         return false
     }
+
+    var isOnScreen: Bool { window?.occlusionState.contains(.visible) == true }
+
+    private func analyseAgentScreen() {
+        let interval: TimeInterval = isOnScreen ? 0 : (window == nil && hostWindowShowing?() == true ? 0.2 : 1.0)
+        let since = Date().timeIntervalSince(lastAnalysis)
+        if since >= interval {
+            lastAnalysis = Date()
+            updateAgentScreen()
+        } else if !analysisScheduled {
+            analysisScheduled = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + (interval - since)) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.analysisScheduled = false
+                    self.lastAnalysis = Date()
+                    self.updateAgentScreen()
+                }
+            }
+        }
+    }
+    private var lastAnalysis = Date.distantPast
+    private var staleWhileHidden = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, terminal != nil { cameOnScreen() }
+    }
+
+    func cameOnScreen() {
+        staleWhileHidden = false
+        needsDisplay = true
+        flushScheduled = false
+        flushUpdates()
+    }
+    private var analysisScheduled = false
+    var hostWindowShowing: (() -> Bool)?
 
     func updateAgentScreen(force: Bool = false) {
         guard let t = terminal else { return }
@@ -640,7 +694,17 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
             attributes[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] = -7.0
             attributes[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] = color
         }
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
+        let face = (a.flags.contains(.bold) ? 1 : 0) + (a.flags.contains(.italic) ? 2 : 0)
+        let key = LineKey(text: text, face: face, color: fg,
+                          faint: a.flags.contains(.faint), bold: fakeBold && a.flags.contains(.bold), kern: kern)
+        let line: CTLine
+        if let cached = lineCache[key] {
+            line = cached
+        } else {
+            line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
+            if lineCache.count > 4000 { lineCache.removeAll(keepingCapacity: true) }
+            lineCache[key] = line
+        }
         var px = padding + CGFloat(x) * cellSize.width
         if span > 0 {
             let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))

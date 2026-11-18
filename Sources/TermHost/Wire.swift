@@ -101,6 +101,7 @@ public struct SessionInfo: Codable, Equatable {
     public var clientKinds: [String]?
     public var clientDevices: [ClientDevice]?
     public var originName: String?
+    public var nameLocked: Bool?
     public init(id: String, name: String, command: String, cwd: String, created: Double, clients: Int) {
         self.id = id; self.name = name; self.command = command; self.cwd = cwd; self.created = created; self.clients = clients
     }

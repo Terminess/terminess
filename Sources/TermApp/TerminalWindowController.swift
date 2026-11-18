@@ -202,12 +202,23 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     private let host = PaneHostView()
     private let split = SidebarSplitController()
     private let sidebarItem: NSSplitViewItem
+    let gate: ViewGate
+    private(set) var onScreen = true
+    private var pendingStatus: StatusSummary?
+    private var lastModelScan = Date.distantPast
+    private var lastStripText: String?
+    private var statusScheduled = false
     var onClose: (() -> Void)?
     var worktree: WorktreeInfo? { didSet { SidebarModel.shared.refreshTabs() } }
     var themeOverride: String? {
         didSet { (NSApp.delegate as? AppDelegate)?.applyAppearance() }
     }
-    var customTitle: String? { didSet { refreshTitle() } }
+    var customTitle: String? {
+        didSet {
+            refreshTitle()
+            if customTitle != oldValue { sendName(locked: customTitle?.isEmpty == false) }
+        }
+    }
     private(set) var agent: Agent?
     private(set) var displayTitle = "shell"
     var switchingModel = false
@@ -222,7 +233,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     init(workingDirectory: String?, command: String? = nil, layout: PaneLayout? = nil,
          machine: RemoteMachine? = nil, agent: String? = nil) {
-        let sidebarHost = NSHostingView(rootView: SidebarView(model: SidebarModel.shared, drops: drops))
+        let gate = ViewGate()
+        self.gate = gate
+        let sidebarHost = NSHostingView(rootView: SidebarView(model: SidebarModel.shared, gate: gate, drops: drops))
         sidebarHost.safeAreaRegions = []
         sidebarItem = NSSplitViewItem(viewController: SidebarPaneController(content: sidebarHost))
         sidebarItem.minimumThickness = 220
@@ -302,6 +315,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         }
         focusPane(panes[0])
         reader.folder = { [weak self] in self?.focused?.currentDirectory }
+        reader.gate = gate
+        reader.onUserMessage = { [weak self] text in self?.nameFromFirstMessage(text) }
+        PerfCounters.watch(reader, "publish.reader")
+        PerfCounters.watch(composerState, "publish.composer")
         reader.startHere = { [weak self] path in
             guard let self else { return }
             self.session.send(Array("cd \(shellQuote(path)) && clear\r".utf8))
@@ -398,6 +415,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
                     if !target.isHidden { target.isHidden = true }
                     return
                 }
+                if String(describing: type(of: v)) == "NSToolbarView" {
+                    if !v.isHidden { v.isHidden = true }
+                    return
+                }
                 v.subviews.forEach(walk)
             }
             walk(frame)
@@ -466,14 +487,35 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     }
 
     private func agentScreenChanged(inputVisible: Bool, status: [Row]) {
-        container.strip.palette = session.terminal.palette
-        container.strip.native = Settings.shared.statusStyle == "native"
-        container.strip.rows = status
-        let summary = StatusSummary(rows: status, palette: session.terminal.palette)
-        if summary != composerState.status { composerState.status = summary }
+        guard onScreen else { return }
+        let palette = session.terminal.palette
+        let native = Settings.shared.statusStyle == "native"
+        let text = status.map { $0.plainText() }.joined(separator: "\n")
+        let stripChanged = text != lastStripText || native != container.strip.native
+        if stripChanged {
+            lastStripText = text
+            container.strip.native = native
+            container.strip.palette = palette
+            container.strip.rows = status
+            container.needsLayout = true
+        }
+        let summary = StatusSummary(rows: status, palette: palette)
+        pendingStatus = summary
+        if onScreen, !statusScheduled {
+            statusScheduled = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.statusScheduled = false
+                    if let s = self.pendingStatus, s != self.composerState.status { self.composerState.status = s }
+                }
+            }
+        }
         updateComposerPlace()
-        container.needsLayout = true
-        refreshComposerModel()
+        if Date().timeIntervalSince(lastModelScan) > 0.5 {
+            lastModelScan = Date()
+            refreshComposerModel()
+        }
         let menu = mode != .terminal && Agent.detect(session.process?.foregroundCommand) != nil
             ? ScreenMenu.find(in: session.terminal) : nil
         if menu != screenMenu { screenMenu = menu; updateApproval() }
@@ -573,7 +615,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             readerHost?.removeFromSuperview()
             readerHost = nil
         }
-        reader.visible = visible
+        reader.visible = visible && onScreen
     }
 
     func updateInputHiding(report: Bool = false) {
@@ -584,8 +626,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             p.view.hideAgentInput = on && isAgent
             p.view.hideAgentStatus = on && isAgent
             p.view.onAgentScreen = p === focused ? { [weak self] visible, status, busy in
-                self?.composerState.busy = busy
-                self?.agentScreenChanged(inputVisible: visible, status: status)
+                guard let self else { return }
+                if self.composerState.busy != busy { self.composerState.busy = busy }
+                self.agentScreenChanged(inputVisible: visible, status: status)
             } : nil
         }
         focused?.view.updateAgentScreen(force: report)
@@ -640,6 +683,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     func sendFromComposer(_ text: String) {
         guard let pane = focused else { return }
+        nameFromFirstMessage(text)
         reader.addPending(text)
         if pane.parked != nil { resume(pane) }
         if let model = composerState.pendingModel {
@@ -700,9 +744,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             session.terminal.feed("\u{1B}[2m\(body)\r\n\u{1B}[0;2;3mRestored from the previous session\u{1B}[0m\r\n\r\n")
         }
         session.onUpdate = { [weak view] in view?.terminalDidUpdate() }
+        view.hostWindowShowing = { [weak self] in self?.onScreen ?? false }
         session.onTitle = { [weak self, weak pane] t in
             pane?.programTitle = t
-            if pane === self?.focused { self?.refreshTitle() }
+            PerfCounters.tick("title.osc")
         }
         session.onForeground = { [weak self, weak pane] in
             if pane === self?.focused { self?.refreshTitle() }
@@ -982,6 +1027,41 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         focused?.session.resumeOf = id
     }
 
+
+    private(set) var decidedName: String?
+
+    func nameFromFirstMessage(_ text: String) {
+        guard customTitle?.isEmpty != false, decidedName == nil else { return }
+        let line = text.split(whereSeparator: \.isNewline).first.map(String.init)?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        guard !line.isEmpty else { return }
+        decidedName = line.count > 48 ? String(line.prefix(47)).trimmingCharacters(in: .whitespaces) + "\u{2026}" : line
+        refreshTitle()
+        sendName(locked: false)
+    }
+
+    func nameFromConversation(_ title: String) {
+        guard customTitle?.isEmpty != false else { return }
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        decidedName = t
+        refreshTitle()
+        sendName(locked: false)
+    }
+
+    private func sendName(locked: Bool) {
+        guard let focused, let id = focused.session.process?.hostSessionID else { return }
+        var m = Message(op: "set-name", id: id, name: locked ? (customTitle ?? "") : (decidedName ?? ""))
+        m.code = locked ? 1 : (customTitle == nil && lockSent ? 2 : 0)
+        lockSent = locked
+        if let machine = focused.session.machine {
+            SidebarModel.shared.monitor(machine.id)?.send(m)
+        } else {
+            HostAttachment.send(m)
+        }
+    }
+    private var lockSent = false
+
     func refreshTitle() {
         guard let focused else { return }
         let command = focused.session.process?.foregroundCommand ?? ""
@@ -991,29 +1071,26 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         var title: String
         if let custom = customTitle, !custom.isEmpty {
             title = custom
-        } else if let found {
-            if let topic = Agent.topic(fromTitle: focused.programTitle, agentName: found.name) {
-                title = topic
-            } else {
-                title = folder.isEmpty ? found.name : "\(found.name) · \(folder)"
-            }
-        } else if Agent.shells.contains(command) || command.isEmpty {
-            title = folder.isEmpty ? "shell" : folder
-        } else if !focused.programTitle.isEmpty {
-            title = focused.programTitle
+        } else if let decidedName {
+            title = decidedName
+        } else if found != nil || Agent.shells.contains(command) || command.isEmpty {
+            title = folder.isEmpty ? (found?.name ?? "shell") : folder
         } else {
-            title = folder.isEmpty ? command : "\(command) · \(folder)"
+            title = folder.isEmpty ? command : "\(command) \u{00B7} \(folder)"
         }
+        PerfCounters.tick("title.recompute")
         if found != agent {
             agent = found
             updateTabBadge()
             if let id = found?.id { AgentEvents.started(id) }
+            updateInputHiding()
         }
-        updateInputHiding()
-        if customTitle?.isEmpty != false, let m = focused.session.machine { title += " · \(m.name)" }
+        if customTitle?.isEmpty != false, let m = focused.session.machine { title += " \u{00B7} \(m.name)" }
+        guard title != displayTitle else { return }
+        PerfCounters.tick("title.change")
         displayTitle = title
         if window?.title != title { window?.title = title }
-
+        SidebarModel.shared.refreshTabs()
     }
 
     private(set) var busy = false
@@ -1081,6 +1158,19 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     }
 
     func windowDidResignKey(_ notification: Notification) { terminalView.focusChanged(false) }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        guard let window else { return }
+        let shown = window.occlusionState.contains(.visible)
+        guard shown != onScreen else { return }
+        onScreen = shown
+        gate.active = shown
+        reader.visible = shown && readerHost != nil
+        if shown {
+            for p in panes { p.view.cameOnScreen() }
+            updateInputHiding(report: true)
+        }
+    }
 }
 
 @MainActor

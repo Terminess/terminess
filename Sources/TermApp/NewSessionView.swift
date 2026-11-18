@@ -2,7 +2,8 @@ import AppKit
 import SwiftUI
 
 struct NewSessionView: View {
-    @ObservedObject var sidebar = SidebarModel.shared
+    private var sidebar: SidebarModel { SidebarModel.shared }
+    @ObservedObject var gate: ViewGate
     let startHere: (String) -> Void
     @State private var environment = ""
 
