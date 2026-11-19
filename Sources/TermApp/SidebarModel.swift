@@ -348,6 +348,30 @@ final class SidebarModel: ObservableObject {
 
     func monitor(_ id: String) -> RemoteMonitor? { monitors[id] }
 
+    func notifies(_ tab: OpenTab) -> Bool {
+        tab.hostIDs.contains { localSessions[$0]?.notify == true } || tab.remoteIDs.contains { key in
+            let p = key.split(separator: "/", maxSplits: 1).map(String.init)
+            return p.count == 2 && remote.first { $0.id == p[0] }?.sessions.first { $0.id == p[1] }?.notify == true
+        }
+    }
+
+    func setNotify(_ tab: OpenTab, _ on: Bool) {
+        for id in tab.hostIDs {
+            var m = Message(op: "set-notify", id: id); m.code = on ? 1 : 0
+            HostAttachment.send(m)
+            localSessions[id]?.notify = on
+        }
+        for key in tab.remoteIDs {
+            let p = key.split(separator: "/", maxSplits: 1).map(String.init)
+            guard p.count == 2 else { continue }
+            var m = Message(op: "set-notify", id: p[1]); m.code = on ? 1 : 0
+            monitor(p[0])?.send(m)
+            if let i = remote.firstIndex(where: { $0.id == p[0] }), let j = remote[i].sessions.firstIndex(where: { $0.id == p[1] }) {
+                remote[i].sessions[j].notify = on
+            }
+        }
+    }
+
 
     private var repoCache: [String: Bool] = [:]
 

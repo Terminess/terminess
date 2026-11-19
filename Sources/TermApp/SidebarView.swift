@@ -178,6 +178,10 @@ struct SidebarView: View {
                     machine: remoteMachine.map { DeviceBadge.machine($0) } ?? .thisMac,
                     badge: DeviceBadge.connected(model.tabDevices(tab)),
                     actions: [
+                        RowAction(symbol: model.notifies(tab) ? "bell.fill" : "bell",
+                                  help: model.notifies(tab) ? "Notifying your phone when this needs you or finishes. Click to stop."
+                                                            : "Notify your phone when this needs you or finishes",
+                                  lit: model.notifies(tab)) { model.setNotify(tab, !model.notifies(tab)) },
                         RowAction(symbol: "pencil", help: "Rename") { model.actions?.renameTab(tab.id) },
                         RowAction(symbol: "xmark", help: "Close tab") { model.actions?.closeTab(tab.id) },
                     ])
@@ -765,6 +769,7 @@ private func jobTint(_ state: String) -> Color {
 struct RowAction {
     let symbol: String
     let help: String
+    var lit = false
     let perform: () -> Void
 }
 
@@ -939,9 +944,10 @@ private struct Row: View {
                 }
             }
             Spacer(minLength: 4)
-            if hovering && !actions.isEmpty {
+            let shown = hovering ? Array(actions.indices) : actions.indices.filter { actions[$0].lit }
+            if !shown.isEmpty {
                 HStack(spacing: 2) {
-                    ForEach(actions.indices, id: \.self) { i in
+                    ForEach(shown, id: \.self) { i in
                         Button(action: actions[i].perform) {
                             Image(systemName: actions[i].symbol)
                                 .font(.system(size: 11, weight: .medium))
@@ -949,7 +955,7 @@ private struct Row: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(actions[i].lit ? Color.orange : Color.secondary)
                         .help(actions[i].help)
                     }
                 }

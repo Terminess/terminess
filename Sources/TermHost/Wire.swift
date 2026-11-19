@@ -83,6 +83,7 @@ public struct QuestionInfo: Codable, Equatable, Sendable {
 }
 
 public struct SessionInfo: Codable, Equatable {
+    public var notify: Bool?
     public var id: String
     public var name: String
     public var command: String

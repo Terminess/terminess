@@ -26,6 +26,7 @@ final class HostSession {
     var scanner = OutputScanner()
     var title = ""
     var origin: String?
+    var notifyPhone = false
     var originName: String?
     var notice: String?
     var onTurnEnd: (() -> Void)?
@@ -88,6 +89,7 @@ final class HostSession {
         i.question = question
         i.active = active
         i.origin = origin
+        i.notify = notifyPhone
         i.originName = origin == nil ? nil : originName
         i.nameLocked = nameLocked ? true : nil
         return i
@@ -500,6 +502,10 @@ public final class HostServer: @unchecked Sendable {
             if let req = m.id, let w = toolWaiters.removeValue(forKey: req) {
                 w.send(Message(op: "agent-result", code: m.code ?? 0, message: m.message ?? ""))
             }
+        case "set-notify":
+            guard let id = m.id, let s = sessions[id] else { conn.send(Message(op: "error", message: "no session \(m.id ?? "")")); return }
+            s.notifyPhone = m.code == 1
+            conn.send(Message(op: "notify-set", id: id, code: s.notifyPhone ? 1 : 0))
         case "list":
             conn.send(Message(op: "sessions", sessions: order.compactMap { sessions[$0].map(sessionInfo) }))
         case "create":
@@ -508,6 +514,7 @@ public final class HostServer: @unchecked Sendable {
                 if let resumed = m.resumeOf { warnIfOlder(s, resuming: resumed) }
                 s.origin = m.host
                 s.originName = Self.cleanDeviceName(m.deviceName)
+                s.notifyPhone = m.host == "iphone"
                 conn.send(Message(op: "created", id: s.id))
             } catch {
                 conn.send(Message(op: "error", message: "\(error)"))
@@ -996,6 +1003,7 @@ public final class HostServer: @unchecked Sendable {
     private func raiseAttention(_ s: HostSession, _ reason: PushRegistry.Reason) {
         s.attention = true
         s.asking = reason == .needsYou || reason == .approval
+        guard s.notifyPhone else { return }
         let now = Date().timeIntervalSince1970
         guard now - s.lastPush > 20 else { return }
         s.lastPush = now
