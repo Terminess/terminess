@@ -51,7 +51,7 @@ enum AgentTools {
             try editCodex { text in
                 text + (text.isEmpty || text.hasSuffix("\n") ? "" : "\n")
                     + "\n[mcp_servers.\(name)]\ncommand = \"\(exe.replacingOccurrences(of: "\"", with: "\\\""))\"\nargs = [\"mcp\"]\n"
-                    + "tool_timeout_sec = 960\n"
+                    + "env_vars = [\"TERMINESS_SESSION\", \"TERMINESSD_SOCKET\"]\ntool_timeout_sec = 960\n"
             }
         case (.codex, false):
             try editCodex { $0 }

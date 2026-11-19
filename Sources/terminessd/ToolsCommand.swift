@@ -31,6 +31,27 @@ enum AgentToolsSetup {
         ((try? String(contentsOfFile: codexConfig, encoding: .utf8)) ?? "").contains("[mcp_servers.\(name)]")
     }
 
+    static func codexOutdated() -> Bool {
+        let text = (try? String(contentsOfFile: codexConfig, encoding: .utf8)) ?? ""
+        guard let r = text.range(of: "[mcp_servers.\(name)]") else { return false }
+        let rest = text[r.upperBound...]
+        let table = rest.range(of: "\n[").map { rest[..<$0.lowerBound] } ?? rest
+        return !table.contains("env_vars")
+    }
+
+    static func withoutTable(_ original: String) -> String {
+        var kept: [Substring] = []
+        var skipping = false
+        for line in original.split(separator: "\n", omittingEmptySubsequences: false) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("[") { skipping = t == "[mcp_servers.\(name)]" || t.hasPrefix("[mcp_servers.\(name).") }
+            if !skipping { kept.append(line) }
+        }
+        var text = kept.joined(separator: "\n")
+        while text.hasSuffix("\n\n") { text.removeLast() }
+        return text
+    }
+
     @discardableResult
     static func shell(_ command: String) -> (status: Int32, output: String) {
         let p = Process()
@@ -74,7 +95,7 @@ enum AgentToolsSetup {
         }
         if find("codex") == nil {
             lines.append("Codex: not installed here, skipped.")
-        } else if codexHas() {
+        } else if codexHas() && !codexOutdated() {
             lines.append("Codex: already has the Terminess tools.")
         } else {
             do {
@@ -85,8 +106,9 @@ enum AgentToolsSetup {
                     try original.write(toFile: backup, atomically: true, encoding: .utf8)
                 }
                 let table = "\n[mcp_servers.\(name)]\ncommand = \"\(exe.replacingOccurrences(of: "\"", with: "\\\""))\"\nargs = [\"mcp\"]\n"
-                    + "tool_timeout_sec = 960\n"
-                let text = original + (original.isEmpty || original.hasSuffix("\n") ? "" : "\n") + table
+                    + "env_vars = [\"TERMINESS_SESSION\", \"TERMINESSD_SOCKET\"]\ntool_timeout_sec = 960\n"
+                let base = withoutTable(original)
+                let text = base + (base.isEmpty || base.hasSuffix("\n") ? "" : "\n") + table
                 try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
                 try text.write(toFile: path, atomically: true, encoding: .utf8)
                 lines.append("Codex: Terminess tools added to \(path).")

@@ -81,12 +81,76 @@ final class ReaderModel: ObservableObject {
     private func stop() {
         timer?.invalidate()
         timer = nil
+        closeRemote()
+    }
+
+
+    private var remoteKey: String?
+    private var remoteLink: SSHLink?
+    private var remoteConnection: Connection?
+
+    private func closeRemote() {
+        remoteConnection?.close()
+        remoteLink?.terminate()
+        remoteConnection = nil
+        remoteLink = nil
+        remoteKey = nil
+    }
+
+    private func followRemote(machine: RemoteMachine, session: String, agent: String) {
+        let name = agent == "claude" ? "Claude Code" : agent == "codex" ? "Codex" : agent == "ollama" ? "Local model" : "Terminess Agent"
+        if agentID != agent { agentID = agent }
+        if agentName != name { agentName = name }
+        if !live { live = true }
+        let key = machine.id + "/" + session
+        guard key != remoteKey || remoteConnection == nil else { return }
+        closeRemote()
+        watcher?.cancel(); watcher = nil
+        path = nil; lastMTime = nil
+        if !items.isEmpty { items = [] }
+        remoteKey = key
+        guard let link = SSHLink.open(machine) else { return }
+        remoteLink = link
+        let c = Connection(readFD: link.fd, queue: .main)
+        remoteConnection = c
+        c.onFrame = { [weak self] frame in
+            MainActor.assumeIsolated {
+                guard let self, self.remoteKey == key, let m = frame.message else { return }
+                switch m.op {
+                case "hello":
+                    c.send(Message(op: "transcript", id: session))
+                case "transcript":
+                    let incoming = m.items ?? []
+                    let from = min(max(0, m.code ?? 0), self.items.count)
+                    let next = Array((Array(self.items.prefix(from)) + incoming).suffix(400))
+                    if next != self.items { self.items = next }
+                    for item in next {
+                        if case .user(let text) = item.kind { self.onUserMessage?(text); break }
+                    }
+                default: break
+                }
+            }
+        }
+        c.onClose = { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.remoteKey == key else { return }
+                self.remoteConnection = nil
+                self.remoteLink?.terminate()
+                self.remoteLink = nil
+            }
+        }
+        c.start()
+        c.send(Message(op: "hello", version: Wire.version))
     }
 
     func refresh(force: Bool = false) {
         let busy = live && !(menuWaiting?() ?? false) && (activity?().map { Date().timeIntervalSince($0) < 2.5 } ?? false)
         if busy != working { working = busy }
-        switch source?() ?? .none {
+        let src = source?() ?? .none
+        if case .remote = src {} else if remoteKey != nil { closeRemote() }
+        switch src {
+        case .remote(let machine, let session, let agent):
+            followRemote(machine: machine, session: session, agent: agent)
         case .none:
             clear()
         case .file(let agent, let path, let live):
@@ -187,7 +251,7 @@ struct ReaderView: View {
             .padding(.vertical, 10)
             Divider()
             }
-            if model.items.isEmpty && model.agentName.isEmpty {
+            if model.items.isEmpty && model.agentName.isEmpty && model.pending.isEmpty && model.queued.isEmpty {
                 NewSessionView(gate: model.gate, tabMachine: model.machineID, startHere: { model.startHere?($0, $1) })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.items.isEmpty && model.pending.isEmpty && model.queued.isEmpty {

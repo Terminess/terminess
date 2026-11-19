@@ -4,7 +4,7 @@ import TermHost
 enum MCPServer {
     static let tools: [[String: Any]] = [
         ["name": "open_tab",
-         "description": "Open a new Terminess tab next to this one, optionally running a command (for example a dev server or tests) in a folder. The person sees it straight away.",
+         "description": "Open a new Terminess terminal tab next to this one, optionally running a shell command (for example a dev server or tests) in a folder. The person sees it straight away. This is a terminal, not a web browser: to open or look at a web page, use borrow.",
          "inputSchema": ["type": "object", "properties": [
             "command": ["type": "string", "description": "Shell command to run in the new tab; leave out for a plain shell"],
             "directory": ["type": "string", "description": "Folder to open in; defaults to this session's folder"],
@@ -82,7 +82,8 @@ enum MCPServer {
 
     private static func call(_ name: String, _ args: [String: Any]) -> (String, Bool) {
         guard tools.contains(where: { $0["name"] as? String == name }) else { return ("Unknown tool \(name).", true) }
-        guard let session = ProcessInfo.processInfo.environment["TERMINESS_SESSION"], !session.isEmpty else {
+        let session = ProcessInfo.processInfo.environment["TERMINESS_SESSION"] ?? ""
+        guard !session.isEmpty || name == "borrow" else {
             return ("This only works for an agent running inside Terminess.", true)
         }
         guard let fd = UnixSocket.connect(HostPaths.socket) else { return ("The Terminess service isn't running.", true) }

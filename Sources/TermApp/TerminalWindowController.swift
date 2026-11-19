@@ -47,7 +47,16 @@ final class Pane {
     }
 
     func readerSource() -> ReaderSource {
-        guard session.machine == nil, let process = session.process else { return .none }
+        if let machine = session.machine {
+            guard let process = session.process, let id = process.hostSessionID else { return .none }
+            let command = process.foregroundCommand
+            if let agent = Agent.detect(command), ["claude", "codex", "ollama", "harness"].contains(agent.id) {
+                return .remote(machine: machine, session: id, agent: agent.id)
+            }
+            if command == "ollama" || command == "harness" { return .remote(machine: machine, session: id, agent: command!) }
+            return .none
+        }
+        guard let process = session.process else { return .none }
         if LocalChat.usesChatFile(process.foregroundCommand), let id = process.hostSessionID, let p = LocalChat.latest(for: id) {
             return .file(agent: process.foregroundCommand ?? "ollama", path: p, live: true)
         }
@@ -72,6 +81,7 @@ enum ReaderSource {
     case none
     case file(agent: String, path: String, live: Bool)
     case find(agent: String, directory: String, pid: Int32, started: Date, arguments: [String])
+    case remote(machine: RemoteMachine, session: String, agent: String)
 }
 
 indirect enum PaneLayout: Codable {

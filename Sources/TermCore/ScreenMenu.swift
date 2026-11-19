@@ -20,42 +20,63 @@ public struct ScreenMenu: Equatable, Sendable {
 
     public static func find(lines raw: [String], width: Int? = nil) -> ScreenMenu? {
         let lines = raw.map(unframe)
-        guard let footer = lines.lastIndex(where: isFooter) else { return nil }
-
         func blank(_ i: Int) -> Bool {
             let t = lines[i].trimmingCharacters(in: .whitespaces)
             return t.isEmpty || t.unicodeScalars.allSatisfy { frame.contains($0) }
         }
-        var bottom = footer - 1
-        while bottom >= 0, blank(bottom) { bottom -= 1 }
-        var y = bottom
-        while y >= 0, !blank(y) { y -= 1 }
-        let block = Array(lines[(y + 1)..<(bottom + 1)])
-        let cursorLines = block.indices.filter { i in
-            block[i].trimmingCharacters(in: .whitespaces).first.map(cursors.contains) == true
+        var last = lines.count - 1
+        while last >= 0, blank(last) { last -= 1 }
+        guard last >= 0 else { return nil }
+        for c in stride(from: last, through: max(0, last - 30), by: -1) {
+            let t = lines[c].trimmingCharacters(in: .whitespaces)
+            guard let glyph = t.first, cursors.contains(glyph),
+                  !t.dropFirst().trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+            if let menu = menu(lines: lines, raw: raw, cursor: c, width: width, blank: blank) { return menu }
         }
-        guard cursorLines.count == 1, let c = cursorLines.first else { return nil }
-        let cursorColumn = indent(block[c])
-        let optionColumn = cursorColumn + 2
-        func isOption(_ i: Int) -> Bool { abs(indent(block[i]) - optionColumn) <= 1 }
+        return nil
+    }
+
+    private static func menu(lines: [String], raw: [String], cursor c: Int, width: Int?, blank: (Int) -> Bool) -> ScreenMenu? {
+        var top = c
+        while top > 0, !blank(top - 1) { top -= 1 }
+        var bottom = c
+        while bottom + 1 < lines.count, !blank(bottom + 1) { bottom += 1 }
+        let block = Array(lines[top...bottom])
+        let cb = c - top
+        let cursorText = block[cb].trimmingCharacters(in: .whitespaces).dropFirst().trimmingCharacters(in: .whitespaces)
+        let numbered = isNumbered(cursorText)
+        let optionColumn = indent(block[cb]) + 2
+        func bulleted(_ s: Substring) -> Bool {
+            guard let f = s.first, "-*•".contains(f) else { return false }
+            return s.dropFirst().first == " "
+        }
+        let cursorBulleted = bulleted(Substring(cursorText))
+        func isOption(_ i: Int) -> Bool {
+            guard abs(indent(block[i]) - optionColumn) <= 1 else { return false }
+            let t = block[i].trimmingCharacters(in: .whitespaces)
+            if bulleted(Substring(t)) != cursorBulleted { return false }
+            return !numbered || isNumbered(t)
+        }
         func isDescription(_ i: Int) -> Bool { indent(block[i]) > optionColumn + 1 }
-        var first = c
+        var first = cb
         while first > 0, isOption(first - 1) || isDescription(first - 1) { first -= 1 }
-        while first < c, !isOption(first) { first += 1 }
+        while first < cb, !isOption(first) { first += 1 }
         var options: [String] = []
         var selected = 0
         for i in first..<block.count {
             let trimmed = block[i].trimmingCharacters(in: .whitespaces)
-            if i == c {
+            if i == cb {
                 selected = options.count
                 options.append(clean(String(trimmed.dropFirst())))
             } else if isOption(i) {
                 options.append(clean(trimmed))
             } else if !isDescription(i) {
+                if i > cb { break }
                 return nil
             }
         }
         guard options.count >= 2, options.count <= 12 else { return nil }
+        var y = top - 1
         y += first
 
         var text: [String] = []
@@ -77,17 +98,17 @@ public struct ScreenMenu: Equatable, Sendable {
             }
             return trimmed.count >= width
         }
-        var top = y
-        while top >= 0, y - top < 20 {
-            let rawLine = raw[top].trimmingCharacters(in: .whitespaces)
+        var row = y
+        while row >= 0, y - row < 20 {
+            let rawLine = raw[row].trimmingCharacters(in: .whitespaces)
             if !rawLine.isEmpty, rawLine.unicodeScalars.allSatisfy({ frame.contains($0) }) { break }
-            let line = lines[top].trimmingCharacters(in: .whitespaces)
+            let line = lines[row].trimmingCharacters(in: .whitespaces)
             if line.isEmpty {
                 if !paragraph.isEmpty { text.append(joined(paragraph)); paragraph = [] }
             } else {
-                paragraph.append((line, fills(raw[top])))
+                paragraph.append((line, fills(raw[row])))
             }
-            top -= 1
+            row -= 1
         }
         if !paragraph.isEmpty { text.append(joined(paragraph)) }
         return ScreenMenu(text: text.reversed(), options: options, selected: selected)
@@ -96,12 +117,6 @@ public struct ScreenMenu: Equatable, Sendable {
     public func keys(toChoose index: Int) -> [Key] {
         let delta = index - selected
         return Array(repeating: delta < 0 ? Key.up : Key.down, count: abs(delta)) + [.enter]
-    }
-
-    private static func isFooter(_ line: String) -> Bool {
-        let l = line.lowercased()
-        return ["enter to confirm", "enter to select", "enter to continue", "enter confirm", "enter select", "press enter"]
-            .contains { l.contains($0) }
     }
 
     private static func indent(_ s: String) -> Int { s.prefix { $0 == " " }.count }
@@ -123,6 +138,7 @@ public struct ScreenMenu: Equatable, Sendable {
     private static func clean(_ s: String) -> String {
         var t = s.trimmingCharacters(in: .whitespaces)
         if isNumbered(t) { t = String(t.drop { $0.isNumber }.dropFirst(2)) }
+        if let gap = t.range(of: "  ") { t = String(t[..<gap.lowerBound]).trimmingCharacters(in: .whitespaces) }
         return t
     }
 }

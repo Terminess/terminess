@@ -53,8 +53,8 @@ import Testing
         #expect(m.keys(toChoose: 0) == [.up, .enter])
     }
 
-    @Test func nothingWithoutAFooterOrACursor() {
-        #expect(ScreenMenu.find(lines: Array(trust.dropLast(2))) == nil)
+    @Test func footerIsOptionalButACursorAndOptionsAreNot() {
+        #expect(ScreenMenu.find(lines: Array(trust.dropLast(2)))?.options == ["No, exit", "Yes, I trust this folder"])
         #expect(ScreenMenu.find(lines: trust.map { $0.replacingOccurrences(of: "\u{276F}", with: " ") }) == nil)
         #expect(ScreenMenu.find(lines: ["\u{276F} hello", "Enter to confirm"]) == nil)
     }
