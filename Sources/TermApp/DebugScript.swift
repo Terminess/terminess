@@ -610,6 +610,8 @@ enum DebugScript {
                 FindingsView.apply(found.findings[n], run: run, tabbedWith: mainWindow)?.setMode(.terminal)
             case "main":
                 NSApp.windows.first { $0.windowController is TerminalWindowController }?.makeKeyAndOrderFront(nil)
+            case "newtab":
+                (NSApp.delegate as? AppDelegate)?.open(tabbedWith: mainWindow)
             case "record":
                 let f = arg.split(separator: ":").map(String.init)
                 guard let dir = f.first else { return }

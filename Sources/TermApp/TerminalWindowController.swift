@@ -286,7 +286,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         let probe = TerminalView(frame: .zero)
         var size = probe.contentSize(columns: 100, rows: 30)
         if SidebarModel.shared.visible { size.width += TerminalWindowController.sidebarWidth }
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+        let window = TerminalWindow(contentRect: NSRect(origin: .zero, size: size),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.tabbingMode = .preferred

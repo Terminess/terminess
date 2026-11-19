@@ -274,3 +274,14 @@ final class PageGapView: NSView {
         dirtyRect.fill()
     }
 }
+
+final class TerminalWindow: NSWindow {
+    override func addTitlebarAccessoryViewController(_ vc: NSTitlebarAccessoryViewController) {
+        vc.isHidden = true
+        super.addTitlebarAccessoryViewController(vc)
+    }
+    override func insertTitlebarAccessoryViewController(_ vc: NSTitlebarAccessoryViewController, at index: Int) {
+        vc.isHidden = true
+        super.insertTitlebarAccessoryViewController(vc, at: index)
+    }
+}
