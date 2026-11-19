@@ -32,9 +32,11 @@ targets:
         product: TermHost
       - package: Terminal
         product: TermHandoff
-      # The session service, shipped next to the app's executable (docs/remote.md).
+      # The session service, shipped next to the app's executable (docs/remote.md)
+      # by the Embed terminessd step; not embedded again in Resources.
       - target: terminessd
         link: false
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nsokin.terminal

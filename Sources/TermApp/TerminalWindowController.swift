@@ -350,6 +350,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         PerfCounters.watch(reader, "publish.reader")
         PerfCounters.watch(composerState, "publish.composer")
         reader.machineID = machine?.id ?? ""
+        reader.showTerminal = { [weak self] in self?.setMode(.split) }
         reader.startHere = { [weak self] path, command in
             guard let self else { return }
             let dir = path == "~" ? "~" : shellQuote(path)
@@ -375,6 +376,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     private var layoutObservation: NSKeyValueObservation?
     private var revealedForQuestion = false
     private var screenMenu: ScreenMenu?
+    private var waitingLines: [String]?
+    private var waitingTimer: DispatchWorkItem?
     var debugMenuCard: String { screenMenu.map { "\($0.options)" } ?? "none" }
     private var questionTimer: DispatchWorkItem?
 
@@ -571,27 +574,57 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         let menu = mode != .terminal && Agent.detect(session.process?.foregroundCommand) != nil
             ? ScreenMenu.find(in: session.terminal) : nil
         if menu != screenMenu { screenMenu = menu; updateApproval() }
+        refreshWaiting(inputVisible: inputVisible)
         guard mode == .chat, !switchingModel, Agent.detect(session.process?.foregroundCommand) != nil else { return }
         questionTimer?.cancel()
-        if screenMenu != nil {
-            if revealedForQuestion { revealedForQuestion = false; showHost(false) }
+        if revealedForQuestion { revealedForQuestion = false; showHost(false) }
+    }
+
+    private var agentAsking: Bool {
+        guard let pane = focused, let id = pane.session.process?.hostSessionID else { return false }
+        let model = SidebarModel.shared
+        if let m = pane.session.machine {
+            return model.remote.first { $0.id == m.id }?.sessions.first { $0.id == id }?.asking == true
+        }
+        return model.localSessions[id]?.asking == true
+    }
+
+    private func refreshWaiting(inputVisible: Bool) {
+        lastInputVisible = inputVisible
+        waitingTimer?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.decideWaiting() }
+        }
+        waitingTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
+    }
+
+    private var lastInputVisible = true
+
+    private func decideWaiting() {
+        let isAgent = Agent.detect(focused?.session.process?.foregroundCommand) != nil
+        let waiting = mode != .terminal && isAgent && !composerState.busy && (agentAsking || !lastInputVisible)
+        guard waiting, let t = focused?.session.terminal else {
+            if waitingLines != nil { waitingLines = nil; updateApproval() }
+            if mode != .terminal && isAgent && !lastInputVisible {
+                let work = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.decideWaiting() } }
+                waitingTimer = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+            }
             return
         }
-        if !inputVisible && !revealedForQuestion {
-            let work = DispatchWorkItem { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let self, self.mode == .chat else { return }
-                    self.revealedForQuestion = true
-                    self.showHost(true)
-                    self.focus()
-                }
-            }
-            questionTimer = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
-        } else if inputVisible && revealedForQuestion {
-            revealedForQuestion = false
-            showHost(false)
-        }
+        let rows = t.screen.rows.map { $0.plainText().replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression) }
+        let frame = "─━═│┃║╭╮╰╯┌┐└┘".unicodeScalars
+        let lines = Array(rows.filter { r in
+            let x = r.trimmingCharacters(in: .whitespaces)
+            return !x.isEmpty && !x.unicodeScalars.allSatisfy { frame.contains($0) }
+        }.suffix(10))
+        if lines != waitingLines { waitingLines = lines; updateApproval() }
+    }
+
+    private func sendKey(_ key: Key) {
+        guard let s = focused?.session else { return }
+        s.send(InputEncoder.encode(key, modifiers: [], modes: s.terminal.modes))
     }
 
     func updateApproval() {
@@ -623,6 +656,19 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
                     self?.screenMenu = nil
                     self?.updateApproval()
                 })
+                return
+            }
+            if let lines = waitingLines, let pane = focused {
+                let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
+                container.approval = NSHostingView(rootView: WaitingBar(lines: lines, agent: agent, key: { [weak self] k in
+                    self?.sendKey(k)
+                }, type: { [weak self] text in
+                    guard let s = self?.focused?.session else { return }
+                    s.send(Array(text.utf8))
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        MainActor.assumeIsolated { s.send(InputEncoder.encode(.enter, modifiers: [], modes: s.terminal.modes)) }
+                    }
+                }, showTerminal: { [weak self] in self?.setMode(.split) }))
                 return
             }
             if let p = ([focused] + panes).compactMap({ $0 }).first(where: { $0.session.notice != nil && !$0.session.noticeDismissed }),
@@ -817,7 +863,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             PerfCounters.tick("title.osc")
         }
         session.onForeground = { [weak self, weak pane] in
-            if pane === self?.focused { self?.refreshTitle() }
+            guard let self, pane === self.focused else { return }
+            self.refreshTitle()
+            self.refreshWaiting(inputVisible: self.lastInputVisible)
         }
         session.onBell = { [weak self, weak pane] in
             guard let self, let pane else { return }

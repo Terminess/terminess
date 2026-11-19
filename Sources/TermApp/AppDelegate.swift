@@ -156,6 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         sidebar.currentDirectory = { [weak self] in self?.keyController?.currentDirectory }
         sidebar.start()
         AgentEvents.refreshIfConsented()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { MainActor.assumeIsolated { AgentChecks.checkThisMac() } }
         let env = ProcessInfo.processInfo.environment
         let testing = env["TERMAPP_SCRIPT"] != nil && env["TERMAPP_ALLOW_RESTORE"] == nil
         if testing || !restoreSession() { newWindow(nil) }

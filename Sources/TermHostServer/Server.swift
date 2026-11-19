@@ -480,7 +480,7 @@ public final class HostServer: @unchecked Sendable {
             let exe = Bundle.main.executablePath ?? CommandLine.arguments[0]
             DispatchQueue.global(qos: .utility).async {
                 var out = ""
-                for args in [["hooks", "install"], ["tools", "install"]] {
+                for args in [["hooks", "install"], ["tools", "install"], ["tools", "check"]] {
                     let p = Process()
                     p.executableURL = URL(fileURLWithPath: exe)
                     p.arguments = args

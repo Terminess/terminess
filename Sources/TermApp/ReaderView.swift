@@ -25,7 +25,17 @@ final class ReaderModel: ObservableObject {
 
     func addPending(_ text: String) {
         pending.append(PendingMessage(text: text, seenBefore: userCount(text)))
+        let count = items.count
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, !self.pending.isEmpty, self.items.count == count, !self.working else { return }
+                if !self.unreadable { self.unreadable = true }
+            }
+        }
     }
+
+    @Published var unreadable = false
+    var showTerminal: (() -> Void)?
 
     private func userCount(_ text: String) -> Int {
         let t = Self.norm(text)
@@ -40,6 +50,7 @@ final class ReaderModel: ObservableObject {
     }
 
     private func settlePending() {
+        if unreadable && !items.isEmpty && pending.isEmpty { unreadable = false }
         guard !pending.isEmpty else { return }
         let now = Date()
         let left = pending.filter { p in userCount(p.text) <= p.seenBefore && now.timeIntervalSince(p.sent) < 600 }
@@ -250,6 +261,17 @@ struct ReaderView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             Divider()
+            }
+            if model.unreadable {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.bubble").foregroundStyle(.orange)
+                    Text("Chat can't follow this conversation (the agent may have changed how it records it). It's carrying on in the terminal.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Show Terminal") { model.showTerminal?() }
+                }
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .background(Color.orange.opacity(0.08))
             }
             if model.items.isEmpty && model.agentName.isEmpty && model.pending.isEmpty && model.queued.isEmpty {
                 NewSessionView(gate: model.gate, tabMachine: model.machineID, startHere: { model.startHere?($0, $1) })

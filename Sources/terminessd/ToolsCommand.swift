@@ -126,8 +126,48 @@ enum AgentToolsSetup {
     }
 }
 
+extension AgentToolsSetup {
+    static func check() -> [String] {
+        var lines: [String] = []
+        func has(_ tool: String, _ helpArgs: String, _ flag: String) -> Bool {
+            guard let exe = find(tool) else { return false }
+            let dir = (exe as NSString).deletingLastPathComponent
+            return shell("PATH=\(q(dir)):$PATH \(q(exe)) \(helpArgs) 2>&1").output.contains(flag)
+        }
+        if let claude = find("claude") {
+            let dir = (claude as NSString).deletingLastPathComponent
+            let list = shell("PATH=\(q(dir)):$PATH \(q(claude)) mcp list 2>&1").output
+            let line = list.split(separator: "\n").first { $0.hasPrefix("\(name):") }.map(String.init) ?? ""
+            if line.isEmpty { lines.append("problem: Claude Code doesn't list the Terminess tools (terminessd tools install adds them).") }
+            else if line.contains("Connected") || line.contains("✔") { lines.append("ok: Claude Code has the Terminess tools.") }
+            else { lines.append("problem: Claude Code can't start the Terminess tools: \(line)") }
+            if !has("claude", "--help", "--chrome") { lines.append("problem: claude --chrome is gone, so borrowed tasks can't use Claude in Chrome.") }
+        } else {
+            lines.append("skip: Claude Code isn't installed here.")
+        }
+        if let codex = find("codex") {
+            let dir = (codex as NSString).deletingLastPathComponent
+            let r = shell("PATH=\(q(dir)):$PATH \(q(codex)) mcp list 2>&1")
+            if r.status != 0 { lines.append("problem: Codex rejects its config (a Codex update may have changed it): \(r.output.split(separator: "\n").first ?? "")") }
+            else if !r.output.contains(name) { lines.append("problem: Codex doesn't list the Terminess tools (terminessd tools install adds them).") }
+            else { lines.append("ok: Codex has the Terminess tools.") }
+            if !has("codex", "exec --help", "--output-last-message") { lines.append("problem: codex exec --output-last-message is gone, so borrowed Codex tasks can't return an answer.") }
+        } else {
+            lines.append("skip: Codex isn't installed here.")
+        }
+        if find("gemini") != nil {
+            lines.append(has("gemini", "--help", "--yolo") ? "ok: Gemini CLI is here." : "problem: gemini --yolo is gone, so borrowed Gemini tasks would stop for approval.")
+        }
+        return lines
+    }
+}
+
 func toolsCommand(_ args: [String]) -> Never {
     switch args.first {
+    case "check":
+        let lines = AgentToolsSetup.check()
+        lines.forEach { print($0) }
+        exit(lines.contains { $0.hasPrefix("problem:") } ? 1 : 0)
     case "install":
         AgentToolsSetup.install().forEach { print($0) }
         print("They only act inside Terminess sessions.")
@@ -135,7 +175,7 @@ func toolsCommand(_ args: [String]) -> Never {
         print("Claude Code: " + (AgentToolsSetup.claudeHas() ? "on" : "off (terminessd tools install to turn on)"))
         print("Codex: " + (AgentToolsSetup.codexHas() ? "on" : "off (terminessd tools install to turn on)"))
     default:
-        fail("usage: terminessd tools install|status")
+        fail("usage: terminessd tools install|status|check")
     }
     exit(0)
 }

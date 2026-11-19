@@ -145,6 +145,8 @@ final class BorrowCenter {
         a == "claude" ? "Claude Code" : a == "codex" ? "Codex" : a == "gemini" ? "Gemini CLI" : a
     }
 
+    nonisolated static let devtoolsVersion = "1.13.0"
+
     nonisolated static var chromeReady: Bool {
         FileManager.default.fileExists(atPath: NSHomeDirectory() + "/Library/Application Support/Google/Chrome/DevToolsActivePort")
     }
@@ -209,7 +211,7 @@ final class BorrowCenter {
         if let p = running.removeValue(forKey: id), p.isRunning { p.terminate() }
     }
 
-    private func allow(_ r: Request, runner: String, reply: @escaping @Sendable (Int, String) -> Void) {
+    private func allow(_ r: Request, runner: String, tried: [String] = [], reply: @escaping @Sendable (Int, String) -> Void) {
         let dir = NSHomeDirectory() + "/.local/state/terminess/borrow/\(r.id)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let system = "You are doing one task for an agent on another machine (\(r.from)), which can't use this Mac's browser or apps. "
@@ -224,7 +226,7 @@ final class BorrowCenter {
             if mine && !useOwnChrome {
                 note = "Your Chrome isn't set up for this yet (Terminess Settings, Agents, Switch It On in Chrome), so a separate browser without your logins was used.\n\n"
             }
-            let mcpArgs = useOwnChrome ? "[\"-y\",\"chrome-devtools-mcp@latest\",\"--autoConnect\"]" : "[\"-y\",\"chrome-devtools-mcp@latest\"]"
+            let mcpArgs = useOwnChrome ? "[\"-y\",\"chrome-devtools-mcp@\(BorrowCenter.devtoolsVersion)\",\"--autoConnect\"]" : "[\"-y\",\"chrome-devtools-mcp@\(BorrowCenter.devtoolsVersion)\"]"
             let devtools = ["-c", "'mcp_servers.chrome-devtools.command=\"npx\"'",
                             "-c", "'mcp_servers.chrome-devtools.args=" + mcpArgs + "'",
                             "-c", "'mcp_servers.chrome-devtools.startup_timeout_sec=90'",
@@ -258,8 +260,15 @@ final class BorrowCenter {
             }
             HandoffCoordinator.onMain {
                 BorrowCenter.shared.running[id] = nil
+                let failed = proc.terminationStatus != 0 || text.isEmpty
+                let done = tried + [runner]
+                if failed, let next = BorrowCenter.runners.first(where: { !done.contains($0) && BorrowCenter.installed($0) }) {
+                    let why = "\(BorrowCenter.runnerName(runner)) couldn't do it here, so \(BorrowCenter.runnerName(next)) did.\n\n"
+                    BorrowCenter.shared.allow(r, runner: next, tried: done) { code, answer in reply(code, why + answer) }
+                    return
+                }
                 let who = "Done on the Mac by \(BorrowCenter.runnerName(runner))" + (useOwnChrome ? ", in your Chrome" : "") + ".\n\n" + note
-                reply(proc.terminationStatus == 0 ? 0 : 1, text.isEmpty ? "The Mac's agent (\(BorrowCenter.runnerName(runner))) finished without an answer." : who + String(text.suffix(20000)))
+                reply(failed ? 1 : 0, text.isEmpty ? "The Mac's agent (\(BorrowCenter.runnerName(runner))) finished without an answer." : who + String(text.suffix(20000)))
             }
         }
         if ProcessInfo.processInfo.environment["TERMAPP_SCRIPT"] != nil { print("borrow: running \(r.id) with \(runner): \(r.task)"); fflush(stdout) }

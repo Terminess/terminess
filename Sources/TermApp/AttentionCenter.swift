@@ -51,6 +51,15 @@ final class AttentionCenter: NSObject, @preconcurrency UNUserNotificationCenterD
         NSApp.requestUserAttention(.informationalRequest)
     }
 
+    func notice(title: String, body: String) {
+        guard canNotify, authorised else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
     func clear(pane: Pane) {
         let id = ObjectIdentifier(pane)
         guard let entry = flagged.removeValue(forKey: id) else { return }

@@ -213,7 +213,9 @@ final class RemoteMonitor {
             connection?.send(Message(op: "history"))
             connection?.send(Message(op: "reminders"))
             connection?.send(Message(op: "watch-borrow"))
-            if !UserDefaults.standard.bool(forKey: "agentSetup." + machine.id) {
+            let lastSetup = UserDefaults.standard.double(forKey: "agentSetupAt." + machine.id)
+            if !UserDefaults.standard.bool(forKey: "agentSetup." + machine.id) || Date().timeIntervalSince1970 - lastSetup > 86400 {
+                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "agentSetupAt." + machine.id)
                 connection?.send(Message(op: "agent-setup"))
             }
             timer?.invalidate()
@@ -254,6 +256,7 @@ final class RemoteMonitor {
         case "agent-setup":
             UserDefaults.standard.set(true, forKey: "agentSetup." + machine.id)
             if let out = m.message, !out.isEmpty { print("agent setup on \(machine.name):\n\(out)"); fflush(stdout) }
+            AgentChecks.report(m.message ?? "", on: machine.name)
         case "borrow-cancel":
             if let id = m.id { BorrowCenter.shared.cancel(id) }
         case "reminder-acted":

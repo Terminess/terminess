@@ -124,3 +124,50 @@ struct MenuBar: View {
         .padding(.horizontal, 10).padding(.vertical, 6)
     }
 }
+
+
+struct WaitingBar: View {
+    let lines: [String]
+    let agent: String
+    let key: (Key) -> Void
+    let type: (String) -> Void
+    let showTerminal: () -> Void
+    @State private var text = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "hand.raised.fill").foregroundStyle(.orange).font(.title3)
+                Text("\(agent) is waiting for you").font(.callout.weight(.semibold))
+                Spacer()
+                Button("Show Terminal", action: showTerminal).buttonStyle(.link)
+            }
+            ScrollView {
+                Text(lines.joined(separator: "\n"))
+                    .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary)
+                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 150)
+            HStack(spacing: 6) {
+                keyButton("arrow.up", .up, "Up")
+                keyButton("arrow.down", .down, "Down")
+                keyButton("arrow.left", .left, "Left")
+                keyButton("arrow.right", .right, "Right")
+                Button("Tab") { key(.tab) }
+                Button("Esc") { key(.escape) }
+                Button("Enter") { key(.enter) }.buttonStyle(.borderedProminent)
+                TextField("Type an answer", text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { if !text.isEmpty { type(text); text = "" } }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.10)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.orange.opacity(0.35)))
+        .padding(.horizontal, 10).padding(.vertical, 6)
+    }
+
+    private func keyButton(_ symbol: String, _ k: Key, _ help: String) -> some View {
+        Button { key(k) } label: { Image(systemName: symbol) }.help(help)
+    }
+}
