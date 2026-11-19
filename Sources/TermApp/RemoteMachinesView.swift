@@ -35,6 +35,7 @@ struct MachinesSection: View {
                     set: { v in save(machines.map { x in var x = x; if x.id == m.id { x.repoRoot = v.isEmpty ? nil : v }; return x }) }),
                     prompt: Text("~/github"))
                     .font(.callout)
+                    .help("New tabs on this machine open in this folder.")
             }
             TextField("Repositories on this Mac", text: Binding(
                 get: { HandoffCoordinator.localRoot == "~/github" ? "" : HandoffCoordinator.localRoot },

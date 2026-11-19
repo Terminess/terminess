@@ -267,7 +267,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let inherit = Settings.shared.newTabsInCurrentFolder
         let current = (host?.windowController as? TerminalWindowController)
         let local = current?.session.machine == nil ? current?.currentDirectory : nil
-        let cwd = machine != nil ? directory : directory ?? (inherit ? local : nil) ?? Settings.shared.startDirectory
+        let cwd = machine != nil ? directory ?? machine?.repoRoot
+            : directory ?? (inherit ? local : nil) ?? Settings.shared.startDirectory
         let controller = TerminalWindowController(workingDirectory: cwd, command: command, layout: layout,
                                                   machine: machine, agent: agent)
         controller.onClose = { [weak self, weak controller] in

@@ -853,7 +853,9 @@ public final class HostServer: @unchecked Sendable {
             argv0 = "-" + shell.split(separator: "/").last.map(String.init)!
         }
         let home = ProcessInfo.processInfo.environment["HOME"] ?? "/"
-        let cwd = (m.cwd?.isEmpty == false ? m.cwd! : home).replacingOccurrences(of: "~", with: home, options: .anchored)
+        var cwd = (m.cwd?.isEmpty == false ? m.cwd! : home).replacingOccurrences(of: "~", with: home, options: .anchored)
+        var isDir: ObjCBool = false
+        if !FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir) || !isDir.boolValue { cwd = home }
         var env = m.env ?? PTYProcess.defaultEnvironment(program: "Terminess")
         for k in PTYProcess.agentSessionVariables { env[k] = nil }
         let id = String(UUID().uuidString.prefix(8)).lowercased()
