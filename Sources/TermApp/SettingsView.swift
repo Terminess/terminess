@@ -44,6 +44,7 @@ enum SettingsCatalog {
         ("apiKey", Entry(page: "agents", title: "Anthropic API key", detail: "For Terminess agent tabs, billed to your own Anthropic account.")),
         ("localModels", Entry(page: "agents", title: "Local models on", detail: "Where the start page and Shell, Local Model find Ollama models for this Mac: here, or an SSH host. A remote machine's own models are listed when you start there.")),
         ("borrowAgent", Entry(page: "agents", title: "Borrowed tasks run with", detail: "When an agent on another machine borrows this Mac, the same agent does the task here with its own browser tools (Claude Code with Claude in Chrome, Codex, Gemini CLI). If that agent isn't installed here, another one does it, and the answer says which.")),
+        ("borrowBrowser", Entry(page: "agents", title: "Borrowed Codex tasks use", detail: "A separate browser has none of your logins. Your Chrome needs remote debugging switched on once in Chrome, and Chrome asks you to allow each task. Claude Code always uses your Chrome, through Claude in Chrome.")),
         ("preferredAgent", Entry(page: "agents", title: "Agent for Terminess jobs", detail: "Which agent runs the jobs Terminess starts for you.")),
         ("opsGuide", Entry(page: "agents", title: "Operations guide", detail: "OPERATIONS.md and ORCHESTRATE.md tell every agent how your setup is built and how to work here.")),
         ("modelRoles", Entry(page: "models", title: "Models", detail: "Which model each agent uses for orchestration, building, reviews and handed-off work.")),
@@ -487,6 +488,23 @@ struct SettingsPageContent: View {
                     Text("Gemini CLI").tag("gemini")
                 }
                 .fixedSize()
+            }
+            SettingRow("borrowBrowser") {
+                HStack {
+                    Picker("Borrowed Codex tasks use", selection: $settings.borrowBrowser) {
+                        Text("A separate browser").tag("separate")
+                        Text("My Chrome").tag("mine")
+                    }
+                    .fixedSize()
+                    if settings.borrowBrowser == "mine" {
+                        if BorrowCenter.chromeReady {
+                            Label("Ready", systemImage: "checkmark.circle.fill").foregroundStyle(Color.connected).font(.callout)
+                        } else {
+                            Button("Switch It On in Chrome…") { BorrowCenter.openChromeSetting() }
+                                .help("Opens chrome://inspect/#remote-debugging. Turn on remote debugging there, once.")
+                        }
+                    }
+                }
             }
             SettingRow("preferredAgent") {
                 Picker("Agent for Terminess jobs", selection: $settings.preferredAgent) {

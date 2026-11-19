@@ -145,6 +145,17 @@ final class BorrowCenter {
         a == "claude" ? "Claude Code" : a == "codex" ? "Codex" : a == "gemini" ? "Gemini CLI" : a
     }
 
+    nonisolated static var chromeReady: Bool {
+        FileManager.default.fileExists(atPath: NSHomeDirectory() + "/Library/Application Support/Google/Chrome/DevToolsActivePort")
+    }
+
+    static func openChromeSetting() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-a", "Google Chrome", "chrome://inspect/#remote-debugging"]
+        try? p.run()
+    }
+
     nonisolated static func installed(_ tool: String) -> Bool {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -204,10 +215,18 @@ final class BorrowCenter {
         let system = "You are doing one task for an agent on another machine (\(r.from)), which can't use this Mac's browser or apps. "
             + "Do exactly the task, then reply with a concise final answer only: what you found or did. Don't change files outside this folder."
         let command: String
+        var useOwnChrome = false
+        var note = ""
         switch runner {
         case "codex":
+            let mine = Settings.shared.borrowBrowser == "mine"
+            useOwnChrome = mine && BorrowCenter.chromeReady
+            if mine && !useOwnChrome {
+                note = "Your Chrome isn't set up for this yet (Terminess Settings, Agents, Switch It On in Chrome), so a separate browser without your logins was used.\n\n"
+            }
+            let mcpArgs = useOwnChrome ? "[\"-y\",\"chrome-devtools-mcp@latest\",\"--autoConnect\"]" : "[\"-y\",\"chrome-devtools-mcp@latest\"]"
             let devtools = ["-c", "'mcp_servers.chrome-devtools.command=\"npx\"'",
-                            "-c", "'mcp_servers.chrome-devtools.args=[\"-y\",\"chrome-devtools-mcp@latest\"]'",
+                            "-c", "'mcp_servers.chrome-devtools.args=" + mcpArgs + "'",
                             "-c", "'mcp_servers.chrome-devtools.startup_timeout_sec=90'",
                             "-c", "'mcp_servers.chrome-devtools.default_tools_approval_mode=\"approve\"'"].joined(separator: " ")
             command = "codex exec --skip-git-repo-check -c 'approval_policy=\"never\"' -s workspace-write " + devtools + " -o " + shq(dir + "/answer.txt") + " "
@@ -239,7 +258,7 @@ final class BorrowCenter {
             }
             HandoffCoordinator.onMain {
                 BorrowCenter.shared.running[id] = nil
-                let who = "Done on the Mac by \(BorrowCenter.runnerName(runner)).\n\n"
+                let who = "Done on the Mac by \(BorrowCenter.runnerName(runner))" + (useOwnChrome ? ", in your Chrome" : "") + ".\n\n" + note
                 reply(proc.terminationStatus == 0 ? 0 : 1, text.isEmpty ? "The Mac's agent (\(BorrowCenter.runnerName(runner))) finished without an answer." : who + String(text.suffix(20000)))
             }
         }
