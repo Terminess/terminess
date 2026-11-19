@@ -333,6 +333,7 @@ enum DebugScript {
         if let host = env["TERMAPP_REMOTE"] {
             var m = RemoteMachine(id: "test", name: host, host: host)
             if let path = env["TERMAPP_REMOTE_PATH"] { m.path = path }
+            if let root = env["TERMAPP_REMOTE_ROOT"] { m.repoRoot = root }
             RemoteMachines.all = [m]
         }
         if let spec = env["TERMAPP_MACHINES"] {
@@ -359,6 +360,11 @@ enum DebugScript {
                             print("move-here: no remote session \(arg)"); fflush(stdout); return
                         }
                         HandoffCoordinator.moveToMac(r.machine, sessionID: s.id)
+                    case "move-there":
+                        let tab = arg.isEmpty ? key : NSApp.windows.lazy.compactMap { $0.windowController as? TerminalWindowController }
+                            .first { $0.displayTitle.contains(arg) || ($0.currentDirectory ?? "").hasSuffix(arg) }
+                        guard let r = model.remote.first, let tab else { print("move-there: no tab or machine"); fflush(stdout); return }
+                        HandoffCoordinator.moveTab(tab, to: r.machine)
                     case "openlocal":
                         guard let s = model.background.first(where: { $0.name == arg || $0.command == arg }) else {
                             print("local: no background session \(arg)"); break
@@ -375,7 +381,7 @@ enum DebugScript {
                         if let r = model.remote.first { app.newRemote(r.machine, agent: arg == "shell" ? nil : arg, directory: nil) }
                         print("remote: new \(arg)")
                     case "type":
-                        let text = arg.replacingOccurrences(of: "\\r", with: "\r")
+                        let text = arg.replacingOccurrences(of: "\\r", with: "\r").replacingOccurrences(of: "\\e", with: "\u{1B}")
                         key?.session.send(Array(text.utf8))
                     case "close":
                         key?.window?.performClose(nil)

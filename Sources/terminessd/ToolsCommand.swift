@@ -1,0 +1,113 @@
+import Foundation
+
+enum AgentToolsSetup {
+    static let name = "terminess"
+
+    static var home: String { ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory() }
+    static var claudeJSON: String {
+        if let dir = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"] { return dir + "/.claude.json" }
+        return home + "/.claude.json"
+    }
+    static var codexConfig: String {
+        (ProcessInfo.processInfo.environment["CODEX_HOME"] ?? home + "/.codex") + "/config.toml"
+    }
+
+    static var executable: String {
+        var exe = selfPath()
+        #if os(Linux)
+        if FileManager.default.isExecutableFile(atPath: home + "/.local/bin/terminessd") { exe = home + "/.local/bin/terminessd" }
+        #endif
+        return exe
+    }
+
+    static func claudeHas() -> Bool {
+        guard let data = FileManager.default.contents(atPath: claudeJSON),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let servers = obj["mcpServers"] as? [String: Any] else { return false }
+        return servers[name] != nil
+    }
+
+    static func codexHas() -> Bool {
+        ((try? String(contentsOfFile: codexConfig, encoding: .utf8)) ?? "").contains("[mcp_servers.\(name)]")
+    }
+
+    @discardableResult
+    static func shell(_ command: String) -> (status: Int32, output: String) {
+        let p = Process()
+        let sh = ProcessInfo.processInfo.environment["SHELL"].flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil } ?? "/bin/sh"
+        p.executableURL = URL(fileURLWithPath: sh)
+        p.arguments = ["-lc", command]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = out
+        p.standardInput = FileHandle.nullDevice
+        do { try p.run() } catch { return (127, "\(error)") }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return (p.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+
+    static func find(_ tool: String) -> String? {
+        let r = shell("command -v \(tool) 2>/dev/null")
+        let found = r.output.split(separator: "\n").last.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
+        if r.status == 0, found.hasPrefix("/") { return found }
+        let dirs = [home + "/.npm-global/bin", home + "/.local/bin", home + "/.bun/bin", home + "/.volta/bin",
+                    home + "/.claude/local", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+        return dirs.map { $0 + "/" + tool }.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    static func q(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
+    static func install() -> [String] {
+        var lines: [String] = []
+        let exe = executable
+        if let claude = find("claude") {
+            if claudeHas() {
+                lines.append("Claude Code: already has the Terminess tools.")
+            } else {
+                let dir = (claude as NSString).deletingLastPathComponent
+                let r = shell("PATH=\(q(dir)):$PATH \(q(claude)) mcp add --scope user \(name) -- \(q(exe)) mcp")
+                lines.append(r.status == 0 ? "Claude Code: Terminess tools added." : "Claude Code: couldn't add the tools: \(r.output.trimmingCharacters(in: .whitespacesAndNewlines))")
+            }
+        } else {
+            lines.append("Claude Code: not installed here, skipped.")
+        }
+        if find("codex") == nil {
+            lines.append("Codex: not installed here, skipped.")
+        } else if codexHas() {
+            lines.append("Codex: already has the Terminess tools.")
+        } else {
+            do {
+                let path = codexConfig
+                let original = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+                let backup = path + ".before-terminess"
+                if !original.isEmpty, !FileManager.default.fileExists(atPath: backup) {
+                    try original.write(toFile: backup, atomically: true, encoding: .utf8)
+                }
+                let table = "\n[mcp_servers.\(name)]\ncommand = \"\(exe.replacingOccurrences(of: "\"", with: "\\\""))\"\nargs = [\"mcp\"]\n"
+                    + "tool_timeout_sec = 960\n"
+                let text = original + (original.isEmpty || original.hasSuffix("\n") ? "" : "\n") + table
+                try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+                try text.write(toFile: path, atomically: true, encoding: .utf8)
+                lines.append("Codex: Terminess tools added to \(path).")
+            } catch {
+                lines.append("Codex: couldn't add the tools: \(error)")
+            }
+        }
+        return lines
+    }
+}
+
+func toolsCommand(_ args: [String]) -> Never {
+    switch args.first {
+    case "install":
+        AgentToolsSetup.install().forEach { print($0) }
+        print("They only act inside Terminess sessions.")
+    case "status", nil:
+        print("Claude Code: " + (AgentToolsSetup.claudeHas() ? "on" : "off (terminessd tools install to turn on)"))
+        print("Codex: " + (AgentToolsSetup.codexHas() ? "on" : "off (terminessd tools install to turn on)"))
+    default:
+        fail("usage: terminessd tools install|status")
+    }
+    exit(0)
+}

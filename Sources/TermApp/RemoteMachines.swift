@@ -213,6 +213,9 @@ final class RemoteMonitor {
             connection?.send(Message(op: "history"))
             connection?.send(Message(op: "reminders"))
             connection?.send(Message(op: "watch-borrow"))
+            if !UserDefaults.standard.bool(forKey: "agentSetup." + machine.id) {
+                connection?.send(Message(op: "agent-setup"))
+            }
             timer?.invalidate()
             timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
@@ -248,6 +251,11 @@ final class RemoteMonitor {
                     SidebarModel.shared.monitor(machine.id)?.send(Message(op: "borrow-reply", id: id, code: code, message: text))
                 }
             }
+        case "agent-setup":
+            UserDefaults.standard.set(true, forKey: "agentSetup." + machine.id)
+            if let out = m.message, !out.isEmpty { print("agent setup on \(machine.name):\n\(out)"); fflush(stdout) }
+        case "borrow-cancel":
+            if let id = m.id { BorrowCenter.shared.cancel(id) }
         case "reminder-acted":
             if let session = m.id { onReminderActed?(session) }
             connection?.send(Message(op: "list"))

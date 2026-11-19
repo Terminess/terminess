@@ -161,6 +161,11 @@ final class BorrowCenter {
 
     private func close(_ id: String) { panels.removeValue(forKey: id)?.close() }
 
+    func cancel(_ id: String) {
+        close(id)
+        if let p = running.removeValue(forKey: id), p.isRunning { p.terminate() }
+    }
+
     private func allow(_ r: Request, reply: @escaping @Sendable (Int, String) -> Void) {
         let dir = NSHomeDirectory() + "/.local/state/terminess/borrow/\(r.id)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

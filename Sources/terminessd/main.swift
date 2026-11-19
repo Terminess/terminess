@@ -526,6 +526,9 @@ case "hook":
 case "mcp":
     MCPServer.run()
 
+case "tools":
+    toolsCommand(rest)
+
 case "hooks":
     let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
     var exe = selfPath()
@@ -585,6 +588,7 @@ case "-h", "--help", "help":
                                        move a running agent conversation between machines (see handoff help)
       terminessd borrow "task"         hand a task to the Mac (its Chrome, its apps) and print the answer
       terminessd mcp                   an MCP server giving agents Terminess tools (tabs, worktrees, notify, ask, remind, borrow)
+      terminessd tools install|status  give Claude Code and Codex here the Terminess tools (the Mac app does this for you)
     """)
 
 default:

@@ -154,10 +154,11 @@ public final class HostServer: @unchecked Sendable {
         return i
     }
     private var toolWaiters: [String: Connection] = [:]
+    private var borrowPending: [String: ObjectIdentifier] = [:]
     private var handoffOut: [String: Data] = [:]
     private var handoffIn: [String: Data] = [:]
     private var borrowWatchers: [ObjectIdentifier] = []
-    static let borrowTimeout: TimeInterval = 15 * 60
+    static let borrowTimeout: TimeInterval = ProcessInfo.processInfo.environment["TERMINESSD_BORROW_TIMEOUT"].flatMap(Double.init) ?? 15 * 60
     private var nextNumber = 1
     public let socketPath: String
     public var log: (String) -> Void = { _ in }
@@ -274,13 +275,17 @@ public final class HostServer: @unchecked Sendable {
         }
         let req = String(UUID().uuidString.prefix(8)).lowercased()
         toolWaiters[req] = conn
+        borrowPending[req] = key
         let host = ProcessInfo.processInfo.hostName
         let from = m.id.flatMap { sessions[$0] }.map { "\(host): \($0.info.cwd)" } ?? host
         mac.send(Message(op: "borrow-request", host: host, id: req, name: from, message: task))
         log("borrow \(req): sent to the Mac")
         queue.asyncAfter(deadline: .now() + Self.borrowTimeout) { [weak self] in
-            guard let w = self?.toolWaiters.removeValue(forKey: req) else { return }
+            guard let self, let w = self.toolWaiters.removeValue(forKey: req) else { return }
             w.send(Message(op: "agent-result", code: 1, message: "No answer from the Mac within \(Int(Self.borrowTimeout / 60)) minutes."))
+            if let mac = self.borrowPending.removeValue(forKey: req), let c = self.connections[mac] {
+                c.send(Message(op: "borrow-cancel", id: req))
+            }
         }
     }
 
@@ -289,7 +294,12 @@ public final class HostServer: @unchecked Sendable {
         deviceNames[key] = nil
         reminderWatchers.remove(key)
         borrowWatchers.removeAll { $0 == key }
-        for (req, w) in toolWaiters where ObjectIdentifier(w) == key { toolWaiters[req] = nil }
+        for (req, mac) in borrowPending where mac == key {
+            borrowPending[req] = nil
+            toolWaiters.removeValue(forKey: req)?.send(Message(op: "agent-result", code: 1,
+                message: "The Mac disconnected before it answered, so the task wasn't done there. Try again when Terminess is open on the Mac."))
+        }
+        for (req, w) in toolWaiters where ObjectIdentifier(w) == key { toolWaiters[req] = nil; borrowPending[req] = nil }
         for s in sessions.values where s.questionWaiter.map(ObjectIdentifier.init) == key { clearQuestion(s) }
         for s in sessions.values {
             s.queuedPermissions.removeAll { ObjectIdentifier($0.waiter) == key }
@@ -465,7 +475,27 @@ public final class HostServer: @unchecked Sendable {
             borrowWatchers.removeAll { $0 == key }
             borrowWatchers.append(key)
             conn.send(Message(op: "watching"))
+        case "agent-setup":
+            let exe = Bundle.main.executablePath ?? CommandLine.arguments[0]
+            DispatchQueue.global(qos: .utility).async {
+                var out = ""
+                for args in [["hooks", "install"], ["tools", "install"]] {
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: exe)
+                    p.arguments = args
+                    let pipe = Pipe()
+                    p.standardOutput = pipe
+                    p.standardError = pipe
+                    p.standardInput = FileHandle.nullDevice
+                    if (try? p.run()) != nil {
+                        out += String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                        p.waitUntilExit()
+                    }
+                }
+                self.queue.async { conn.send(Message(op: "agent-setup", message: out)) }
+            }
         case "borrow-reply":
+            if let req = m.id { borrowPending[req] = nil }
             if let req = m.id, let w = toolWaiters.removeValue(forKey: req) {
                 w.send(Message(op: "agent-result", code: m.code ?? 0, message: m.message ?? ""))
             }
