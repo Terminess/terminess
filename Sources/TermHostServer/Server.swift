@@ -278,7 +278,8 @@ public final class HostServer: @unchecked Sendable {
         borrowPending[req] = key
         let host = ProcessInfo.processInfo.hostName
         let from = m.id.flatMap { sessions[$0] }.map { "\(host): \($0.info.cwd)" } ?? host
-        mac.send(Message(op: "borrow-request", host: host, id: req, name: from, message: task))
+        let agent = m.id.flatMap { sessions[$0] }?.command
+        mac.send(Message(op: "borrow-request", host: host, id: req, name: from, command: agent, message: task))
         log("borrow \(req): sent to the Mac")
         queue.asyncAfter(deadline: .now() + Self.borrowTimeout) { [weak self] in
             guard let self, let w = self.toolWaiters.removeValue(forKey: req) else { return }

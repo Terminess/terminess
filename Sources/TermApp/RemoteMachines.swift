@@ -245,7 +245,7 @@ final class RemoteMonitor {
         case "borrow-request":
             guard let id = m.id, let task = m.message else { break }
             let machine = self.machine
-            let r = BorrowCenter.Request(id: id, machine: machine, from: m.name ?? machine.name, task: task)
+            let r = BorrowCenter.Request(id: id, machine: machine, from: m.name ?? machine.name, task: task, agent: m.command)
             BorrowCenter.shared.request(r) { code, text in
                 HandoffCoordinator.onMain {
                     SidebarModel.shared.monitor(machine.id)?.send(Message(op: "borrow-reply", id: id, code: code, message: text))

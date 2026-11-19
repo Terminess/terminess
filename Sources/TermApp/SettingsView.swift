@@ -43,6 +43,7 @@ enum SettingsCatalog {
         ("agentTools", Entry(page: "agents", title: "Terminess tools", detail: "Gives the agents Terminess's own tools, such as reminders.")),
         ("apiKey", Entry(page: "agents", title: "Anthropic API key", detail: "For Terminess agent tabs, billed to your own Anthropic account.")),
         ("localModels", Entry(page: "agents", title: "Local models on", detail: "Where the start page and Shell, Local Model find Ollama models for this Mac: here, or an SSH host. A remote machine's own models are listed when you start there.")),
+        ("borrowAgent", Entry(page: "agents", title: "Borrowed tasks run with", detail: "When an agent on another machine borrows this Mac, the same agent does the task here with its own browser tools (Claude Code with Claude in Chrome, Codex, Gemini CLI). If that agent isn't installed here, another one does it, and the answer says which.")),
         ("preferredAgent", Entry(page: "agents", title: "Agent for Terminess jobs", detail: "Which agent runs the jobs Terminess starts for you.")),
         ("opsGuide", Entry(page: "agents", title: "Operations guide", detail: "OPERATIONS.md and ORCHESTRATE.md tell every agent how your setup is built and how to work here.")),
         ("modelRoles", Entry(page: "models", title: "Models", detail: "Which model each agent uses for orchestration, building, reviews and handed-off work.")),
@@ -477,6 +478,15 @@ struct SettingsPageContent: View {
             SettingRow("localModels") {
                 TextField("Local models on", text: $settings.localModelsHost, prompt: Text("This Mac, or an SSH host"))
                     .frame(width: 200)
+            }
+            SettingRow("borrowAgent") {
+                Picker("Borrowed tasks run with", selection: $settings.borrowAgent) {
+                    Text("The agent that asked").tag("match")
+                    Text("Claude Code").tag("claude")
+                    Text("Codex").tag("codex")
+                    Text("Gemini CLI").tag("gemini")
+                }
+                .fixedSize()
             }
             SettingRow("preferredAgent") {
                 Picker("Agent for Terminess jobs", selection: $settings.preferredAgent) {

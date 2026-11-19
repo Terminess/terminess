@@ -605,8 +605,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             return
         }
         let pane = ([focused] + panes).compactMap { $0 }.first { $0.session.permission != nil }
-        guard let pane, let request = pane.session.permission else {
-            if let menu = screenMenu, let pane = focused {
+        let fuller = pane.flatMap { p in p.session.permission.flatMap { r in
+            !r.canAlways && p === focused && (screenMenu?.options.count ?? 0) > 2 ? screenMenu : nil } }
+        guard let pane, let request = pane.session.permission, fuller == nil else {
+            if let menu = fuller ?? screenMenu, let pane = focused {
                 let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
                 container.approval = NSHostingView(rootView: MenuBar(menu: menu, agent: agent) { [weak self, weak pane] index in
                     guard let pane else { return }

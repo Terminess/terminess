@@ -31,12 +31,17 @@ enum AgentToolsSetup {
         ((try? String(contentsOfFile: codexConfig, encoding: .utf8)) ?? "").contains("[mcp_servers.\(name)]")
     }
 
+    static let approvedTools = ["borrow", "notify", "ask_user", "remind", "open_tab"]
+    static var codexApprovals: String {
+        approvedTools.map { "\n[mcp_servers.\(name).tools.\($0)]\napproval_mode = \"approve\"\n" }.joined()
+    }
+
     static func codexOutdated() -> Bool {
         let text = (try? String(contentsOfFile: codexConfig, encoding: .utf8)) ?? ""
         guard let r = text.range(of: "[mcp_servers.\(name)]") else { return false }
         let rest = text[r.upperBound...]
         let table = rest.range(of: "\n[").map { rest[..<$0.lowerBound] } ?? rest
-        return !table.contains("env_vars")
+        return !table.contains("env_vars") || !text.contains("[mcp_servers.\(name).tools.notify]")
     }
 
     static func withoutTable(_ original: String) -> String {
@@ -107,6 +112,7 @@ enum AgentToolsSetup {
                 }
                 let table = "\n[mcp_servers.\(name)]\ncommand = \"\(exe.replacingOccurrences(of: "\"", with: "\\\""))\"\nargs = [\"mcp\"]\n"
                     + "env_vars = [\"TERMINESS_SESSION\", \"TERMINESSD_SOCKET\"]\ntool_timeout_sec = 960\n"
+                    + AgentToolsSetup.codexApprovals
                 let base = withoutTable(original)
                 let text = base + (base.isEmpty || base.hasSuffix("\n") ? "" : "\n") + table
                 try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)

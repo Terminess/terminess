@@ -136,22 +136,54 @@ final class BorrowCenter {
         let machine: RemoteMachine
         let from: String
         let task: String
+        var agent: String? = nil
         var state: String = "asking"
+    }
+
+    nonisolated static let runners = ["claude", "codex", "gemini"]
+    nonisolated static func runnerName(_ a: String) -> String {
+        a == "claude" ? "Claude Code" : a == "codex" ? "Codex" : a == "gemini" ? "Gemini CLI" : a
+    }
+
+    nonisolated static func installed(_ tool: String) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = ["-lc", "command -v \(tool) >/dev/null 2>&1"]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
+
+    static func runner(for r: Request) -> (agent: String, fallback: Bool, wanted: String)? {
+        let setting = Settings.shared.borrowAgent
+        let wanted = setting == "match" ? (r.agent.flatMap { runners.contains($0) ? $0 : nil } ?? "claude") : setting
+        if installed(wanted) { return (wanted, false, wanted) }
+        if let other = runners.first(where: { $0 != wanted && installed($0) }) { return (other, true, wanted) }
+        return nil
     }
 
     private var panels: [String: NSPanel] = [:]
     private var running: [String: Process] = [:]
 
     func request(_ r: Request, reply: @escaping @Sendable (Int, String) -> Void) {
-        if ProcessInfo.processInfo.environment["TERMAPP_BORROW_AUTO"] == "allow" { allow(r, reply: reply); return }
+        if ProcessInfo.processInfo.environment["TERMAPP_BORROW_AUTO"] == "allow" {
+            if let c = BorrowCenter.runner(for: r) { allow(r, runner: c.agent, reply: reply) } else { reply(1, "No agent is installed on the Mac.") }
+            return
+        }
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 260),
                             styleMask: [.titled, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = "Borrow this Mac"
         panel.level = .floating
         panel.isReleasedWhenClosed = false
-        panel.contentView = NSHostingView(rootView: BorrowRequestView(request: r, decide: { [weak self] ok in
+        guard let choice = BorrowCenter.runner(for: r) else {
+            reply(1, "No agent is installed on the Mac to do this (Claude Code, Codex or Gemini CLI).")
+            return
+        }
+        panel.contentView = NSHostingView(rootView: BorrowRequestView(request: r, runner: choice.agent, fallback: choice.fallback, wanted: choice.wanted, decide: { [weak self] ok in
             self?.close(r.id)
-            if ok { self?.allow(r, reply: reply) } else { reply(1, "The person declined to lend their Mac for this task.") }
+            if ok { self?.allow(r, runner: choice.agent, reply: reply) } else { reply(1, "The person declined to lend their Mac for this task.") }
         }))
         panel.center()
         panel.orderFrontRegardless()
@@ -166,16 +198,30 @@ final class BorrowCenter {
         if let p = running.removeValue(forKey: id), p.isRunning { p.terminate() }
     }
 
-    private func allow(_ r: Request, reply: @escaping @Sendable (Int, String) -> Void) {
+    private func allow(_ r: Request, runner: String, reply: @escaping @Sendable (Int, String) -> Void) {
         let dir = NSHomeDirectory() + "/.local/state/terminess/borrow/\(r.id)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let system = "You are doing one task for an agent on another machine (\(r.from)), which can't use this Mac's browser or apps. "
             + "Do exactly the task, then reply with a concise final answer only: what you found or did. Don't change files outside this folder."
+        let command: String
+        switch runner {
+        case "codex":
+            let devtools = ["-c", "'mcp_servers.chrome-devtools.command=\"npx\"'",
+                            "-c", "'mcp_servers.chrome-devtools.args=[\"-y\",\"chrome-devtools-mcp@latest\"]'",
+                            "-c", "'mcp_servers.chrome-devtools.startup_timeout_sec=90'",
+                            "-c", "'mcp_servers.chrome-devtools.default_tools_approval_mode=\"approve\"'"].joined(separator: " ")
+            command = "codex exec --skip-git-repo-check -c 'approval_policy=\"never\"' -s workspace-write " + devtools + " -o " + shq(dir + "/answer.txt") + " "
+                + shq(system + " Use the browser tools for anything on the web.\n\nTask: " + r.task) + " >/dev/null"
+        case "gemini":
+            command = "gemini --yolo -p " + shq(system + "\n\nTask: " + r.task)
+        default:
+            command = "claude -p --chrome --output-format text --permission-mode acceptEdits "
+                + "--allowedTools mcp__claude-in-chrome WebFetch WebSearch Read "
+                + "--append-system-prompt " + shq(system) + " " + shq(r.task)
+        }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-lc", "claude -p --chrome --output-format text --permission-mode acceptEdits "
-                       + "--allowedTools mcp__claude-in-chrome WebFetch WebSearch Read "
-                       + "--append-system-prompt " + shq(system) + " " + shq(r.task)]
+        p.arguments = ["-lc", command]
         p.currentDirectoryURL = URL(fileURLWithPath: dir)
         var env = ProcessInfo.processInfo.environment
         for k in env.keys where k.hasPrefix("CLAUDE") || k == "TERMINESS_SESSION" { env[k] = nil }
@@ -186,14 +232,18 @@ final class BorrowCenter {
         p.standardInput = FileHandle.nullDevice
         let id = r.id
         p.terminationHandler = { proc in
-            let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            var text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            if runner == "codex", let answer = try? String(contentsOfFile: dir + "/answer.txt", encoding: .utf8) {
+                text = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             HandoffCoordinator.onMain {
                 BorrowCenter.shared.running[id] = nil
-                reply(proc.terminationStatus == 0 ? 0 : 1, text.isEmpty ? "The Mac's agent finished without an answer." : String(text.suffix(20000)))
+                let who = "Done on the Mac by \(BorrowCenter.runnerName(runner)).\n\n"
+                reply(proc.terminationStatus == 0 ? 0 : 1, text.isEmpty ? "The Mac's agent (\(BorrowCenter.runnerName(runner))) finished without an answer." : who + String(text.suffix(20000)))
             }
         }
-        if ProcessInfo.processInfo.environment["TERMAPP_SCRIPT"] != nil { print("borrow: running \(r.id): \(r.task)"); fflush(stdout) }
+        if ProcessInfo.processInfo.environment["TERMAPP_SCRIPT"] != nil { print("borrow: running \(r.id) with \(runner): \(r.task)"); fflush(stdout) }
         do { try p.run(); running[id] = p } catch { reply(1, "Couldn't start Claude Code on the Mac: \(error)") }
     }
 
@@ -202,6 +252,9 @@ final class BorrowCenter {
 
 private struct BorrowRequestView: View {
     let request: BorrowCenter.Request
+    let runner: String
+    let fallback: Bool
+    let wanted: String
     let decide: (Bool) -> Void
 
     var body: some View {
@@ -210,7 +263,9 @@ private struct BorrowRequestView: View {
                 Image(systemName: "laptopcomputer").foregroundStyle(.orange)
                 Text("\(request.machine.name) wants to borrow this Mac").font(.headline)
             }
-            Text("An agent there (\(request.from)) asks a local Claude Code, with your Chrome, to do this and send back the answer:")
+            Text("An agent there (\(request.from)) asks for this to be done here and the answer sent back. "
+                 + "\(BorrowCenter.runnerName(runner)) will do it" + (runner == "claude" ? ", with your Chrome" : "")
+                 + (fallback ? " (\(BorrowCenter.runnerName(wanted)) isn't installed on this Mac)." : ":"))
                 .font(.callout).foregroundStyle(.secondary)
             ScrollView {
                 Text(request.task).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
