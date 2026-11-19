@@ -232,7 +232,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc func newWindowForTab(_ sender: Any?) {
-        open(tabbedWith: NSApp.keyWindow)
+        if let m = Self.defaultRemoteMachine {
+            open(tabbedWith: NSApp.keyWindow, machine: m)
+        } else {
+            open(tabbedWith: NSApp.keyWindow)
+        }
+    }
+
+    static var defaultRemoteMachine: RemoteMachine? {
+        let id = Settings.shared.defaultMachine
+        guard !id.isEmpty, let m = RemoteMachines.all.first(where: { $0.id == id }),
+              SidebarModel.shared.remote.first(where: { $0.id == id })?.note == nil else { return nil }
+        return m
     }
 
     func pageController() -> TerminalWindowController {

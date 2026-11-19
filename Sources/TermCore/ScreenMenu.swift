@@ -100,7 +100,8 @@ public struct ScreenMenu: Equatable, Sendable {
 
     private static func isFooter(_ line: String) -> Bool {
         let l = line.lowercased()
-        return l.contains("enter to confirm") || l.contains("enter to select") || l.contains("enter to continue")
+        return ["enter to confirm", "enter to select", "enter to continue", "enter confirm", "enter select", "press enter"]
+            .contains { l.contains($0) }
     }
 
     private static func indent(_ s: String) -> Int { s.prefix { $0 == " " }.count }

@@ -30,6 +30,7 @@ enum SettingsCatalog {
         ("naturalText", Entry(page: "keyboard", title: "Natural text editing", detail: "Option-arrows move by word, Command-arrows go to the line's start and end, Option-Delete deletes a word.")),
         ("keyBindings", Entry(page: "keyboard", title: "Key bindings", detail: "Send text or an escape sequence (\\e for Escape, \\r, \\n, \\t, \\xHH) from a key.")),
         ("quickTerminal", Entry(page: "keyboard", title: "Quick Terminal", detail: "A hotkey that drops a terminal down from the top of the screen over any app.")),
+        ("defaultMachine", Entry(page: "windows", title: "New sessions start on", detail: "The machine new tabs and the start page use, so agents work on the repos and models there. Falls back to this Mac while it's offline.")),
         ("startFolder", Entry(page: "windows", title: "New windows open in", detail: "The folder a new window starts in.")),
         ("restore", Entry(page: "windows", title: "Reopen windows and tabs", detail: "Brings back your windows and tabs when Terminess starts.")),
         ("keepSessions", Entry(page: "windows", title: "Keep sessions running", detail: "Shells and agents keep running after Terminess quits, and reattach when it reopens. Applies to new tabs.")),
@@ -41,7 +42,7 @@ enum SettingsCatalog {
         ("pairSkill", Entry(page: "agents", title: "Pair skill", detail: "Lets Claude Code and Codex hand work to each other and ask for reviews.")),
         ("agentTools", Entry(page: "agents", title: "Terminess tools", detail: "Gives the agents Terminess's own tools, such as reminders.")),
         ("apiKey", Entry(page: "agents", title: "Anthropic API key", detail: "For Terminess agent tabs, billed to your own Anthropic account.")),
-        ("localModels", Entry(page: "agents", title: "Local models on", detail: "Shell, Local Model lists the Ollama models on this Mac or an SSH host, and opens a tab chatting with one.")),
+        ("localModels", Entry(page: "agents", title: "Local models on", detail: "Where the start page and Shell, Local Model find Ollama models for this Mac: here, or an SSH host. A remote machine's own models are listed when you start there.")),
         ("preferredAgent", Entry(page: "agents", title: "Agent for Terminess jobs", detail: "Which agent runs the jobs Terminess starts for you.")),
         ("opsGuide", Entry(page: "agents", title: "Operations guide", detail: "OPERATIONS.md and ORCHESTRATE.md tell every agent how your setup is built and how to work here.")),
         ("modelRoles", Entry(page: "models", title: "Models", detail: "Which model each agent uses for orchestration, building, reviews and handed-off work.")),
@@ -416,6 +417,15 @@ struct SettingsPageContent: View {
 
     @ViewBuilder private var windows: some View {
         Section {
+            SettingRow("defaultMachine") {
+                Picker("New sessions start on", selection: $settings.defaultMachine) {
+                    Text("This Mac").tag("")
+                    ForEach(RemoteMachines.all.filter(\.isValid)) { m in
+                        Text(m.name.isEmpty ? m.host : m.name).tag(m.id)
+                    }
+                }
+                .fixedSize()
+            }
             SettingRow("startFolder") {
                 HStack {
                     Text(settings.startFolder.isEmpty ? "Home folder" : abbreviate(settings.startFolder))

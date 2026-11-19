@@ -303,6 +303,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     var hideAgentInput = false { didSet { if hideAgentInput != oldValue { updateAgentScreen(); needsDisplay = true } } }
     var hideAgentStatus = false { didSet { if hideAgentStatus != oldValue { updateAgentScreen(); needsDisplay = true } } }
     var onAgentScreen: ((Bool, [Row], Bool) -> Void)?
+    private var lastMenuArea = ""
     private var hiddenBand: ClosedRange<Int>?
     private var lastStatusText = ""
     private var lastInputVisible: Bool?
@@ -383,7 +384,9 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
                 report(queued)
             }
         }
-        if force || text != lastStatusText || visible != lastInputVisible || busy != lastBusy {
+        let menuArea = visible ? "" : t.screen.rows.suffix(16).map { $0.plainText() }.joined(separator: "\n")
+        if force || text != lastStatusText || visible != lastInputVisible || busy != lastBusy || menuArea != lastMenuArea {
+            lastMenuArea = menuArea
             lastStatusText = text
             lastInputVisible = visible
             lastBusy = busy

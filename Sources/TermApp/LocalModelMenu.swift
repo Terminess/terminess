@@ -2,10 +2,10 @@ import AppKit
 import TermHost
 
 @MainActor
-final class LocalModelMenu: NSObject, NSMenuDelegate {
+final class LocalModelMenu: NSObject, NSMenuDelegate, ObservableObject {
     static let shared = LocalModelMenu()
-    private var models: [String]?
-    private var note = "Looking for models…"
+    @Published private(set) var models: [String]?
+    @Published private(set) var note = "Looking for models…"
     private var loading = false
     private weak var menu: NSMenu?
 
@@ -89,16 +89,37 @@ final class LocalModelMenu: NSObject, NSMenuDelegate {
         }
     }
 
+    var placeName: String { place }
+
+    func command(for model: String, message: String = "") -> String {
+        if host.isEmpty {
+            return LocalModels.chatCommand(terminessd: HostService.executable ?? "terminessd", model: model, message: message)
+        }
+        let run = LocalModels.chatCommand(terminessd: "~/.local/bin/terminessd", model: model, message: message)
+        return (["ssh", "-t"] + Self.sshOptions).joined(separator: " ") + " -- \(shellQuote(host)) \(shellQuote(run))"
+    }
+
     @objc private func open(_ sender: NSMenuItem) {
         guard let model = sender.representedObject as? String, let app = NSApp.delegate as? AppDelegate else { return }
-        let command: String
-        if host.isEmpty {
-            command = LocalModels.chatCommand(terminessd: HostService.executable ?? "terminessd", model: model)
-        } else {
-            let run = LocalModels.chatCommand(terminessd: "~/.local/bin/terminessd", model: model)
-            command = (["ssh", "-t"] + Self.sshOptions).joined(separator: " ") + " -- \(shellQuote(host)) \(shellQuote(run))"
-        }
-        let c = app.open(tabbedWith: NSApp.keyWindow, command: command)
+        let c = app.open(tabbedWith: NSApp.keyWindow, command: command(for: model))
         c.customTitle = model
+    }
+}
+
+enum StartAgent {
+    static var current: String { UserDefaults.standard.string(forKey: "startAgent") ?? "claude" }
+
+    static func localModel(_ agent: String) -> String? {
+        agent.hasPrefix("local:") ? String(agent.dropFirst(6)) : nil
+    }
+
+    @MainActor
+    static func command(_ agent: String, remote: Bool, message: String = "") -> String {
+        if let model = localModel(agent) {
+            return remote ? LocalModels.chatCommand(terminessd: "~/.local/bin/terminessd", model: model, message: message)
+                          : LocalModelMenu.shared.command(for: model, message: message)
+        }
+        let exe = agent == "codex" ? "codex" : "claude"
+        return message.isEmpty ? exe : "\(exe) \(shellQuote(message))"
     }
 }

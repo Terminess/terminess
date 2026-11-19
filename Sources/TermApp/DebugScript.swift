@@ -1,6 +1,7 @@
 import Combine
 import AppKit
 import TermHost
+import TermCore
 
 @MainActor
 enum DebugScript {
@@ -296,6 +297,18 @@ enum DebugScript {
         }
         if let at = env["TERMAPP_AGENTS_AT"].flatMap(Double.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + at) { MainActor.assumeIsolated { AgentsDashboardWindow.show() } }
+        }
+        for step in (env["TERMAPP_SCREEN_AT"] ?? "").split(separator: "|") {
+            guard let delay = Double(step) else { continue }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak controller] in
+                MainActor.assumeIsolated {
+                    guard let c = controller else { return }
+                    let t = c.session.terminal
+                    print("screen@\(delay): fg=\(c.session.process?.foregroundCommand ?? "-") menu=\(String(describing: ScreenMenu.find(in: t))) card=\(c.debugMenuCard)")
+                    print(t.screenText())
+                    fflush(stdout)
+                }
+            }
         }
         for step in (env["TERMAPP_ANSWER_AT"] ?? "").split(separator: "|") {
             guard let colon = step.firstIndex(of: ":"), let delay = Double(step[..<colon]) else { continue }

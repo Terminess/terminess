@@ -243,6 +243,16 @@ struct SidebarView: View {
         Button("Claude Code" + suffix) { model.actions?.newRemote(r.machine, agent: "claude", directory: directory) }
         Button("Codex" + suffix) { model.actions?.newRemote(r.machine, agent: "codex", directory: directory) }
         Button("Shell" + suffix) { model.actions?.newRemote(r.machine, agent: nil, directory: directory) }
+        if !r.models.isEmpty {
+            Menu("Local Model" + suffix) {
+                ForEach(r.models, id: \.self) { m in
+                    Button(m) {
+                        (NSApp.delegate as? AppDelegate)?.open(tabbedWith: NSApp.keyWindow, directory: directory,
+                                                                 command: StartAgent.command("local:" + m, remote: true), machine: r.machine)
+                    }
+                }
+            }
+        }
     }
 
     private func remotePath(_ p: String) -> String { remoteTilde(p) }

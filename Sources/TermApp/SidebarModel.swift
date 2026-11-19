@@ -309,6 +309,10 @@ final class SidebarModel: ObservableObject {
                 if model.remote[i].projects != projects { model.remote[i].projects = projects }
                 if model.remote[i].folders != folders { model.remote[i].folders = folders }
             }
+            mon.onModels = { models in
+                let model = SidebarModel.shared
+                if let i = model.remote.firstIndex(where: { $0.id == m.id }), model.remote[i].models != models { model.remote[i].models = models }
+            }
             mon.onHistory = { history in
                 let model = SidebarModel.shared
                 if let i = model.remote.firstIndex(where: { $0.id == m.id }), model.remote[i].history != history { model.remote[i].history = history }

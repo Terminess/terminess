@@ -58,7 +58,8 @@ final class ReaderModel: ObservableObject {
     private var timer: Timer?
     private var source: (() -> ReaderSource?)?
     var folder: (() -> String?)?
-    var startHere: ((String) -> Void)?
+    var startHere: ((_ path: String, _ command: String) -> Void)?
+    var machineID = ""
     var gate = ViewGate()
     var onUserMessage: ((String) -> Void)?
     var onFound: ((Int32, String, String) -> Void)?
@@ -187,7 +188,7 @@ struct ReaderView: View {
             Divider()
             }
             if model.items.isEmpty && model.agentName.isEmpty {
-                NewSessionView(gate: model.gate, startHere: { model.startHere?($0) })
+                NewSessionView(gate: model.gate, tabMachine: model.machineID, startHere: { model.startHere?($0, $1) })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.items.isEmpty && model.pending.isEmpty && model.queued.isEmpty {
                 VStack(spacing: 8) {

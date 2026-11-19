@@ -138,6 +138,7 @@ final class RemoteMonitor {
     private(set) var connected = false
     var onUpdate: ((_ sessions: [SessionInfo]?, _ note: String?) -> Void)?
     var onProjects: (([ProjectInfo], [String]) -> Void)?
+    var onModels: (([String]) -> Void)?
     var onPlatform: ((String?) -> Void)?
     var onHistory: (([HistoryItem]) -> Void)?
     var onReminders: (([ReminderInfo]) -> Void)?
@@ -208,6 +209,7 @@ final class RemoteMonitor {
             onPlatform?(m.platform)
             connection?.send(Message(op: "list"))
             connection?.send(Message(op: "projects"))
+            connection?.send(Message(op: "models"))
             connection?.send(Message(op: "history"))
             connection?.send(Message(op: "reminders"))
             connection?.send(Message(op: "watch-borrow"))
@@ -220,6 +222,7 @@ final class RemoteMonitor {
                         self.connection?.send(Message(op: "history"))
                         self.connection?.send(Message(op: "projects"))
                     }
+                    if self.ticks % 40 == 0 { self.connection?.send(Message(op: "models")) }
                     if SidebarModel.shared.visible || Int(Date().timeIntervalSince1970) % 15 < 3 {
                         self.connection?.send(Message(op: "list"))
                     }
@@ -230,6 +233,8 @@ final class RemoteMonitor {
             onUpdate?(m.sessions ?? [], nil)
         case "projects":
             onProjects?(m.projects ?? [], m.folders ?? [])
+        case "models":
+            onModels?(m.args ?? [])
         case "history":
             onHistory?(m.history ?? [])
         case "reminders":
@@ -268,6 +273,7 @@ struct RemoteMachineState: Identifiable, Equatable {
     var sessions: [SessionInfo] = []
     var projects: [ProjectInfo] = []
     var folders: [String] = []
+    var models: [String] = []
     var history: [HistoryItem] = []
     var reminders: [ReminderInfo] = []
     var note: String?

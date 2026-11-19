@@ -4,8 +4,13 @@ import SwiftUI
 struct NewSessionView: View {
     private var sidebar: SidebarModel { SidebarModel.shared }
     @ObservedObject var gate: ViewGate
-    let startHere: (String) -> Void
+    let tabMachine: String
+    let startHere: (_ path: String, _ command: String) -> Void
     @State private var environment = ""
+    @State private var chosen = false
+    @AppStorage("startAgent") private var agent = "claude"
+    @ObservedObject private var localModels = LocalModelMenu.shared
+    @ObservedObject private var settings = Settings.shared
 
     private var remote: RemoteMachineState? { sidebar.remote.first { $0.id == environment } }
 
@@ -21,6 +26,7 @@ struct NewSessionView: View {
                     .font(.system(size: 20, weight: .regular))
                     .padding(.bottom, 8)
                 environmentCard
+                agentCard
                 actionsCard
             }
             .frame(maxWidth: 440)
@@ -31,7 +37,14 @@ struct NewSessionView: View {
         .scrollBounceBehavior(.basedOnSize)
         .noTopScrollEdge()
         }
-        .onAppear { if sidebar.historyCounts.isEmpty { sidebar.refreshSessions() } }
+        .onAppear {
+            if sidebar.historyCounts.isEmpty { sidebar.refreshSessions() }
+            if !chosen {
+                environment = tabMachine.isEmpty ? (AppDelegate.defaultRemoteMachine?.id ?? "") : tabMachine
+                chosen = true
+            }
+            LocalModelMenu.shared.refresh()
+        }
     }
 
 
@@ -47,13 +60,24 @@ struct NewSessionView: View {
                 }
                 .disabled(r.note != nil)
             }
+            if environment != settings.defaultMachine {
+                Divider()
+                Button("Start New Sessions on \(remote?.displayName ?? "This Mac")") { settings.defaultMachine = environment }
+            }
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: remote?.symbol ?? "laptopcomputer")
                     .font(.system(size: 14)).foregroundStyle(.secondary).frame(width: 20)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Choose environment").font(.system(size: 11.5)).foregroundStyle(.secondary)
-                    Text(remote?.displayName ?? "This Mac").font(.system(size: 13.5, weight: .medium))
+                    HStack(spacing: 6) {
+                        Text(remote?.displayName ?? "This Mac").font(.system(size: 13.5, weight: .medium))
+                        if environment == settings.defaultMachine {
+                            Text("Default").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Capsule().stroke(Color.primary.opacity(0.18), lineWidth: 0.5))
+                        }
+                    }
                 }
                 Spacer()
                 stateDot(connected: remote?.note == nil)
@@ -64,6 +88,67 @@ struct NewSessionView: View {
         }
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
         .card()
+    }
+
+
+    private var agentCard: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "sparkle")
+                .font(.system(size: 14)).foregroundStyle(.secondary).frame(width: 20)
+            Text("Agent").font(.system(size: 13.5))
+            Spacer()
+            HStack(spacing: 4) {
+                agentChoice("claude", "Claude Code")
+                agentChoice("codex", "Codex")
+                localChoice
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+        .card()
+    }
+
+    private func agentChoice(_ id: String, _ name: String) -> some View {
+        let on = agent == id
+        return Button { agent = id } label: { chip(tint: toolTint(id), name: name, on: on) }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(on ? .isSelected : [])
+    }
+
+    private var models: [String] { remote.map(\.models) ?? (localModels.models ?? []) }
+
+    private var localChoice: some View {
+        let picked = StartAgent.localModel(agent)
+        return Menu {
+            if models.isEmpty {
+                Text(remote == nil ? localModels.note : "No Ollama models on \(remote!.displayName)")
+            } else {
+                Section("On \(remote?.displayName ?? localModels.placeName)") {
+                    ForEach(models, id: \.self) { m in
+                        Button { agent = "local:" + m } label: {
+                            if m == picked { Label(m, systemImage: "checkmark") } else { Text(m) }
+                        }
+                    }
+                }
+            }
+        } label: {
+            chip(tint: Color(nsColor: Agent.detect("ollama")?.tint ?? .systemGray),
+                 name: picked ?? "Local model", on: picked != nil)
+        }
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+        .help("Chat with an Ollama model on \(remote?.displayName ?? localModels.placeName)")
+    }
+
+    private func chip(tint: Color, name: String, on: Bool) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(tint).frame(width: 7, height: 7)
+            Text(name).font(.system(size: 12.5, weight: on ? .medium : .regular)).lineLimit(1)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(on ? Color.primary.opacity(0.10) : .clear))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .stroke(Color.primary.opacity(on ? 0.18 : 0.08), lineWidth: 0.5))
+        .contentShape(Rectangle())
     }
 
     private func stateDot(connected: Bool) -> some View {
@@ -93,7 +178,7 @@ struct NewSessionView: View {
                     Divider().padding(.leading, 44)
                 }
                 ActionRow(symbol: "folder", tint: .secondary, title: "Choose a folder to work in",
-                          help: "Opens this tab in the folder you pick.") { chooseFolder() }
+                          help: "Starts the agent in this tab, in the folder you pick.") { chooseFolder() }
             } else if let r = remote {
                 Menu {
                     Button("Home") { open(r, nil) }
@@ -143,11 +228,22 @@ struct NewSessionView: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.prompt = "Work Here"
-        if panel.runModal() == .OK, let url = panel.url { startHere(url.path) }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if tabMachine.isEmpty {
+            startHere(url.path, StartAgent.command(agent, remote: false))
+        } else {
+            (NSApp.delegate as? AppDelegate)?.open(tabbedWith: NSApp.keyWindow, directory: url.path,
+                                                     command: StartAgent.command(agent, remote: false))
+        }
     }
 
     private func open(_ r: RemoteMachineState, _ directory: String?) {
-        (NSApp.delegate as? AppDelegate)?.newRemote(r.machine, agent: nil, directory: directory)
+        let command = StartAgent.command(agent, remote: true)
+        if r.id == tabMachine {
+            startHere(directory ?? "~", command)
+        } else {
+            (NSApp.delegate as? AppDelegate)?.open(tabbedWith: NSApp.keyWindow, directory: directory, command: command, machine: r.machine)
+        }
     }
 }
 

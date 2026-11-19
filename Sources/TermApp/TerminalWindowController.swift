@@ -339,9 +339,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         reader.onUserMessage = { [weak self] text in self?.nameFromFirstMessage(text) }
         PerfCounters.watch(reader, "publish.reader")
         PerfCounters.watch(composerState, "publish.composer")
-        reader.startHere = { [weak self] path in
+        reader.machineID = machine?.id ?? ""
+        reader.startHere = { [weak self] path, command in
             guard let self else { return }
-            self.session.send(Array("cd \(shellQuote(path)) && clear\r".utf8))
+            let dir = path == "~" ? "~" : shellQuote(path)
+            self.session.send(Array("cd \(dir) && clear && \(command)\r".utf8))
             self.focus()
         }
         reader.follow { [weak self] in self?.focused?.readerSource() }
@@ -363,6 +365,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     private var layoutObservation: NSKeyValueObservation?
     private var revealedForQuestion = false
     private var screenMenu: ScreenMenu?
+    var debugMenuCard: String { screenMenu.map { "\($0.options)" } ?? "none" }
     private var questionTimer: DispatchWorkItem?
 
     func setMode(_ m: ViewMode) {
@@ -724,6 +727,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     func sendFromComposer(_ text: String) {
         guard let pane = focused else { return }
         nameFromFirstMessage(text)
+        if pane.parked == nil, Self.isShell(pane.session.process?.foregroundCommand) {
+            reader.addPending(text)
+            let command = StartAgent.command(StartAgent.current, remote: pane.session.machine != nil, message: text)
+            pane.session.send(Array("\(command)\r".utf8))
+            return
+        }
         reader.addPending(text)
         if pane.parked != nil { resume(pane) }
         if let model = composerState.pendingModel {
@@ -762,6 +771,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         guard usable != nil, !switchingModel,
               let seen = AgentModels.current(onScreen: session.terminal.screenText(), agentID: usable) else { return }
         if composerState.model != seen { composerState.model = seen }
+    }
+
+    static func isShell(_ command: String?) -> Bool {
+        guard let c = command else { return false }
+        let name = (c as NSString).lastPathComponent.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return ["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh"].contains(name)
     }
 
     private func typeIntoAgent(_ text: String, pane: Pane) {

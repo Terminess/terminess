@@ -39,6 +39,7 @@ final class Settings: ObservableObject {
     @Published var restoreSession: Bool { didSet { save("restoreSession", restoreSession) } }
     @Published var keepSessions: Bool { didSet { save("keepSessions", keepSessions) } }
     @Published var localModelsHost: String { didSet { save("localModelsHost", localModelsHost) } }
+    @Published var defaultMachine: String { didSet { save("defaultMachine", defaultMachine) } }
     @Published var preferredAgent: String { didSet { save("preferredAgent", preferredAgent) } }
     @Published var guideFolder: String { didSet { save("guideFolder", guideFolder) } }
     @Published var quickTerminalKey: String { didSet { save("quickTerminalKey", quickTerminalKey) } }
@@ -63,6 +64,7 @@ final class Settings: ObservableObject {
         }
         fontName = d.string(forKey: "fontName") ?? ""
         localModelsHost = d.string(forKey: "localModelsHost") ?? ""
+        defaultMachine = d.string(forKey: "defaultMachine") ?? ""
         preferredAgent = d.string(forKey: "preferredAgent") ?? "claude"
         guideFolder = d.string(forKey: "guideFolder") ?? ""
         fontSize = d.object(forKey: "fontSize") as? Double ?? 12
