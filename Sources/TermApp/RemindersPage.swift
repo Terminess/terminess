@@ -79,9 +79,10 @@ enum ReminderSaver {
             done(nil)
             return
         }
+        nonisolated(unsafe) let request = m
         Task { @MainActor in
             let problem: String? = await Task.detached(priority: .userInitiated) {
-                let reply = HostAttachment.request(m, expecting: ["reminder-added", "error"], timeout: 3)
+                let reply = HostAttachment.request(request, expecting: ["reminder-added", "error"], timeout: 3)
                 return reply?.op == "reminder-added" ? nil : (reply?.message ?? "Couldn't reach the Terminess service.")
             }.value
             if problem == nil {

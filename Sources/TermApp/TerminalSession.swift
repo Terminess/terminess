@@ -130,6 +130,10 @@ final class TerminalSession {
                 }
                 session.process?.resize(columns: t.columns, rows: t.rows,
                                         pixelWidth: t.columns * t.cellPixelWidth, pixelHeight: t.rows * t.cellPixelHeight)
+                if let remote, case .create(_, nil, _, _, _) = target {
+                    t.feed("\u{1B}[2mThis tab runs on \(remote.name). \u{21E7}\u{2318}M opens a terminal on this Mac.\u{1B}[0m\r\n")
+                    session.onUpdate?()
+                }
             }
         }
         a.onOutput = { bytes in MainActor.assumeIsolated { ref.value?.receive(bytes) } }

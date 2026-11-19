@@ -252,6 +252,7 @@ final class BorrowCenter {
         p.standardError = out
         p.standardInput = FileHandle.nullDevice
         let id = r.id
+        let ownChrome = useOwnChrome, chromeNote = note
         p.terminationHandler = { proc in
             var text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -267,7 +268,7 @@ final class BorrowCenter {
                     BorrowCenter.shared.allow(r, runner: next, tried: done) { code, answer in reply(code, why + answer) }
                     return
                 }
-                let who = "Done on the Mac by \(BorrowCenter.runnerName(runner))" + (useOwnChrome ? ", in your Chrome" : "") + ".\n\n" + note
+                let who = "Done on the Mac by \(BorrowCenter.runnerName(runner))" + (ownChrome ? ", in your Chrome" : "") + ".\n\n" + chromeNote
                 reply(failed ? 1 : 0, text.isEmpty ? "The Mac's agent (\(BorrowCenter.runnerName(runner))) finished without an answer." : who + String(text.suffix(20000)))
             }
         }

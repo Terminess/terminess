@@ -240,6 +240,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
+    @objc func newTabOnThisMac(_ sender: Any?) {
+        let c = open(tabbedWith: NSApp.keyWindow, directory: Settings.shared.startDirectory)
+        c.setMode(.terminal)
+    }
+
     static var defaultRemoteMachine: RemoteMachine? {
         let id = Settings.shared.defaultMachine
         guard !id.isEmpty, let m = RemoteMachines.all.first(where: { $0.id == id }),
@@ -676,6 +681,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let shell = NSMenu(title: "Shell")
         shell.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "n")
         shell.addItem(withTitle: "New Tab", action: #selector(newWindowForTab(_:)), keyEquivalent: "t")
+        let macTab = NSMenuItem(title: "New Tab on This Mac", action: #selector(newTabOnThisMac(_:)), keyEquivalent: "m")
+        macTab.keyEquivalentModifierMask = [.command, .shift]
+        shell.addItem(macTab)
         let worktreeTab = NSMenuItem(title: "New Worktree Tab…", action: #selector(newWorktreeTab(_:)), keyEquivalent: "t")
         worktreeTab.keyEquivalentModifierMask = [.command, .option]
         shell.addItem(worktreeTab)

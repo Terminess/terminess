@@ -446,8 +446,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         for w in window?.tabbedWindows ?? [window].compactMap({ $0 }) {
             guard let frame = w.contentView?.superview else { continue }
             func walk(_ v: NSView) {
-                if String(describing: type(of: v)) == "NSTitlebarAccessoryClipView" {
-                    let target = v.superview ?? v
+                let name = String(describing: type(of: v))
+                if name.hasPrefix("NSTitlebarAccessory") || name == "NSTabBar" {
+                    let holder = v.superview.flatMap { String(describing: type(of: $0)) == "NSTitlebarView" ? nil : $0 }
+                    let target = name == "NSTabBar" ? v : (holder ?? v)
                     if !target.isHidden { target.isHidden = true }
                     return
                 }

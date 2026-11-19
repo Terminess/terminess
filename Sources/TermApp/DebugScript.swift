@@ -229,7 +229,20 @@ enum DebugScript {
                         case "reminders": app.showReminders(nil)
                         case "search": app.showSearch(nil)
                         case "hidesidebar": app.toggleSidebar(nil)
+                        case "dumpviews":
+                            var out = ""
+                            func dump(_ v: NSView, _ depth: Int) {
+                                out += String(repeating: "  ", count: depth) + "\(type(of: v)) \(v.frame) hidden=\(v.isHidden)\n"
+                                v.subviews.forEach { dump($0, depth + 1) }
+                            }
+                            if let w = NSApp.keyWindow ?? app.keyController?.window, let frame = w.contentView?.superview {
+                                out += "tabGroup visible=\(w.tabGroup?.isTabBarVisible ?? false) tabs=\(w.tabbedWindows?.count ?? 1)\n"
+                                dump(frame, 0)
+                            }
+                            try? out.write(toFile: env["TERMAPP_DUMP_FILE"] ?? "/tmp/termapp-views.txt", atomically: true, encoding: .utf8)
                         case "newtab": app.open(tabbedWith: NSApp.keyWindow ?? app.keyController?.window)
+                        case "mactab": app.newTabOnThisMac(nil)
+                        case "defaulttab": app.newWindowForTab(nil)
                         case "agenttab":
                             let cmd = env["TERMAPP_AGENT_CMD"] ?? "claude"
                             app.open(tabbedWith: app.keyController?.window, directory: env["TERMAPP_AGENT_DIR"], command: cmd)
