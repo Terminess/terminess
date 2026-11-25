@@ -1,5 +1,7 @@
 #if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+@preconcurrency import Musl
 #else
 import Darwin
 #endif
@@ -29,7 +31,10 @@ public final class HostAttachment: @unchecked Sendable {
     public var onQuestion: ((QuestionInfo?) -> Void)?
     public var onNote: ((String) -> Void)?
     public var onNotice: ((String?) -> Void)?
+    public private(set) var noticeNewest: String?
     public var resumeOf: String?
+    public var requestID: String?
+    public private(set) var reused = false
     public var onAgentRequest: ((String, String, String) -> Void)?
     public var clientKind: String?
     public var deviceName: String?
@@ -122,6 +127,7 @@ public final class HostAttachment: @unchecked Sendable {
                     var create = Message(op: "create", host: clientKind, name: name, cwd: cwd, command: command, args: args,
                                          cols: cols, rows: rows, env: env)
                     create.resumeOf = resumeOf
+                    create.requestID = requestID
                     create.deviceName = deviceName
                     connection.send(create)
                 case .attach(let id):
@@ -129,6 +135,7 @@ public final class HostAttachment: @unchecked Sendable {
                 }
             case "created":
                 guard let id = m.id else { return }
+                reused = m.code == 1
                 target = .attach(id: id)
                 sendAttach(id)
             case "attached":
@@ -145,6 +152,7 @@ public final class HostAttachment: @unchecked Sendable {
             case "agent-note":
                 if let text = m.message { onNote?(text) }
             case "notice":
+                noticeNewest = m.resumeOf
                 onNotice?(m.message.flatMap { $0.isEmpty ? nil : $0 })
             case "agent-request":
                 if let id = m.id, let tool = m.name { onAgentRequest?(id, tool, m.message ?? "{}") }

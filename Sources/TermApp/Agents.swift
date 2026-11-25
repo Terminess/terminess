@@ -1,4 +1,5 @@
 import AppKit
+import TermHost
 
 struct Agent: Equatable {
     let id: String
@@ -41,6 +42,13 @@ struct Agent: Equatable {
             return agent
         }
         return nil
+    }
+
+    static let huggingFace = Agent(id: "ollama", name: "Hugging Face", tint: NSColor(srgbRed: 1.0, green: 0.82, blue: 0.12, alpha: 1))
+
+    static func detect(_ command: String?, title: String) -> Agent? {
+        let agent = detect(command)
+        return agent?.id == "ollama" && title.contains(HuggingFace.prefix) ? huggingFace : agent
     }
 
     static let shells: Set<String> = ["zsh", "bash", "fish", "sh", "dash", "tcsh", "ksh", "nu", "-zsh", "-bash"]

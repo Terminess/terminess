@@ -1,6 +1,8 @@
 import CPTY
 #if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+@preconcurrency import Musl
 #else
 import Darwin
 #endif
@@ -198,7 +200,8 @@ public final class PTYProcess: @unchecked Sendable {
         guard cpty_process_path(pid, &buf, Int32(buf.count)) == 0 else { return nil }
         let path = String(cString: buf)
         if path.contains("/claude/versions/") { return "claude" }
-        return path.lastPathComponent
+        let name = path.lastPathComponent
+        return name.hasSuffix(".exe") ? String(name.dropLast(4)) : name
     }
 
     public var isRunning: Bool {
@@ -219,13 +222,13 @@ public final class PTYProcess: @unchecked Sendable {
 enum ProcessEnv {
     static var current: [String: String] {
         var out: [String: String] = [:]
-        var p = environ
-        while let entry = p.pointee {
+        var p: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>? = environ
+        while let q = p, let entry = q.pointee {
             let s = String(cString: entry)
             if let eq = s.firstIndex(of: "=") {
                 out[String(s[..<eq])] = String(s[s.index(after: eq)...])
             }
-            p += 1
+            p = q + 1
         }
         return out
     }
@@ -246,7 +249,7 @@ final class PThreadLock: @unchecked Sendable {
 }
 
 extension PTYProcess {
-    #if canImport(Glibc)
+    #if canImport(Glibc) || canImport(Musl)
     static let maxPath = Int32(PATH_MAX)
     #else
     static let maxPath = Int32(MAXPATHLEN)
@@ -256,6 +259,8 @@ extension PTYProcess {
 @inline(__always) func sysWrite(_ fd: Int32, _ buf: UnsafeRawPointer, _ n: Int) -> Int {
     #if canImport(Glibc)
     return Glibc.write(fd, buf, n)
+    #elseif canImport(Musl)
+    return Musl.write(fd, buf, n)
     #else
     return Darwin.write(fd, buf, n)
     #endif

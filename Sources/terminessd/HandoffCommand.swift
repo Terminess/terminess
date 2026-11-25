@@ -1,5 +1,7 @@
 #if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+@preconcurrency import Musl
 #else
 import Darwin
 #endif
@@ -107,6 +109,55 @@ func borrowCommand(_ args: [String]) -> Never {
         if let m = frames.compactMap(\.message).first(where: { $0.op == "agent-result" }) {
             print(m.message ?? "")
             exit(m.code == 1 ? 1 : 0)
+        }
+    }
+}
+
+enum FromMac {
+    static func save(_ m: Message, to: String?) -> (String, Bool) {
+        guard let b64 = m.data, let bytes = Data(base64Encoded: b64) else { return ("The Mac sent no file.", true) }
+        let fm = FileManager.default
+        let name = ((m.name ?? "file") as NSString).lastPathComponent
+        var dest: String
+        if let to, !to.trimmingCharacters(in: .whitespaces).isEmpty {
+            dest = (to as NSString).expandingTildeInPath
+            if !dest.hasPrefix("/") { dest = fm.currentDirectoryPath + "/" + dest }
+            var isDir: ObjCBool = false
+            if to.hasSuffix("/") || (fm.fileExists(atPath: dest, isDirectory: &isDir) && isDir.boolValue) {
+                dest = (dest as NSString).appendingPathComponent(name)
+            }
+        } else {
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            dest = NSHomeDirectory() + "/.local/state/terminess/from-mac/\(stamp)/\(name)"
+        }
+        do {
+            try fm.createDirectory(atPath: (dest as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            try bytes.write(to: URL(fileURLWithPath: dest))
+        } catch {
+            return ("The file came from the Mac but couldn't be saved to \(dest): \(error.localizedDescription)", true)
+        }
+        let size = ByteCountFormatter.string(fromByteCount: Int64(bytes.count), countStyle: .file)
+        return ("Copied \(m.message ?? name) from the Mac to \(dest) (\(size)).", false)
+    }
+}
+
+func copyFromMacCommand(_ args: [String]) -> Never {
+    guard let path = args.first, !path.isEmpty else { fail("usage: terminessd copy-from-mac <path on the Mac> [file or folder here]") }
+    let fd = connectToService()
+    let session = ProcessInfo.processInfo.environment["TERMINESS_SESSION"] ?? ""
+    let json = (try? JSONSerialization.data(withJSONObject: ["path": path])).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+    guard Connection.writeAll(fd, Wire.Frame.control(Message(op: "agent-tool", id: session, name: "copy_from_mac", message: json)).encoded()) else {
+        fail("couldn't reach the service")
+    }
+    var decoder = Wire.Decoder()
+    var buf = [UInt8](repeating: 0, count: 65536)
+    while true {
+        let n = read(fd, &buf, buf.count)
+        guard n > 0, let frames = try? decoder.feed(Array(buf[0..<n])) else { fail("the service closed the connection") }
+        if let m = frames.compactMap(\.message).first(where: { $0.op == "agent-result" }) {
+            let (text, failed) = m.code == 1 ? (m.message ?? "", true) : FromMac.save(m, to: args.count > 1 ? args[1] : nil)
+            print(text)
+            exit(failed ? 1 : 0)
         }
     }
 }

@@ -101,6 +101,7 @@ final class ScreenModel: ObservableObject {
                 self.scheduleRender()
                 if let input = self.pendingInput {
                     self.pendingInput = nil
+                    if self.attachment?.reused == true { return }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.send(Array((input + "\r").utf8)) }
                 }
             }
@@ -171,7 +172,10 @@ final class ScreenModel: ObservableObject {
 
     func key(_ k: Key) { send(InputEncoder.encode(k, modifiers: [], modes: terminal.modes)) }
 
+    private(set) var detached = false
+
     func detach() {
+        detached = true
         attachment?.detach()
         attachment = nil
         connected = false

@@ -241,6 +241,23 @@ final class ReminderTests: XCTestCase {
         XCTAssertNil(s.originName, "picked up on a Mac: no longer shown as from the phone")
     }
 
+    func testRepeatedCreateGetsTheSameSession() throws {
+        let (_, socket) = try startServer("tdr")
+        guard let first = Client(socket), let again = Client(socket), let other = Client(socket) else { return XCTFail("no socket") }
+        var create = Message(op: "create", host: "iphone", name: "cat", cwd: tmp, command: "/bin/cat", args: [], cols: 80, rows: 24)
+        create.requestID = "new-chat-1"
+        first.send(create)
+        let made = try XCTUnwrap(first.wait { $0.op == "created" })
+        XCTAssertNotEqual(made.code, 1, "a first create makes a session")
+        again.send(create)
+        let repeated = try XCTUnwrap(again.wait { $0.op == "created" })
+        XCTAssertEqual(repeated.id, made.id)
+        XCTAssertEqual(repeated.code, 1)
+        create.requestID = "new-chat-2"
+        other.send(create)
+        XCTAssertNotEqual(try XCTUnwrap(other.wait { $0.op == "created" }).id, made.id)
+    }
+
     func testActTypesPromptIntoLiveSession() throws {
         let (_, socket) = try startServer("tra")
         guard let c = Client(socket) else { return XCTFail("no socket") }

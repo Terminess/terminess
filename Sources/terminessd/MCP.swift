@@ -28,9 +28,14 @@ enum MCPServer {
             "action_prompt": ["type": "string", "description": "What to type into the session when the person presses the button, for example: It's 10pm, go ahead with the firewall switch-on and run the checks"],
             "action_label": ["type": "string", "description": "Button label (default Proceed)"]]]],
         ["name": "borrow",
-         "description": "Hand a task to the person's Mac when it needs something only the Mac has: their logged-in Chrome (Claude in Chrome), Mac apps or files there. The Terminess app on the Mac asks the person to allow it, runs it with a local Claude Code and returns its final answer here. Only works while Terminess is open on their Mac. Keep the task self-contained: say exactly what to look at or do and what to report back.",
+         "description": "Hand a task to the person's Mac when it needs something only the Mac has: their logged-in Chrome (Claude in Chrome) or Mac apps. The Terminess app on the Mac asks the person to allow it, runs it with a local agent and returns its final answer here (long answers are cut). Only works while Terminess is open on their Mac. Keep the task self-contained: say exactly what to look at or do and what to report back. To get a file from the Mac, use copy_from_mac instead: never ask borrow to type a file out.",
          "inputSchema": ["type": "object", "required": ["task"], "properties": [
             "task": ["type": "string", "description": "What the Mac should do and what to report back, for example: Open https://example.com/dashboard in Chrome (logged in) and report the numbers on the Billing card"]]]],
+        ["name": "copy_from_mac",
+         "description": "Copy a file from the person's Mac to this machine, byte for byte (up to 5 MB): a document, transcript, export or screenshot they mention. The Terminess app on the Mac asks the person to allow it, then sends the file straight here in seconds. Only works while Terminess is open on their Mac. Returns the local path it saved to.",
+         "inputSchema": ["type": "object", "required": ["path"], "properties": [
+            "path": ["type": "string", "description": "The file's path on the Mac, for example ~/Documents/notes.txt"],
+            "to": ["type": "string", "description": "Where to save it here: a file path, or a folder to put it in. Defaults to a new folder under ~/.local/state/terminess/from-mac"]]]],
         ["name": "ask_user",
          "description": "Ask the person a question and wait for the answer, which they can give on their Mac or phone. Offer choices when there are a few clear options. Waits up to nine minutes; if nobody answers, carry on with your best judgement or stop and explain.",
          "inputSchema": ["type": "object", "required": ["question"], "properties": [
@@ -52,7 +57,7 @@ enum MCPServer {
                 reply(id, ["protocolVersion": params["protocolVersion"] as? String ?? "2025-06-18",
                            "capabilities": ["tools": [:]],
                            "serverInfo": ["name": "terminess", "version": "1"],
-                           "instructions": "Tools for working inside Terminess: open tabs, start worktree tabs, notify the person, ask them a question, schedule a reminder that brings them back to this work later, and borrow the person's Mac for a task only it can do (their Chrome, Mac apps)."])
+                           "instructions": "Tools for working inside Terminess: open tabs, start worktree tabs, notify the person, ask them a question, schedule a reminder that brings them back to this work later, and borrow the person's Mac for a task only it can do (their Chrome, Mac apps), and copy a file from their Mac."])
             case "ping":
                 reply(id, [:])
             case "tools/list":
@@ -83,7 +88,7 @@ enum MCPServer {
     private static func call(_ name: String, _ args: [String: Any]) -> (String, Bool) {
         guard tools.contains(where: { $0["name"] as? String == name }) else { return ("Unknown tool \(name).", true) }
         let session = ProcessInfo.processInfo.environment["TERMINESS_SESSION"] ?? ""
-        guard !session.isEmpty || name == "borrow" else {
+        guard !session.isEmpty || name == "borrow" || name == "copy_from_mac" else {
             return ("This only works for an agent running inside Terminess.", true)
         }
         guard let fd = UnixSocket.connect(HostPaths.socket) else { return ("The Terminess service isn't running.", true) }
@@ -94,7 +99,7 @@ enum MCPServer {
         }
         var decoder = Wire.Decoder()
         var buf = [UInt8](repeating: 0, count: 16384)
-        let deadline = Date().addingTimeInterval(name == "ask_user" ? 560 : name == "borrow" ? 960 : 60)
+        let deadline = Date().addingTimeInterval(name == "ask_user" ? 560 : name == "borrow" ? 960 : name == "copy_from_mac" ? 320 : 60)
         while Date() < deadline {
             var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             guard poll(&p, 1, 1000) >= 0 else { break }
@@ -102,6 +107,7 @@ enum MCPServer {
             let n = read(fd, &buf, buf.count)
             guard n > 0, let frames = try? decoder.feed(Array(buf[0..<n])) else { break }
             if let m = frames.compactMap(\.message).first(where: { $0.op == "agent-result" }) {
+                if name == "copy_from_mac", m.code != 1 { return FromMac.save(m, to: args["to"] as? String) }
                 return (m.message ?? "", m.code == 1)
             }
         }

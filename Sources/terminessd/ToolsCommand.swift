@@ -31,7 +31,7 @@ enum AgentToolsSetup {
         ((try? String(contentsOfFile: codexConfig, encoding: .utf8)) ?? "").contains("[mcp_servers.\(name)]")
     }
 
-    static let approvedTools = ["borrow", "notify", "ask_user", "remind", "open_tab"]
+    static let approvedTools = ["borrow", "copy_from_mac", "notify", "ask_user", "remind", "open_tab"]
     static var codexApprovals: String {
         approvedTools.map { "\n[mcp_servers.\(name).tools.\($0)]\napproval_mode = \"approve\"\n" }.joined()
     }
@@ -41,7 +41,7 @@ enum AgentToolsSetup {
         guard let r = text.range(of: "[mcp_servers.\(name)]") else { return false }
         let rest = text[r.upperBound...]
         let table = rest.range(of: "\n[").map { rest[..<$0.lowerBound] } ?? rest
-        return !table.contains("env_vars") || !text.contains("[mcp_servers.\(name).tools.notify]")
+        return !table.contains("env_vars") || !text.contains("[mcp_servers.\(name).tools.copy_from_mac]")
     }
 
     static func withoutTable(_ original: String) -> String {

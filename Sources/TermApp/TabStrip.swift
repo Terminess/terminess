@@ -14,130 +14,123 @@ struct TabStripView: View {
         return mine.isEmpty ? model.tabs.filter { $0.id == owner } : mine
     }
 
+    private var current: OpenTab? { model.tabs.first { $0.id == owner } }
+
+    @State private var editing = false
+    @State private var draft = ""
+    @State private var hoveringName = false
+    @State private var cursorPushed = false
+    @FocusState private var fieldFocused: Bool
+
     var body: some View {
         let _ = PerfCounters.tick("body.tabStrip")
-        let tabs = self.tabs
-        HStack(spacing: 0) {
-            ViewThatFits(in: .horizontal) {
-                items(tabs)
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal, showsIndicators: false) { items(tabs) }
-                        .onAppear { proxy.scrollTo(owner) }
-                        .onChange(of: tabs.count) { _, _ in proxy.scrollTo(owner) }
+        let tab = current
+        let agent = tab.flatMap { Agent.detect($0.command, title: $0.terminalTitle) }
+        HStack(spacing: 4) {
+            if let agent {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkle").foregroundStyle(Color(nsColor: agent.tint))
+                    Text(agent.name).foregroundStyle(.secondary)
                 }
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            .layoutPriority(1)
-            Button { NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil) } label: {
-                Image(systemName: "plus").font(.system(size: 12, weight: .regular))
-                    .frame(width: 28, height: 26).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("New tab (Cmd-T)")
-            if tabs.count > 1 {
-                Menu {
-                    ForEach(tabs) { tab in
-                        Button((tab.attention ? "\u{25CF} " : "") + tab.title) { model.actions?.focusTab(tab.id) }
-                    }
-                } label: {
-                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
-                        .frame(width: 22, height: 26).contentShape(Rectangle())
-                }
-                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 14))
+                .padding(.leading, 12)
+                .padding(.trailing, 6)
                 .fixedSize()
-                .help("All tabs in this window")
             }
+            name(tab)
+                .padding(.leading, agent == nil ? 6 : -6)
+            Menu {
+                if let tab {
+                    Button("Rename\u{2026}") { model.actions?.renameTab(tab.id) }
+                    Toggle("Notify My Phone", isOn: Binding(get: { model.notifies(tab) },
+                                                           set: { model.setNotify(tab, $0) }))
+                    if tab.machineID == nil, !tab.directory.isEmpty {
+                        Divider()
+                        Button("Show in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: tab.directory)])
+                        }
+                        Button("Copy Path") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(tab.directory, forType: .string)
+                        }
+                    }
+                    Divider()
+                }
+                Button("New Session") { NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil) }
+                if let tab {
+                    Button("Close") { model.actions?.closeTab(tab.id) }
+                }
+            } label: {
+                Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+                    .frame(width: 26, height: 26).contentShape(Rectangle())
+            }
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+            .foregroundStyle(.secondary)
+            .fixedSize()
+            .hoverIcon()
+            .help("Options for this session")
             Spacer(minLength: 0)
         }
         .frame(maxHeight: .infinity)
         .ignoresSafeArea()
     }
-
-    private func items(_ tabs: [OpenTab]) -> some View {
-        HStack(spacing: 0) {
-            ForEach(tabs) { tab in
-                TabItem(tab: tab, active: tab.id == owner, closable: tabs.count > 1)
-                    .id(tab.id)
-                Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 0.5, height: 16)
-            }
-        }
-    }
 }
 
-private struct TabItem: View {
-    let tab: OpenTab
-    let active: Bool
-    let closable: Bool
-    @State private var hovering = false
-    @State private var dropTarget = false
-
-    private var agent: Agent? { Agent.detect(tab.command) }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Group {
-                if tab.busy && !tab.attention {
-                    WorkingMark(tint: .secondary)
-                } else {
-                    Image(systemName: tab.parked ? "moon.zzz" : (agent != nil ? "sparkle" : "apple.terminal"))
-                        .font(.system(size: 11))
-                        .foregroundStyle(agent.map { Color(nsColor: $0.tint) } ?? .secondary)
+extension TabStripView {
+    @ViewBuilder
+    private func name(_ tab: OpenTab?) -> some View {
+        if editing, let tab {
+            TextField("Automatic name", text: $draft)
+                .textFieldStyle(.plain)
+                .font(.system(size: 14))
+                .focused($fieldFocused)
+                .onSubmit { finishRename(tab, keep: true) }
+                .onExitCommand { finishRename(tab, keep: false) }
+                .onChange(of: fieldFocused) { _, focused in
+                    if !focused && editing { finishRename(tab, keep: true) }
                 }
-            }
-            .frame(width: 14)
-            Text(tab.title)
-                .font(.system(size: 12.5, weight: active ? .medium : .regular))
-                .foregroundStyle(active ? .primary : .secondary)
+                .frame(minWidth: 120, maxWidth: 360)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1))
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Text(tab?.title ?? "New session")
+                .font(.system(size: 14))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(maxWidth: 190, alignment: .leading)
-                .fixedSize(horizontal: true, vertical: false)
-            ZStack {
-                if hovering && closable {
-                    Button { SidebarModel.shared.actions?.closeTab(tab.id) } label: {
-                        Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
-                            .frame(width: 16, height: 16).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("Close tab (Cmd-W)")
-                } else if tab.attention {
-                    Circle().fill(Color.orange).frame(width: 6, height: 6).help("Needs you")
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(hoveringName && tab != nil ? 0.08 : 0)))
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    hoveringName = inside
+                    if inside && tab != nil && !cursorPushed { NSCursor.iBeam.push(); cursorPushed = true }
+                    if !inside { popCursor() }
                 }
-            }
-            .frame(width: 16)
-        }
-        .padding(.leading, 10).padding(.trailing, 6)
-        .frame(height: 30)
-        .background(Rectangle().fill(Color.primary.opacity(active ? 0.075 : (hovering ? 0.035 : 0))))
-        .overlay(alignment: .leading) {
-            if dropTarget { Rectangle().fill(Color.accentColor).frame(width: 2) }
-        }
-        .contentShape(Rectangle())
-        .simultaneousGesture(TapGesture().onEnded { if !active { SidebarModel.shared.actions?.focusTab(tab.id) } })
-        .onHover { hovering = $0 }
-        .help([tab.title, tab.directory].filter { !$0.isEmpty }.joined(separator: "\n"))
-        .contextMenu {
-            Button("Rename…") { SidebarModel.shared.actions?.renameTab(tab.id) }
-            Button("Close Tab") { SidebarModel.shared.actions?.closeTab(tab.id) }
-        }
-        .onDrag { NSItemProvider(object: TabDrag.string(tab.id) as NSString) }
-        .onDrop(of: [.plainText], isTargeted: $dropTarget) { providers in
-            guard let p = providers.first else { return false }
-            _ = p.loadObject(ofClass: NSString.self) { obj, _ in
-                guard let s = obj as? String else { return }
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated {
-                        guard let moving = SidebarModel.shared.tabs.first(where: { TabDrag.string($0.id) == s })?.id,
-                              moving != tab.id else { return }
-                        (NSApp.delegate as? AppDelegate)?.reorderTab(moving, before: tab.id)
-                    }
+                .onDisappear { hoveringName = false; popCursor() }
+                .onTapGesture {
+                    guard let tab else { return }
+                    draft = model.actions?.tabName(tab.id) ?? tab.title
+                    hoveringName = false
+                    popCursor()
+                    editing = true
+                    DispatchQueue.main.async { fieldFocused = true }
                 }
-            }
-            return true
+                .help(tab == nil ? "" : "Click to rename")
         }
+    }
+
+    private func popCursor() {
+        if cursorPushed { NSCursor.pop(); cursorPushed = false }
+    }
+
+    private func finishRename(_ tab: OpenTab, keep: Bool) {
+        guard editing else { return }
+        editing = false
+        if keep, draft != model.actions?.tabName(tab.id) { model.actions?.setTabName(tab.id, draft) }
     }
 }
 

@@ -181,7 +181,8 @@ final class BorrowCenter {
     private var running: [String: Process] = [:]
 
     func request(_ r: Request, reply: @escaping @Sendable (Int, String) -> Void) {
-        if ProcessInfo.processInfo.environment["TERMAPP_BORROW_AUTO"] == "allow" {
+        if ProcessInfo.processInfo.environment["TERMAPP_BORROW_AUTO"] == "allow"
+            || Settings.shared.borrowTrusted.contains(r.machine.name) {
             if let c = BorrowCenter.runner(for: r) { allow(r, runner: c.agent, reply: reply) } else { reply(1, "No agent is installed on the Mac.") }
             return
         }
@@ -194,8 +195,11 @@ final class BorrowCenter {
             reply(1, "No agent is installed on the Mac to do this (Claude Code, Codex or Gemini CLI).")
             return
         }
-        panel.contentView = NSHostingView(rootView: BorrowRequestView(request: r, runner: choice.agent, fallback: choice.fallback, wanted: choice.wanted, decide: { [weak self] ok in
+        panel.contentView = NSHostingView(rootView: BorrowRequestView(request: r, runner: choice.agent, fallback: choice.fallback, wanted: choice.wanted, decide: { [weak self] ok, always in
             self?.close(r.id)
+            if ok && always && !Settings.shared.borrowTrusted.contains(r.machine.name) {
+                Settings.shared.borrowTrusted.append(r.machine.name)
+            }
             if ok { self?.allow(r, runner: choice.agent, reply: reply) } else { reply(1, "The person declined to lend their Mac for this task.") }
         }))
         panel.center()
@@ -215,7 +219,7 @@ final class BorrowCenter {
         let dir = NSHomeDirectory() + "/.local/state/terminess/borrow/\(r.id)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let system = "You are doing one task for an agent on another machine (\(r.from)), which can't use this Mac's browser or apps. "
-            + "Do exactly the task, then reply with a concise final answer only: what you found or did. Don't change files outside this folder."
+            + "Do exactly the task, then reply with a concise final answer only: what you found or did. Don't change files the task doesn't call for."
         let command: String
         var useOwnChrome = false
         var note = ""
@@ -236,7 +240,7 @@ final class BorrowCenter {
         case "gemini":
             command = "gemini --yolo -p " + shq(system + "\n\nTask: " + r.task)
         default:
-            command = "claude -p --chrome --output-format text --permission-mode acceptEdits "
+            command = "claude -p --chrome --no-session-persistence --output-format text --permission-mode auto "
                 + "--allowedTools mcp__claude-in-chrome WebFetch WebSearch Read "
                 + "--append-system-prompt " + shq(system) + " " + shq(r.task)
         }
@@ -269,11 +273,67 @@ final class BorrowCenter {
                     return
                 }
                 let who = "Done on the Mac by \(BorrowCenter.runnerName(runner))" + (ownChrome ? ", in your Chrome" : "") + ".\n\n" + chromeNote
-                reply(failed ? 1 : 0, text.isEmpty ? "The Mac's agent (\(BorrowCenter.runnerName(runner))) finished without an answer." : who + String(text.suffix(20000)))
+                reply(failed ? 1 : 0, text.isEmpty ? "The Mac's agent (\(BorrowCenter.runnerName(runner))) finished without an answer." : who + BorrowCenter.capped(text))
             }
         }
         if ProcessInfo.processInfo.environment["TERMAPP_SCRIPT"] != nil { print("borrow: running \(r.id) with \(runner): \(r.task)"); fflush(stdout) }
         do { try p.run(); running[id] = p } catch { reply(1, "Couldn't start Claude Code on the Mac: \(error)") }
+    }
+
+    nonisolated static let answerLimit = 100_000
+    nonisolated static func capped(_ text: String) -> String {
+        guard text.count > answerLimit else { return text }
+        return String(text.prefix(answerLimit)) + "\n\n[Cut: the Mac's answer was \(text.count) characters and only the first \(answerLimit) are here. To get a whole file from the Mac, use copy_from_mac.]"
+    }
+
+
+    nonisolated static let fileLimit = 5 * 1024 * 1024
+
+    func fileRequest(id: String, machine: RemoteMachine, from: String, path raw: String,
+                     reply: @escaping @Sendable (Message) -> Void) {
+        func fail(_ text: String) { reply(Message(op: "borrow-reply", id: id, code: 1, message: text)) }
+        let path = BorrowCenter.macPath(raw)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else { return fail("There's no file at \(path) on the Mac.") }
+        guard !isDir.boolValue else { return fail("\(path) on the Mac is a folder. Ask for one file at a time.") }
+        let size = ((try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber)?.intValue ?? 0
+        guard size <= BorrowCenter.fileLimit else {
+            return fail("\(path) on the Mac is \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)); copy_from_mac sends files up to 5 MB.")
+        }
+        let send = {
+            guard let bytes = FileManager.default.contents(atPath: path) else { return fail("The Mac couldn't read \(path) (macOS may need to give Terminess access to that folder).") }
+            var m = Message(op: "borrow-reply", id: id, code: 0, message: path)
+            m.name = (path as NSString).lastPathComponent
+            m.data = bytes.base64EncodedString()
+            reply(m)
+        }
+        if ProcessInfo.processInfo.environment["TERMAPP_BORROW_AUTO"] == "allow" { return send() }
+        if BorrowCenter.isDropped(path) { return send() }
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 200),
+                            styleMask: [.titled, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.title = "Copy a file from this Mac"
+        panel.level = .floating
+        panel.isReleasedWhenClosed = false
+        panel.contentView = NSHostingView(rootView: FileRequestView(machine: machine.name, from: from, path: path, size: size, decide: { [weak self] ok in
+            self?.close(id)
+            if ok { send() } else { fail("The person declined to send that file from their Mac.") }
+        }))
+        panel.center()
+        panel.orderFrontRegardless()
+        panels[id] = panel
+        NSApp.requestUserAttention(.criticalRequest)
+    }
+
+    nonisolated static func isDropped(_ path: String) -> Bool {
+        let drops = FileManager.default.temporaryDirectory.appendingPathComponent("terminal-drops", isDirectory: true)
+            .resolvingSymlinksInPath().path
+        let file = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        return file.hasPrefix(drops + "/")
+    }
+
+    nonisolated static func macPath(_ raw: String) -> String {
+        let p = (raw.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
+        return p.hasPrefix("/") ? (p as NSString).standardizingPath : (NSHomeDirectory() as NSString).appendingPathComponent(p)
     }
 
     private func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
@@ -284,7 +344,7 @@ private struct BorrowRequestView: View {
     let runner: String
     let fallback: Bool
     let wanted: String
-    let decide: (Bool) -> Void
+    let decide: (Bool, Bool) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -304,9 +364,45 @@ private struct BorrowRequestView: View {
             .padding(8)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.08)))
             HStack {
+                Button("Always Allow from \(request.machine.name)") { decide(true, true) }
+                    .help("Borrow requests from \(request.machine.name) run without asking. Undo in Settings, Agents.")
+                Spacer()
+                Button("Deny") { decide(false, false) }.keyboardShortcut(.cancelAction)
+                Button("Allow") { decide(true, false) }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(18)
+        .frame(width: 460)
+    }
+}
+
+private struct FileRequestView: View {
+    let machine: String
+    let from: String
+    let path: String
+    let size: Int
+    let decide: (Bool) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.on.doc").foregroundStyle(.orange)
+                Text("\(machine) wants a file from this Mac").font(.headline)
+            }
+            Text("An agent there (\(from)) asks for a copy of this file:")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Text((path as NSString).abbreviatingWithTildeInPath).font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled).lineLimit(3)
+                Spacer()
+                Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)).font(.callout).foregroundStyle(.secondary)
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.08)))
+            HStack {
                 Spacer()
                 Button("Deny") { decide(false) }.keyboardShortcut(.cancelAction)
-                Button("Allow") { decide(true) }.keyboardShortcut(.defaultAction)
+                Button("Send") { decide(true) }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(18)

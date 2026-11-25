@@ -4,6 +4,10 @@ import TermHost
 import Glibc
 private let sockStream = Int32(SOCK_STREAM.rawValue)
 private func Darwin_or_Glibc_close(_ fd: Int32) { _ = Glibc.close(fd) }
+#elseif canImport(Musl)
+@preconcurrency import Musl
+private let sockStream = Int32(SOCK_STREAM)
+private func Darwin_or_Glibc_close(_ fd: Int32) { _ = Musl.close(fd) }
 #else
 import Darwin
 private let sockStream = SOCK_STREAM

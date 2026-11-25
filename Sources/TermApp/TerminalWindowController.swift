@@ -14,6 +14,13 @@ final class Pane {
         didSet { view.parkedNotice = parked.map { "Parked to free memory. It resumes \($0.tool == "claude" ? "Claude Code" : "Codex") when you come back." } }
     }
 
+    let reader = ReaderModel()
+    let composerState = ComposerState()
+    var readerView: NSView?
+    var composerView: NSView?
+    var chatColumn: ChatColumnView?
+    var statusShownAt = Date.distantPast
+
     init(columns: Int, rows: Int) {
         session = TerminalSession(columns: columns, rows: rows)
         view = TerminalView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
@@ -129,11 +136,12 @@ final class ContentContainer: NSView {
     var showStrip = false { didSet { strip.isHidden = !showStrip; needsLayout = true } }
     var composer: NSView? {
         didSet {
-            oldValue?.removeFromSuperview()
+            if oldValue?.superview === self { oldValue?.removeFromSuperview() }
             if let composer { addSubview(composer) }
             needsLayout = true
         }
     }
+    var composersInColumns = false { didSet { needsLayout = true } }
     var header: NSView? {
         didSet {
             oldValue?.removeFromSuperview()
@@ -179,10 +187,10 @@ final class ContentContainer: NSView {
         super.layout()
         var h: CGFloat = 0
         if let composer {
-            h = min(composer.fittingSize.height, 200)
+            h = composerHeight(composer)
             composer.frame = NSRect(x: 0, y: 0, width: bounds.width, height: h)
         }
-        let stripShown = showStrip && !(strip.native && composer != nil)
+        let stripShown = showStrip && !(strip.native && (composer != nil || composersInColumns))
         strip.isHidden = !stripShown
         if stripShown {
             let sh = strip.intrinsicContentSize.height
@@ -223,9 +231,10 @@ final class ContentContainer: NSView {
 final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
     private let container = ContentContainer()
     private let drops = WindowLink()
-    let reader = ReaderModel()
-    let composerState = ComposerState()
-    private var readerHost: NSView?
+    var reader: ReaderModel { focused.reader }
+    var composerState: ComposerState { focused.composerState }
+    private var readerHost: ChatAreaView?
+    private var clickMonitor: Any?
     private(set) var panes: [Pane] = []
     private(set) var focused: Pane!
     private let host = PaneHostView()
@@ -305,8 +314,6 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         super.init(window: window)
         window.delegate = self
         container.drops = drops
-        reader.drops = drops
-        composerState.drops = drops
         drops.handler = { [weak self] pb in self?.acceptDrop(pb) ?? false }
         drops.owner = ObjectIdentifier(self)
 
@@ -344,24 +351,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             host.root = pane.view
         }
         focusPane(panes[0])
-        reader.folder = { [weak self] in self?.focused?.currentDirectory }
-        reader.gate = gate
-        reader.onUserMessage = { [weak self] text in self?.nameFromFirstMessage(text) }
-        PerfCounters.watch(reader, "publish.reader")
-        PerfCounters.watch(composerState, "publish.composer")
-        reader.machineID = machine?.id ?? ""
-        reader.showTerminal = { [weak self] in self?.setMode(.split) }
-        reader.startHere = { [weak self] path, command in
-            guard let self else { return }
-            let dir = path == "~" ? "~" : shellQuote(path)
-            self.session.send(Array("cd \(dir) && clear && \(command)\r".utf8))
-            self.focus()
-        }
-        reader.follow { [weak self] in self?.focused?.readerSource() }
-        reader.activity = { [weak self] in self?.focused?.session.lastActivity }
-        reader.menuWaiting = { [weak self] in self?.screenMenu != nil }
-        reader.onFound = { [weak self] pid, agent, path in
-            self?.focused?.transcript = (pid, agent, path)
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            MainActor.assumeIsolated { self?.chatClick(event) }
+            return event
         }
         setMode(ViewMode(rawValue: UserDefaults.standard.integer(forKey: "viewMode")) ?? .terminal)
     }
@@ -390,19 +382,17 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         case .terminal:
             showHost(true)
             setReader(visible: false)
-            setComposer(visible: false)
             container.showStrip = false
         case .split:
             showHost(true)
             setReader(visible: true)
-            setComposer(visible: true)
             container.showStrip = true
         case .chat:
             setReader(visible: true)
             showHost(false)
-            setComposer(visible: true)
             container.showStrip = true
         }
+        layoutChat(rebuild: true)
         updateInputHiding(report: true)
         container.needsLayout = true
         if m == .terminal { focus() }
@@ -560,11 +550,15 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         pendingStatus = summary
         if onScreen, !statusScheduled {
             statusScheduled = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            let pane = focused
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak pane] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.statusScheduled = false
-                    if let s = self.pendingStatus, s != self.composerState.status { self.composerState.status = s }
+                    guard let pane else { return }
+                    if let s = self.pendingStatus, s != pane.composerState.status { pane.composerState.status = s }
+                    let shells = self.pendingStatus?.shells
+                    if shells != pane.reader.shells { pane.reader.shells = shells }
                 }
             }
         }
@@ -582,15 +576,6 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         if revealedForQuestion { revealedForQuestion = false; showHost(false) }
     }
 
-    private var agentAsking: Bool {
-        guard let pane = focused, let id = pane.session.process?.hostSessionID else { return false }
-        let model = SidebarModel.shared
-        if let m = pane.session.machine {
-            return model.remote.first { $0.id == m.id }?.sessions.first { $0.id == id }?.asking == true
-        }
-        return model.localSessions[id]?.asking == true
-    }
-
     private func refreshWaiting(inputVisible: Bool) {
         lastInputVisible = inputVisible
         waitingTimer?.cancel()
@@ -605,7 +590,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     private func decideWaiting() {
         let isAgent = Agent.detect(focused?.session.process?.foregroundCommand) != nil
-        let waiting = mode != .terminal && isAgent && !composerState.busy && (agentAsking || !lastInputVisible)
+        let waiting = mode != .terminal && isAgent && !composerState.busy && !lastInputVisible
         guard waiting, let t = focused?.session.terminal else {
             if waitingLines != nil { waitingLines = nil; updateApproval() }
             if mode != .terminal && isAgent && !lastInputVisible {
@@ -632,11 +617,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
     func updateApproval() {
         if let pane = ([focused] + panes).compactMap({ $0 }).first(where: { $0.session.permission == nil && $0.session.question != nil }),
            !panes.contains(where: { $0.session.permission != nil }), let q = pane.session.question {
-            let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
-            container.approval = NSHostingView(rootView: QuestionBar(question: q, agent: agent) { [weak self, weak pane] text in
+            let agent = Agent.detect(pane.session.process?.foregroundCommand, title: pane.session.terminal.title)?.name ?? "The agent"
+            showCard(NSHostingView(rootView: QuestionBar(question: q, agent: agent) { [weak self, weak pane] text in
                 pane?.session.answerQuestion(text)
                 self?.updateApproval()
-            })
+            }), for: pane)
             return
         }
         let pane = ([focused] + panes).compactMap { $0 }.first { $0.session.permission != nil }
@@ -644,8 +629,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             !r.canAlways && p === focused && (screenMenu?.options.count ?? 0) > 2 ? screenMenu : nil } }
         guard let pane, let request = pane.session.permission, fuller == nil else {
             if let menu = fuller ?? screenMenu, let pane = focused {
-                let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
-                container.approval = NSHostingView(rootView: MenuBar(menu: menu, agent: agent) { [weak self, weak pane] index in
+                let agent = Agent.detect(pane.session.process?.foregroundCommand, title: pane.session.terminal.title)?.name ?? "The agent"
+                showCard(NSHostingView(rootView: MenuBar(menu: menu, agent: agent) { [weak self, weak pane] index in
                     guard let pane else { return }
                     for (i, k) in menu.keys(toChoose: index).enumerated() {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06 * Double(i)) { [weak pane] in
@@ -657,12 +642,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
                     }
                     self?.screenMenu = nil
                     self?.updateApproval()
-                })
+                }), for: pane)
                 return
             }
             if let lines = waitingLines, let pane = focused {
-                let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
-                container.approval = NSHostingView(rootView: WaitingBar(lines: lines, agent: agent, key: { [weak self] k in
+                let agent = Agent.detect(pane.session.process?.foregroundCommand, title: pane.session.terminal.title)?.name ?? "The agent"
+                showCard(NSHostingView(rootView: WaitingBar(lines: lines, agent: agent, key: { [weak self] k in
                     self?.sendKey(k)
                 }, type: { [weak self] text in
                     guard let s = self?.focused?.session else { return }
@@ -670,36 +655,64 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                         MainActor.assumeIsolated { s.send(InputEncoder.encode(.enter, modifiers: [], modes: s.terminal.modes)) }
                     }
-                }, showTerminal: { [weak self] in self?.setMode(.split) }))
+                }, showTerminal: { [weak self] in self?.setMode(.split) })), for: pane)
                 return
             }
             if let p = ([focused] + panes).compactMap({ $0 }).first(where: { $0.session.notice != nil && !$0.session.noticeDismissed }),
                let text = p.session.notice {
-                container.approval = NSHostingView(rootView: NoticeBar(text: text) { [weak self, weak p] in
+                let machine = p.session.machine
+                let open = p.session.noticeNewest.flatMap { id in
+                    Self.newestOpener(id, on: machine)
+                }
+                showCard(NSHostingView(rootView: NoticeBar(text: text, openNewest: open) { [weak self, weak p] in
                     p?.session.noticeDismissed = true
                     self?.updateApproval()
-                })
+                }), for: p)
             } else {
-                container.approval = nil
+                showCard(nil, for: nil)
             }
             return
         }
-        let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
+        let agent = Agent.detect(pane.session.process?.foregroundCommand, title: pane.session.terminal.title)?.name ?? "The agent"
         let bar = NSHostingView(rootView: ApprovalBar(request: request, agent: agent) { [weak self, weak pane] answer in
             pane?.session.answerPermission(answer)
             self?.updateApproval()
         })
-        container.approval = bar
+        showCard(bar, for: pane)
+    }
+
+    private func showCard(_ card: NSView?, for pane: Pane?) {
+        let column = mode == .chat ? (pane?.chatColumn ?? focused?.chatColumn) : nil
+        for p in panes where p.chatColumn !== column { p.chatColumn?.card = nil }
+        if let column {
+            container.approval = nil
+            column.card = card
+        } else {
+            container.approval = card
+        }
+    }
+
+    static func newestOpener(_ id: String, on machine: RemoteMachine?) -> (() -> Void)? {
+        let model = SidebarModel.shared
+        if let tab = model.tabs.first(where: { t in t.conversations.contains { $0.contains(id) } }) {
+            return { SidebarModel.shared.actions?.focusTab(tab.id) }
+        }
+        if let machine {
+            guard let r = model.remote.first(where: { $0.machine.id == machine.id }),
+                  let h = r.history.first(where: { $0.id == id }) else { return nil }
+            return { SidebarModel.shared.actions?.resumeRemote(r.machine, h) }
+        }
+        guard let item = model.sessions.first(where: { $0.id == id }) else { return nil }
+        return { SidebarModel.shared.actions?.resume(item) }
     }
 
     var readerVisible: Bool { readerHost != nil }
-    var composerVisible: Bool { container.composer != nil }
+    var composerVisible: Bool { container.composer != nil || container.composersInColumns }
 
     func setReader(visible: Bool) {
         guard visible != readerVisible else { return }
         if visible {
-            let v = NSHostingView(rootView: ReaderView(model: reader))
-            v.safeAreaRegions = []
+            let v = ChatAreaView()
             let split = container.split
             let total = max(split.bounds.width, window?.contentLayoutRect.width ?? 1000)
             let readerWidth = min(520, max(320, total * 0.42))
@@ -714,10 +727,140 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
                 MainActor.assumeIsolated { split.setPosition(total - readerWidth, ofDividerAt: 0) }
             }
         } else {
+            readerHost?.root = nil
             readerHost?.removeFromSuperview()
             readerHost = nil
         }
-        reader.visible = visible && onScreen
+    }
+
+    func layoutChat(rebuild: Bool) {
+        guard focused != nil else { return }
+        switch mode {
+        case .terminal:
+            container.composer = nil
+            container.composersInColumns = false
+        case .split:
+            container.composersInColumns = false
+            let view = readerView(for: focused)
+            if readerHost?.root !== view { readerHost?.root = view }
+            let composer = composerView(for: focused)
+            if container.composer !== composer { container.composer = composer }
+        case .chat:
+            container.composer = nil
+            container.composersInColumns = true
+            if rebuild || readerHost?.root == nil {
+                for p in panes { p.chatColumn?.removeFromSuperview(); p.chatColumn = nil }
+                readerHost?.root = chatTree(host.root)
+                readerHost?.layoutSubtreeIfNeeded()
+                if let root = readerHost?.root { matchSizes(of: host.root, in: root) }
+            }
+        }
+        for p in panes {
+            let marked = mode == .chat && panes.count > 1 && p === focused
+            if p.composerState.marked != marked { p.composerState.marked = marked }
+        }
+        for p in panes {
+            let shown = mode == .chat || (mode == .split && p === focused)
+            if p.reader.visible != (shown && onScreen) { p.reader.visible = shown && onScreen }
+        }
+        if mode == .chat, !chatHasFirstResponder(focused) { focusComposer(of: focused) }
+        updateApproval()
+    }
+
+    private func chatTree(_ view: NSView?) -> NSView {
+        if let sv = view as? NSSplitView {
+            let split = NSSplitView(frame: sv.frame)
+            split.isVertical = sv.isVertical
+            split.dividerStyle = .thin
+            split.autoresizingMask = [.width, .height]
+            for child in sv.subviews { split.addSubview(chatTree(child)) }
+            return split
+        }
+        let pane = panes.first { $0.view === view } ?? focused!
+        let column = ChatColumnView(reader: readerView(for: pane), composer: composerView(for: pane))
+        column.frame = view?.frame ?? .zero
+        pane.chatColumn = column
+        return column
+    }
+
+    private func matchSizes(of terminals: NSView?, in chat: NSView) {
+        guard let sv = terminals as? NSSplitView, let cv = chat as? NSSplitView else { return }
+        let sizes = sv.subviews.map { sv.isVertical ? $0.frame.width : $0.frame.height }
+        let total = sizes.reduce(0, +)
+        if total > 0, !sizes.contains(where: { $0 <= 0 }) {
+            cv.adjustSubviews()
+            let room = (cv.isVertical ? cv.bounds.width : cv.bounds.height) - cv.dividerThickness * CGFloat(sizes.count - 1)
+            var pos: CGFloat = 0
+            for i in 0..<(sizes.count - 1) {
+                pos += room * sizes[i] / total
+                cv.setPosition(pos + cv.dividerThickness * CGFloat(i), ofDividerAt: i)
+            }
+        } else {
+            equalize(cv)
+        }
+        for (t, c) in zip(sv.subviews, cv.subviews) { matchSizes(of: t, in: c) }
+    }
+
+    private func readerView(for pane: Pane) -> NSView {
+        if let v = pane.readerView { return v }
+        let v = NSHostingView(rootView: ReaderView(model: pane.reader))
+        v.safeAreaRegions = []
+        pane.readerView = v
+        return v
+    }
+
+    private func composerView(for pane: Pane) -> NSView {
+        if let v = pane.composerView { return v }
+        let v = ComposerHostingView(rootView: ComposerView(placeholder: "Message the agent in this tab",
+            state: pane.composerState,
+            onSend: { [weak self, weak pane] text in
+                guard let self, let pane else { return }
+                if pane !== self.focused { self.focusPane(pane) }
+                self.sendFromComposer(text)
+            },
+            onStop: { [weak self, weak pane] in
+                guard let self, let pane else { return }
+                if pane !== self.focused { self.focusPane(pane) }
+                self.interruptAgent()
+            },
+            onEscape: { [weak self] in self?.escapeFromComposer() }))
+        let state = pane.composerState
+        v.measuredHeight = { [weak state] in state?.contentHeight ?? 0 }
+        state.onContentHeight = { [weak v] in v?.relayoutParent() }
+        pane.composerView = v
+        return v
+    }
+
+    private func escapeFromComposer() {
+        if mode == .split { window?.makeFirstResponder(focused.view) }
+    }
+
+    private func chatClick(_ event: NSEvent) {
+        guard mode == .chat, panes.count > 1, event.window === window else { return }
+        for p in panes where p !== focused {
+            guard let column = p.chatColumn, column.window != nil else { continue }
+            if column.bounds.contains(column.convert(event.locationInWindow, from: nil)) {
+                focusPane(p)
+                return
+            }
+        }
+    }
+
+    private func chatHasFirstResponder(_ pane: Pane) -> Bool {
+        guard let column = pane.chatColumn, let r = window?.firstResponder as? NSView else { return false }
+        return r.isDescendant(of: column)
+    }
+
+    private func focusComposer(of pane: Pane) {
+        guard let box = pane.composerView, box.window != nil,
+              let text = Self.firstTextView(in: box) else { return }
+        window?.makeFirstResponder(text)
+    }
+
+    private static func firstTextView(in view: NSView) -> NSTextView? {
+        if let t = view as? KeyTextView { return t }
+        for v in view.subviews { if let t = firstTextView(in: v) { return t } }
+        return nil
     }
 
     func updateInputHiding(report: Bool = false) {
@@ -727,41 +870,44 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             let isAgent = agent == "claude" || agent == "codex"
             p.view.hideAgentInput = on && isAgent
             p.view.hideAgentStatus = on && isAgent
-            p.view.onQueued = p === focused ? { [weak self] queued in self?.reader.setQueued(queued) } : nil
-            p.view.onAgentScreen = p === focused ? { [weak self] visible, status, busy in
-                guard let self else { return }
-                if self.composerState.busy != busy { self.composerState.busy = busy }
-                self.agentScreenChanged(inputVisible: visible, status: status)
+            let follows = p === focused || mode == .chat
+            p.view.onQueued = follows ? { [weak p] queued in p?.reader.setQueued(queued) } : nil
+            p.view.onAgentScreen = follows ? { [weak self, weak p] visible, status, busy in
+                guard let self, let p else { return }
+                if p.composerState.busy != busy { p.composerState.busy = busy }
+                if p === self.focused {
+                    self.agentScreenChanged(inputVisible: visible, status: status)
+                } else {
+                    self.columnStatusChanged(p, status: status)
+                }
             } : nil
         }
-        focused?.view.updateAgentScreen(force: report)
+        for p in panes where p === focused || (report && mode == .chat) {
+            p.view.updateAgentScreen(force: report)
+        }
     }
 
-    func updateComposerPlace() {
-        let machineID = focused?.session.process?.machineID
+    private func columnStatusChanged(_ pane: Pane, status: [Row]) {
+        guard onScreen, Date().timeIntervalSince(pane.statusShownAt) > 0.3 else { return }
+        pane.statusShownAt = Date()
+        let summary = StatusSummary(rows: status, palette: pane.session.terminal.palette)
+        if summary != pane.composerState.status { pane.composerState.status = summary }
+        if summary.shells != pane.reader.shells { pane.reader.shells = summary.shells }
+        updateComposerPlace(pane)
+        refreshComposerModel(pane)
+    }
+
+    func updateComposerPlace(_ pane: Pane? = nil) {
+        guard let pane = pane ?? focused else { return }
+        let state = pane.composerState
+        let machineID = pane.session.process?.machineID
         let remote = machineID.flatMap { RemoteMachines.machine($0) }
         let name = remote?.name ?? "This Mac"
         let symbol = remote == nil ? "laptopcomputer" : "server.rack"
-        if composerState.machine != name { composerState.machine = name }
-        if composerState.machineSymbol != symbol { composerState.machineSymbol = symbol }
-        let folder = remote == nil ? focused?.currentDirectory : nil
-        if composerState.folderPath != folder { composerState.folderPath = folder }
-    }
-
-    func setComposer(visible: Bool) {
-        defer { updateInputHiding() }
-        guard visible != composerVisible else { return }
-        if visible {
-            let view = NSHostingView(rootView: ComposerView(placeholder: "Message the agent in this tab",
-                state: composerState,
-                onSend: { [weak self] text in self?.sendFromComposer(text) },
-                onStop: { [weak self] in self?.interruptAgent() },
-                onEscape: { [weak self] in self?.focus() }))
-            container.composer = view
-        } else {
-            container.composer = nil
-            focus()
-        }
+        if state.machine != name { state.machine = name }
+        if state.machineSymbol != symbol { state.machineSymbol = symbol }
+        let folder = remote == nil ? pane.currentDirectory : nil
+        if state.folderPath != folder { state.folderPath = folder }
     }
 
     func interruptAgent() {
@@ -819,18 +965,20 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         typeIntoAgent(text, pane: pane)
     }
 
-    func refreshComposerModel() {
-        let id = Agent.detect(focused?.session.process?.foregroundCommand)?.id
+    func refreshComposerModel(_ pane: Pane? = nil) {
+        guard let pane = pane ?? focused else { return }
+        let state = pane.composerState
+        let id = Agent.detect(pane.session.process?.foregroundCommand)?.id
         let usable = id == "claude" || id == "codex" ? id : nil
-        if composerState.agentID != usable {
-            composerState.agentID = usable
-            composerState.models = AgentModels.list(for: usable)
-            composerState.model = nil
-            composerState.pendingModel = nil
+        if state.agentID != usable {
+            state.agentID = usable
+            state.models = AgentModels.list(for: usable)
+            state.model = nil
+            state.pendingModel = nil
         }
-        guard usable != nil, !switchingModel,
-              let seen = AgentModels.current(onScreen: session.terminal.screenText(), agentID: usable) else { return }
-        if composerState.model != seen { composerState.model = seen }
+        guard usable != nil, !(switchingModel && pane === focused),
+              let seen = AgentModels.current(onScreen: pane.session.terminal.screenText(), agentID: usable) else { return }
+        if state.model != seen { state.model = seen }
     }
 
     static func isShell(_ command: String?) -> Bool {
@@ -865,7 +1013,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             PerfCounters.tick("title.osc")
         }
         session.onForeground = { [weak self, weak pane] in
-            guard let self, pane === self.focused else { return }
+            guard let self, let pane else { return }
+            self.updateComposerPlace(pane)
+            guard pane === self.focused else { return }
             self.refreshTitle()
             self.refreshWaiting(inputVisible: self.lastInputVisible)
         }
@@ -878,7 +1028,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             guard let self, let pane else { return }
             self.updateApproval()
             if let request, self.window?.isKeyWindow != true || NSApp.isActive == false {
-                let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
+                let agent = Agent.detect(pane.session.process?.foregroundCommand, title: pane.session.terminal.title)?.name ?? "The agent"
                 AttentionCenter.shared.alert(controller: self, pane: pane, title: "\(agent) needs your approval",
                                              body: request.summary.isEmpty ? request.tool : request.summary, always: true)
             }
@@ -887,13 +1037,13 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             guard let self, let pane else { return }
             self.updateApproval()
             if let q, self.window?.isKeyWindow != true || NSApp.isActive == false {
-                let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
+                let agent = Agent.detect(pane.session.process?.foregroundCommand, title: pane.session.terminal.title)?.name ?? "The agent"
                 AttentionCenter.shared.alert(controller: self, pane: pane, title: "\(agent) asks", body: q.text, always: true)
             }
         }
         session.onAgentNote = { [weak self, weak pane] text in
             guard let self, let pane else { return }
-            let agent = Agent.detect(pane.session.process?.foregroundCommand)?.name ?? "The agent"
+            let agent = Agent.detect(pane.session.process?.foregroundCommand, title: pane.session.terminal.title)?.name ?? "The agent"
             AttentionCenter.shared.alert(controller: self, pane: pane, title: agent, body: text, always: true)
         }
         session.onAgentRequest = { [weak self] id, tool, args in
@@ -919,6 +1069,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             guard let self, let pane else { return }
             self.focusPane(pane)
         }
+        setUpChat(pane, machine: machine)
         panes.append(pane)
         session.start(workingDirectory: directory,
                       cellWidth: Int(view.cellSize.width.rounded()), cellHeight: Int(view.cellSize.height.rounded()),
@@ -935,15 +1086,47 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         return pane
     }
 
+    private func setUpChat(_ pane: Pane, machine: RemoteMachine?) {
+        let reader = pane.reader
+        reader.drops = drops
+        pane.composerState.drops = drops
+        reader.folder = { [weak pane] in pane?.currentDirectory }
+        reader.gate = gate
+        reader.onUserMessages = { [weak self] messages in self?.nameFromMessages(messages) }
+        reader.machineID = machine?.id ?? ""
+        reader.showTerminal = { [weak self] in self?.setMode(.split) }
+        reader.startHere = { [weak self, weak pane] path, command in
+            guard let self, let pane else { return }
+            let dir = path == "~" ? "~" : shellQuote(path)
+            pane.session.send(Array("cd \(dir) && clear && \(command)\r".utf8))
+            if pane !== self.focused { self.focusPane(pane) }
+            self.focus()
+        }
+        reader.follow { [weak pane] in pane?.readerSource() }
+        reader.activity = { [weak pane] in pane?.session.lastActivity }
+        reader.menuWaiting = { [weak self, weak pane] in self?.focused === pane && self?.screenMenu != nil }
+        reader.onFound = { [weak pane] pid, agent, path in pane?.transcript = (pid, agent, path) }
+    }
+
     func focusPane(_ pane: Pane) {
+        let changed = focused !== pane
         focused = pane
         if pane.parked != nil && window?.isKeyWindow == true { resume(pane) }
         for p in panes { p.view.dimmed = panes.count > 1 && p !== pane }
-        if window?.firstResponder !== pane.view { window?.makeFirstResponder(pane.view) }
+        if mode == .chat {
+            if !chatHasFirstResponder(pane) { focusComposer(of: pane) }
+        } else if window?.firstResponder !== pane.view {
+            window?.makeFirstResponder(pane.view)
+        }
         AttentionCenter.shared.clear(pane: pane)
         refreshTitle()
+        if changed {
+            screenMenu = nil
+            waitingLines = nil
+            layoutChat(rebuild: false)
+        }
         if reader.visible { reader.refresh(force: true) }
-        updateInputHiding()
+        updateInputHiding(report: changed)
     }
 
     @objc func splitRight(_ sender: Any?) { splitFocused(vertical: true) }
@@ -969,6 +1152,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             sv.addSubview(pane.view)
             equalize(sv)
         }
+        if mode == .chat { layoutChat(rebuild: true) }
         focusPane(pane)
     }
 
@@ -1008,6 +1192,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
                 equalize(sv)
             }
         }
+        pane.reader.visible = false
+        pane.chatColumn?.removeFromSuperview()
+        pane.chatColumn = nil
+        pane.readerView?.removeFromSuperview()
+        pane.composerView?.removeFromSuperview()
+        if mode == .chat { layoutChat(rebuild: true) }
         focusPane(panes.last!)
     }
 
@@ -1018,7 +1208,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     private func moveFocus(dx: CGFloat, dy: CGFloat) {
         guard panes.count > 1 else { return }
-        func frame(_ p: Pane) -> NSRect { p.view.convert(p.view.bounds, to: nil) }
+        func frame(_ p: Pane) -> NSRect {
+            let v: NSView = mode == .chat ? (p.chatColumn ?? p.view) : p.view
+            return v.convert(v.bounds, to: nil)
+        }
         let current = frame(focused)
         let centre = CGPoint(x: current.midX, y: current.midY)
         var best: (Pane, CGFloat)?
@@ -1147,14 +1340,51 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     private(set) var decidedName: String?
 
+    var editableName: String {
+        if let name = customTitle ?? decidedName { return name }
+        if let m = focused?.session.machine, displayTitle.hasSuffix(" \u{00B7} \(m.name)") {
+            return String(displayTitle.dropLast(m.name.count + 3))
+        }
+        return displayTitle
+    }
+
+    private enum NameSource { case firstLine, written, conversation }
+    private var nameSource: NameSource?
+    private var namedFrom = 0
+    private var writingName = false
+
     func nameFromFirstMessage(_ text: String) {
         guard customTitle?.isEmpty != false, decidedName == nil else { return }
         let line = text.split(whereSeparator: \.isNewline).first.map(String.init)?
             .trimmingCharacters(in: .whitespaces) ?? ""
         guard !line.isEmpty else { return }
         decidedName = line.count > 48 ? String(line.prefix(47)).trimmingCharacters(in: .whitespaces) + "\u{2026}" : line
+        nameSource = .firstLine
         refreshTitle()
         sendName(locked: false)
+    }
+
+    func nameFromMessages(_ messages: [String]) {
+        guard customTitle?.isEmpty != false, let first = messages.first else { return }
+        if decidedName == nil { nameFromFirstMessage(first) }
+        let n = min(messages.count, 3)
+        guard nameSource == .firstLine || nameSource == .written, !writingName,
+              namedFrom == 0 || (namedFrom < 3 && n == 3), OnDeviceModel.isAvailable else { return }
+        writingName = true
+        let asked = Array(messages.prefix(n))
+        PerfCounters.tick("name.write")
+        Task { [weak self] in
+            let name = await TabNamer.name(for: asked)
+            guard let self else { return }
+            self.writingName = false
+            guard self.nameSource == .firstLine || self.nameSource == .written else { return }
+            self.namedFrom = n
+            guard let name, self.customTitle?.isEmpty != false, name != self.decidedName else { return }
+            self.decidedName = name
+            self.nameSource = .written
+            self.refreshTitle()
+            self.sendName(locked: false)
+        }
     }
 
     func nameFromConversation(_ title: String) {
@@ -1162,12 +1392,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         decidedName = t
+        nameSource = .conversation
         refreshTitle()
         sendName(locked: false)
     }
 
     func nameFromTranscriptIfNeeded(retry: Bool = true) {
-        guard customTitle?.isEmpty != false, decidedName == nil, !readingNameFromTranscript,
+        let wantMore = decidedName == nil || (nameSource != .conversation && namedFrom < 3 && OnDeviceModel.isAvailable)
+        guard customTitle?.isEmpty != false, wantMore, !readingNameFromTranscript,
               let pane = focused, pane.session.machine == nil, let process = pane.session.process,
               let agent = Agent.detect(process.foregroundCommand), agent.id == "claude" || agent.id == "codex",
               let dir = pane.currentDirectory else { return }
@@ -1181,19 +1413,20 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
             let path = pinned
                 ?? (agent.id == "claude" ? Transcript.claudeSession(pid: pid) : nil)
                 ?? Transcript.locate(agent: agent.id, directory: dir, started: started, arguments: args, pid: pid)
-            var first: String?
+            var first: [String] = []
             if let path, let handle = FileHandle(forReadingAtPath: path) {
                 let data = handle.readData(ofLength: 256 * 1024)
                 try? handle.close()
                 for item in Transcript.parse(data: data, agent: agent.id).items {
-                    if case .user(let text) = item.kind { first = text; break }
+                    if case .user(let text) = item.kind { first.append(text) }
+                    if first.count == 3 { break }
                 }
             }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.readingNameFromTranscript = false
-                if let first {
-                    self.nameFromFirstMessage(first)
+                if !first.isEmpty {
+                    self.nameFromMessages(first)
                 } else if retry {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
                         MainActor.assumeIsolated { self?.nameFromTranscriptIfNeeded(retry: false) }
@@ -1227,7 +1460,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         guard let focused else { return }
         let command = focused.session.process?.foregroundCommand ?? ""
         let dir = currentDirectory ?? ""
-        let folder = dir == SidebarModel.home ? "~" : (dir.split(separator: "/").last.map(String.init) ?? "")
+        let folder = dir.isEmpty ? "" : folderName(dir)
         let found = Agent.detect(command)
         var title: String
         if let custom = customTitle, !custom.isEmpty {
@@ -1241,6 +1474,13 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         }
         PerfCounters.tick("title.recompute")
         if found != agent {
+            if found == nil, agent != nil, decidedName != nil {
+                decidedName = nil
+                nameSource = nil
+                namedFrom = 0
+                title = folder.isEmpty ? "shell" : folder
+                sendName(locked: false)
+            }
             agent = found
             updateTabBadge()
             if let id = found?.id { AgentEvents.started(id) }
@@ -1302,7 +1542,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         guard let window else { return }
         if let group = window.tabGroup, group.selectedWindow !== window { group.selectedWindow = window }
         window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(terminalView)
+        if mode == .chat, let pane = focused { focusComposer(of: pane) } else { window.makeFirstResponder(terminalView) }
     }
 
 
@@ -1315,7 +1555,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 
 
     func windowWillClose(_ notification: Notification) {
-        for p in panes { p.session.close(); AttentionCenter.shared.clear(pane: p) }
+        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        clickMonitor = nil
+        for p in panes { p.reader.visible = false; p.session.close(); AttentionCenter.shared.clear(pane: p) }
         onClose?()
     }
 
@@ -1339,7 +1581,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
         guard shown != onScreen else { return }
         onScreen = shown
         gate.active = shown
-        reader.visible = shown && readerHost != nil
+        layoutChat(rebuild: false)
         if shown {
             for p in panes { p.view.cameOnScreen() }
             updateInputHiding(report: true)
@@ -1350,7 +1592,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSTo
 @MainActor
 final class SidebarSplitController: NSSplitViewController {
     static let widthKey = "sidebarWidth"
-    static let defaultWidth: CGFloat = 260
+    static let defaultWidth: CGFloat = 282
     static let range: ClosedRange<CGFloat> = 220...420
 
     static var savedWidth: CGFloat {
@@ -1374,10 +1616,111 @@ final class SidebarSplitController: NSSplitViewController {
 
     override func splitViewDidResizeSubviews(_ notification: Notification) {
         super.splitViewDidResizeSubviews(notification)
-        guard let item = splitViewItems.first, !item.isCollapsed,
-              let type = NSApp.currentEvent?.type, type == .leftMouseDragged || type == .leftMouseUp,
-              notification.userInfo?["NSSplitViewDividerIndex"] != nil else { return }
-        let w = item.viewController.view.frame.width
-        if Self.range.contains(w) { UserDefaults.standard.set(Double(w), forKey: Self.widthKey) }
+        guard let item = splitViewItems.first, !item.isCollapsed else { return }
+        if let type = NSApp.currentEvent?.type, type == .leftMouseDragged || type == .leftMouseUp,
+           notification.userInfo?["NSSplitViewDividerIndex"] != nil, view.window?.inLiveResize != true {
+            let w = item.viewController.view.frame.width
+            if Self.range.contains(w) { UserDefaults.standard.set(Double(w), forKey: Self.widthKey) }
+            return
+        }
+        scheduleRestore()
+    }
+
+    private var restore: DispatchWorkItem?
+    private func scheduleRestore() {
+        restore?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.restoreWidth() }
+        }
+        restore = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    private func restoreWidth() {
+        guard let item = splitViewItems.first, !item.isCollapsed, splitViewItems.count > 1 else { return }
+        if view.window?.inLiveResize == true { scheduleRestore(); return }
+        let total = splitView.bounds.width - splitView.dividerThickness
+        let room = total - splitViewItems[1].minimumThickness
+        let wanted = min(Self.savedWidth, max(room, Self.range.lowerBound))
+        let now = item.viewController.view.frame.width
+        guard abs(now - wanted) > 0.5 else { return }
+        splitView.setPosition(wanted, ofDividerAt: 0)
+    }
+}
+
+final class ComposerHostingView<Content: View>: NSHostingView<Content> {
+    var measuredHeight: () -> CGFloat = { 0 }
+
+    var wantedHeight: CGFloat {
+        let measured = measuredHeight()
+        return min(measured > 0 ? measured : fittingSize.height, 280)
+    }
+
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        relayoutParent()
+    }
+
+    func relayoutParent() {
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, abs(self.wantedHeight - self.frame.height) > 0.5 else { return }
+                self.superview?.needsLayout = true
+            }
+        }
+    }
+}
+
+@MainActor func composerHeight(_ view: NSView) -> CGFloat {
+    if let v = view as? ComposerHostingView<ComposerView> { return v.wantedHeight }
+    return min(view.fittingSize.height, 280)
+}
+
+final class ChatAreaView: NSView {
+    var root: NSView? {
+        didSet {
+            if let old = oldValue, old !== root, old.superview === self { old.removeFromSuperview() }
+            if let root {
+                root.frame = bounds
+                root.autoresizingMask = [.width, .height]
+                if root.superview !== self { addSubview(root) }
+            }
+        }
+    }
+}
+
+final class ChatColumnView: NSView {
+    let reader: NSView
+    let composer: NSView
+    var card: NSView? {
+        didSet {
+            guard card !== oldValue else { return }
+            oldValue?.removeFromSuperview()
+            if let card { addSubview(card) }
+            needsLayout = true
+        }
+    }
+
+    init(reader: NSView, composer: NSView) {
+        self.reader = reader
+        self.composer = composer
+        super.init(frame: .zero)
+        addSubview(reader)
+        addSubview(composer)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func layout() {
+        super.layout()
+        let h = composerHeight(composer)
+        composer.frame = NSRect(x: 0, y: 0, width: bounds.width, height: h)
+        var y = h
+        if let card {
+            let ch = card.fittingSize.height
+            card.frame = NSRect(x: 0, y: y, width: bounds.width, height: ch)
+            y += ch
+        }
+        reader.frame = NSRect(x: 0, y: y, width: bounds.width, height: max(0, bounds.height - y))
     }
 }

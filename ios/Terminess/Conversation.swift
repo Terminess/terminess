@@ -12,6 +12,7 @@ struct SessionTarget: Identifiable {
     var cwd: String?
     var input: String?
     var resumeOf: String? = nil
+    var firstMessage: String? = nil
 }
 
 enum ViewMode: String, CaseIterable, Identifiable {
@@ -80,6 +81,7 @@ struct ConversationView: View {
     @State private var draft = ""
     @State private var error: String?
     @State private var attaching = false
+    @State private var attachFailures = 0
     @State private var photoItem: PhotosPickerItem?
     @State private var showPhotos = false
     @State private var showFiles = false
@@ -154,7 +156,9 @@ struct ConversationView: View {
             if mode == nil { mode = .terminal }
         }
         .onChange(of: model.sessionID) { _, id in
-            if let id { Task { await chat.follow(session: id, on: connection) } }
+            guard let id else { return }
+            app.adopt(session: id, for: target.id)
+            Task { await chat.follow(session: id, on: connection) }
         }
         .task(id: model.command) { await loadModels() }
         .onReceive(model.$text) { _ in refreshCurrentModel() }
@@ -203,6 +207,17 @@ struct ConversationView: View {
         }
     }
 
+    private func retryAttach() {
+        attachFailures += 1
+        let wait = min(30, 1 << min(attachFailures, 5))
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(wait) * 1_000_000_000)
+            guard !model.detached, !model.connected, !model.ended,
+                  UIApplication.shared.applicationState == .active else { return }
+            await attach()
+        }
+    }
+
     @ViewBuilder private var content: some View {
         switch mode {
         case nil:
@@ -210,7 +225,8 @@ struct ConversationView: View {
         case .terminal:
             TerminalScreen(model: model)
         case .chat:
-            ChatView(chat: chat, agentName: agentName, working: model.busy && !asking && model.menu == nil, folder: sessionFolder, notice: model.notice)
+            ChatView(chat: chat, agentName: agentName, working: model.busy && !asking && model.menu == nil, folder: sessionFolder,
+                     notice: model.notice, pending: target.firstMessage)
                 .safeAreaInset(edge: .bottom) {
                     if let q = question {
                         QuestionCard(question: q, agent: agentName.isEmpty ? "The agent" : agentName) { text in
@@ -245,7 +261,8 @@ struct ConversationView: View {
             VStack(spacing: 0) {
                 TerminalScreen(model: model).frame(maxHeight: .infinity)
                 Divider()
-                ChatView(chat: chat, agentName: agentName, working: model.busy, folder: sessionFolder, notice: model.notice).frame(maxHeight: .infinity)
+                ChatView(chat: chat, agentName: agentName, working: model.busy, folder: sessionFolder, notice: model.notice,
+                         pending: target.firstMessage).frame(maxHeight: .infinity)
             }
         }
     }
@@ -349,6 +366,7 @@ struct ConversationView: View {
         await connection.connect()
         guard connection.isConnected else {
             if case .failed(let m) = connection.state { error = m }
+            retryAttach()
             return
         }
         error = nil
@@ -359,11 +377,16 @@ struct ConversationView: View {
             ?? .create(cwd: target.cwd, command: nil, args: [], env: nil, name: nil)
         do {
             let a = try await connection.attachment(to: t, cols: g.cols, rows: g.rows)
-            if existing == nil { a.resumeOf = target.resumeOf }
+            if existing == nil {
+                a.resumeOf = target.resumeOf
+                a.requestID = target.id.uuidString
+            }
+            attachFailures = 0
             model.start(a, cols: g.cols, rows: g.rows, input: existing == nil ? target.input : nil)
             if let id = existing { await chat.follow(session: id, on: connection) }
         } catch {
             self.error = error.localizedDescription
+            retryAttach()
         }
     }
 
@@ -540,17 +563,19 @@ struct NewChatView: View {
             let model = String(app.newAgent.dropFirst(7))
             let exe = store.host(hostID)?.terminessd ?? "~/.local/bin/terminessd"
             app.open(SessionTarget(host: hostID, session: nil, title: model, cwd: app.newProject,
-                                   input: LocalModels.chatCommand(terminessd: exe, model: model, message: message)))
+                                   input: LocalModels.chatCommand(terminessd: exe, model: model, message: message),
+                                   firstMessage: message))
             return
         }
         if app.newAgent == "harness" {
             let exe = store.host(hostID)?.terminessd ?? "~/.local/bin/terminessd"
             app.open(SessionTarget(host: hostID, session: nil, title: "Terminess Agent", cwd: app.newProject,
-                                   input: "\(exe) agent \(quoted)"))
+                                   input: "\(exe) agent \(quoted)", firstMessage: message))
             return
         }
         let input = app.newAgent == "shell" ? message : "\(app.newAgent) \(quoted)"
-        app.open(SessionTarget(host: hostID, session: nil, title: agentName, cwd: app.newProject, input: input))
+        app.open(SessionTarget(host: hostID, session: nil, title: agentName, cwd: app.newProject, input: input,
+                               firstMessage: app.newAgent == "shell" ? nil : message))
     }
 }
 

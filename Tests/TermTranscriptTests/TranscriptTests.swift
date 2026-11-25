@@ -24,6 +24,30 @@ import Testing
         #expect(survey.version == "2.1.325")
     }
 
+    @Test func claudePastedMessageIsYours() throws {
+        let lines = [
+            #"{"type":"user","message":{"role":"user","content":"\n\n<pasted_content id=\"8a0e\">\nThe sidebar keeps shrinking\n</pasted_content id=\"8a0e\">"}}"#,
+            #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Looking."}]}}"#,
+            #"{"type":"user","message":{"role":"user","content":"[Image: original 2080x1286, displayed at 2000x1237. Multiply coordinates by 1.04 to map to original image.]"}}"#,
+            #"{"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>"}}"#,
+        ]
+        let items = Transcript.parse(data: Data(lines.joined(separator: "\n").utf8), agent: "claude").items
+        #expect(items.map(\.kind.line) == ["user: The sidebar keeps shrinking", "assistant: Looking."])
+    }
+
+    @Test func claudeCompactSummaryIsAStepNotYourMessage() throws {
+        let lines = [
+            #"{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued from a previous conversation.\nSummary: ..."}}"#,
+            #"{"type":"user","message":{"role":"user","content":"installed, looks fine"}}"#,
+        ]
+        let items = Transcript.parse(data: Data(lines.joined(separator: "\n").utf8), agent: "claude").items
+        #expect(items.count == 2)
+        guard case .tool(let name, _, _, let result) = items[0].kind else { Issue.record("not a step"); return }
+        #expect(name == TranscriptItem.compactedTool)
+        #expect(result?.hasPrefix("This session is being continued") == true)
+        #expect(items[1].kind.line == "user: installed, looks fine")
+    }
+
     @Test func claudeUnknownKindsAreCountedNotLost() throws {
         let survey = Transcript.parse(data: try fixture("claude"), agent: "claude").survey
         #expect(survey.unknown == [
@@ -92,6 +116,29 @@ import Testing
         #expect(Transcript.claudeSession(pid: 200, home: home) == home + "/.claude/projects/-tmp-b/s2.jsonl")
         #expect(Transcript.claudeSession(pid: 300, home: home) == nil)
         #expect(Transcript.claudeSession(pid: 400, home: home) == nil)
+    }
+
+    @Test func newClaudeNeverTakesAnotherTabsTranscript() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("transcript-tests-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: home + "/.claude/sessions", withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: home + "/.claude/projects/-tmp-a", withIntermediateDirectories: true)
+        let started = Date()
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: home + "/.claude/projects/-tmp-a/busy.jsonl"))
+        try Data(#"{"pid":500,"sessionId":"mine","cwd":"/tmp/a"}"#.utf8)
+            .write(to: URL(fileURLWithPath: home + "/.claude/sessions/500.json"))
+        #expect(Transcript.locate(agent: "claude", directory: "/tmp/a", started: started, arguments: [], pid: 500, home: home) == nil)
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: home + "/.claude/projects/-tmp-a/mine.jsonl"))
+        #expect(Transcript.locate(agent: "claude", directory: "/tmp/a", started: started, arguments: [], pid: 500, home: home)
+                == home + "/.claude/projects/-tmp-a/mine.jsonl")
+    }
+
+    @Test func rolloutStartComesFromTheName() {
+        let d = Transcript.rolloutStart("/x/rollout-2026-11-20T13-05-28-01a1f408-cb9f-7061-96db-ab80f8edb91c.jsonl")
+        let c = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: d ?? .distantPast)
+        #expect([c.year, c.month, c.day, c.hour, c.minute, c.second] == [2026, 11, 20, 13, 5, 28])
+        #expect(Transcript.rolloutStart("/x/abc.jsonl") == nil)
     }
 }
 

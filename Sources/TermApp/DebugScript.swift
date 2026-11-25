@@ -596,6 +596,9 @@ enum DebugScript {
                 if let main = mainWindow, let w = NSApp.windows.first(where: { $0.isVisible && $0 !== main && !($0.windowController is TerminalWindowController) && $0.title.contains(run.brief) }) {
                     let m = main.frame, size = w.frame.size
                     w.setFrameOrigin(NSPoint(x: m.midX - size.width / 2, y: m.midY - size.height / 2))
+                    w.orderFrontRegardless()
+                } else {
+                    print("control: pair window not found for \(run.brief)"); fflush(stdout)
                 }
             case "pairclose":
                 for w in NSApp.windows where w.isVisible && !(w.windowController is TerminalWindowController) && w.title.hasPrefix("Codex") { w.close() }
@@ -608,6 +611,33 @@ enum DebugScript {
                 let n = Int(arg) ?? 0
                 guard found.findings.indices.contains(n) else { return }
                 FindingsView.apply(found.findings[n], run: run, tabbedWith: mainWindow)?.setMode(.terminal)
+            case "split":
+                if arg == "d" { key?.splitDown(nil) } else { key?.splitRight(nil) }
+            case "mode":
+                if let n = Int(arg), let m = TerminalWindowController.ViewMode(rawValue: n) { key?.setMode(m) }
+            case "page":
+                guard let app = NSApp.delegate as? AppDelegate else { return }
+                switch arg {
+                case "opsguide": app.showOpsGuide(nil)
+                case "library": app.showLibrary(nil)
+                case "instructions": app.showProjectInstructions(nil)
+                case "settings": app.showSettings(nil)
+                case "reminders": app.showReminders(nil)
+                case "search": app.showSearch(nil)
+                case "agents": AgentsDashboardWindow.show()
+                case "close": key?.closePage(); key?.closePalette()
+                default: print("control: no page \(arg)"); fflush(stdout)
+                }
+            case "closeshells":
+                let app = NSApp.delegate as? AppDelegate
+                for c in app?.controllers ?? [] where c.panes.count == 1 && c.agent == nil
+                    && TerminalWindowController.isShell(c.session.process?.foregroundCommand) {
+                    if (app?.controllers.count ?? 0) > 1 { c.window?.close() }
+                }
+            case "focuspane":
+                if let c = key, let n = Int(arg), c.panes.indices.contains(n) { c.focusPane(c.panes[n]) }
+            case "shot":
+                shot(nil, png: arg)
             case "main":
                 NSApp.windows.first { $0.windowController is TerminalWindowController }?.makeKeyAndOrderFront(nil)
             case "newtab":
@@ -633,7 +663,7 @@ enum DebugScript {
             NSApp.orderedWindows.first { $0.isVisible && $0.windowController is TerminalWindowController }
         }
 
-        static func shot(_ dir: String) {
+        static func shot(_ dir: String?, png: String? = nil) {
             guard let main = mainWindow else { return }
             let above = NSApp.orderedWindows.filter { $0.isVisible }.prefix { $0 !== main }
             let ids = (Array(above) + [main]).map { CGWindowID($0.windowNumber) }
@@ -642,13 +672,18 @@ enum DebugScript {
             let rect = CGRect(x: f.minX, y: screenH - f.maxY, width: f.width, height: f.height)
             var raw = ids.map { UnsafeRawPointer(bitPattern: UInt($0)) }
             guard let array = CFArrayCreate(nil, &raw, raw.count, nil) else { return }
-            let options: CGWindowImageOption = [.boundsIgnoreFraming, .nominalResolution]
+            let options: CGWindowImageOption = png != nil ? [.boundsIgnoreFraming, .bestResolution] : [.boundsIgnoreFraming, .nominalResolution]
             guard let image = ids.count == 1
                     ? CGWindowListCreateImage(.null, .optionIncludingWindow, ids[0], options)
                     : CGImage(windowListFromArrayScreenBounds: rect, windowArray: array, imageOption: options)
             else { return }
             let rep = NSBitmapImageRep(cgImage: image)
-            guard let data = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) else { return }
+            if let png {
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: png))
+                print("control: shot \(png) \(image.width)x\(image.height)"); fflush(stdout)
+                return
+            }
+            guard let dir, let data = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) else { return }
             let ms = Int(Date().timeIntervalSince1970 * 1000)
             try? data.write(to: URL(fileURLWithPath: "\(dir)/\(ms).jpg"))
             frame += 1

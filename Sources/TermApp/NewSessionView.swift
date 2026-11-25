@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import TermHost
 
 struct NewSessionView: View {
     private var sidebar: SidebarModel { SidebarModel.shared }
@@ -130,9 +131,22 @@ struct NewSessionView: View {
                     }
                 }
             }
+            Section("Hugging Face") {
+                if let notice = localModels.hfNotice {
+                    Button { LocalModelMenu.open(notice) } label: {
+                        Label(notice.message, systemImage: "exclamationmark.triangle.fill")
+                    }
+                }
+                ForEach(localModels.hfModels, id: \.self) { id in
+                    let m = HuggingFace.prefix + id
+                    Button { agent = "local:" + m } label: {
+                        if m == picked { Label(id, systemImage: "checkmark") } else { Text(id) }
+                    }
+                }
+            }
         } label: {
             chip(tint: Color(nsColor: Agent.detect("ollama")?.tint ?? .systemGray),
-                 name: picked ?? "Local model", on: picked != nil)
+                 name: picked.map { HuggingFace.modelID($0) ?? $0 } ?? "Local model", on: picked != nil)
         }
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
         .help("Chat with an Ollama model on \(remote?.displayName ?? localModels.placeName)")

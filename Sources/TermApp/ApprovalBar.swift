@@ -75,6 +75,7 @@ struct QuestionBar: View {
 
 struct NoticeBar: View {
     let text: String
+    var openNewest: (() -> Void)? = nil
     let dismiss: () -> Void
 
     var body: some View {
@@ -82,6 +83,10 @@ struct NoticeBar: View {
             Image(systemName: "clock.arrow.circlepath").foregroundStyle(.secondary)
             Text(text).font(.callout).foregroundStyle(.secondary).lineLimit(2)
             Spacer(minLength: 8)
+            if let openNewest {
+                Button("Open newest", action: openNewest).buttonStyle(.link)
+                    .help("Open the newest conversation in this folder in a new tab")
+            }
             Button(action: dismiss) { Image(systemName: "xmark") }
                 .buttonStyle(.borderless).help("Dismiss")
         }

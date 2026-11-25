@@ -52,10 +52,24 @@ final class HostConnection: ObservableObject {
         return try await ssh.exec(stdioCommand)
     }
 
+    private var connecting: Task<Void, Never>?
+    var suspect = false
+
     func connect() async {
+        if let pending = connecting { await pending.value; return }
+        let task = Task { await establish() }
+        connecting = task
+        await task.value
+        connecting = nil
+    }
+
+    private func establish() async {
         guard let host, !AppLock.shared.locked else { return }
+        if ssh != nil, control?.isOpen == true, suspect {
+            suspect = false
+            if await request(Message(op: "list"), timeout: 4) == nil { disconnect() }
+        }
         if ssh != nil, control?.isOpen == true { await refresh(); return }
-        if state == .connecting { return }
         if Self.demoSocket != nil || isDemo {
             state = .connected
             await refresh()
@@ -180,7 +194,7 @@ final class HostConnection: ObservableObject {
             let end = min(offset + chunk, data.count)
             let last = end >= data.count
             let m = Message(op: "upload", name: name, code: last ? 1 : 0, data: data[offset..<end].base64EncodedString())
-            guard let reply = await request(m) else { throw SSHError.channel("The upload stopped; check the connection.") }
+            guard let reply = await request(m, timeout: 90) else { throw SSHError.channel("The upload stopped; check the connection.") }
             if reply.op == "error" { throw SSHError.channel(reply.message ?? "upload failed") }
             offset = end
             progress(Double(offset) / Double(max(1, data.count)))
@@ -230,7 +244,7 @@ final class HostConnection: ObservableObject {
         return conn
     }
 
-    private func request(_ m: Message) async -> Message? {
+    private func request(_ m: Message, timeout: Double = 15) async -> Message? {
         guard ssh != nil || Self.demoSocket != nil || isDemo else { return nil }
         if control?.isOpen != true {
             guard let fd = try? await channel() else {
@@ -240,7 +254,7 @@ final class HostConnection: ObservableObject {
             }
             control = ControlChannel(fd: fd)
         }
-        return await control?.request(m)
+        return await control?.request(m, timeout: timeout)
     }
 }
 
@@ -255,6 +269,7 @@ final class ControlChannel {
         connection.onFrame = { [weak self] frame in
             MainActor.assumeIsolated {
                 guard let self, let m = frame.message, !self.waiting.isEmpty else { return }
+                self.answeredCount += 1
                 self.waiting.removeFirst().resume(returning: m)
             }
         }
@@ -270,13 +285,23 @@ final class ControlChannel {
         connection.start()
     }
 
-    func request(_ m: Message) async -> Message? {
+    func request(_ m: Message, timeout: Double = 15) async -> Message? {
         guard isOpen else { return nil }
+        let sent = sentCount + 1
+        sentCount = sent
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.isOpen, self.answeredCount < sent else { return }
+                self.connection.close()
+            }
+        }
         return await withCheckedContinuation { cont in
             waiting.append(cont)
             connection.send(m)
         }
     }
+    private var sentCount = 0
+    private var answeredCount = 0
 
     func close() {
         connection.close()

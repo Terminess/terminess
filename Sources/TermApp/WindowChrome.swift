@@ -94,7 +94,7 @@ final class SidebarPaneController: NSViewController {
 
 final class SidebarPaneView: NSView {
     var content: NSView?
-    let toggle = HeaderIconButton(symbol: "sidebar.left", tooltip: "Hide the sidebar (Control-Command-S)",
+    let toggle = HeaderIconButton(symbol: "sidebar.left", tooltip: "Hide the sidebar  \u{2303}\u{2318}S",
                                   target: nil, action: #selector(AppDelegate.showHideSidebar(_:)))
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { true }
@@ -126,14 +126,14 @@ final class ContentHeaderView: NSView {
     }
 
     init(controller: TerminalWindowController) {
-        toggle = HeaderIconButton(symbol: "sidebar.left", tooltip: "Show the sidebar (Control-Command-S)",
+        toggle = HeaderIconButton(symbol: "sidebar.left", tooltip: "Show the sidebar  \u{2303}\u{2318}S",
                                   target: nil, action: #selector(AppDelegate.showHideSidebar(_:)))
         modeButtons = [
-            HeaderIconButton(symbol: "apple.terminal", tooltip: "Terminal (Option-Command-1)",
+            HeaderIconButton(symbol: "apple.terminal", tooltip: "Terminal  \u{2325}\u{2318}1",
                              target: controller, action: #selector(TerminalWindowController.showTerminalMode(_:))),
-            HeaderIconButton(symbol: "rectangle.split.2x1", tooltip: "Terminal and Chat (Option-Command-2)",
+            HeaderIconButton(symbol: "rectangle.split.2x1", tooltip: "Terminal and Chat  \u{2325}\u{2318}2",
                              target: controller, action: #selector(TerminalWindowController.showSplitMode(_:))),
-            HeaderIconButton(symbol: "text.bubble", tooltip: "Chat (Option-Command-3)",
+            HeaderIconButton(symbol: "text.bubble", tooltip: "Chat  \u{2325}\u{2318}3",
                              target: controller, action: #selector(TerminalWindowController.showChatMode(_:))),
         ]
         let owner = ObjectIdentifier(controller)
@@ -170,7 +170,7 @@ final class ContentHeaderView: NSView {
             strip.centerYAnchor.constraint(equalTo: centerYAnchor),
             strip.heightAnchor.constraint(equalToConstant: 30),
             strip.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -12).withPriority(999),
-            right.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12).withPriority(999),
+            right.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7).withPriority(999),
             right.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
         toggle.isHidden = true

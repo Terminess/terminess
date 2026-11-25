@@ -6,6 +6,8 @@ final class LocalModelMenu: NSObject, NSMenuDelegate, ObservableObject {
     static let shared = LocalModelMenu()
     @Published private(set) var models: [String]?
     @Published private(set) var note = "Looking for models…"
+    @Published private(set) var hfModels: [String] = HuggingFace.models()
+    @Published private(set) var hfNotice: HuggingFace.Notice? = HuggingFace.notice()
     private var loading = false
     private weak var menu: NSMenu?
 
@@ -46,11 +48,43 @@ final class LocalModelMenu: NSObject, NSMenuDelegate, ObservableObject {
             menu.addItem(item)
         }
         menu.addItem(.separator())
-        let settings = NSMenuItem(title: "Choose the Machine…", action: #selector(AppDelegate.showSettings(_:)), keyEquivalent: "")
+        let hfHeader = NSMenuItem(title: "Hugging Face", action: nil, keyEquivalent: "")
+        hfHeader.isEnabled = false
+        menu.addItem(hfHeader)
+        if let notice = hfNotice { menu.addItem(Self.noticeItem(notice)) }
+        for id in hfModels {
+            let item = NSMenuItem(title: id, action: #selector(open(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = HuggingFace.prefix + id
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let settings = NSMenuItem(title: "Choose the Machine and Models…", action: #selector(AppDelegate.showSettings(_:)), keyEquivalent: "")
         menu.addItem(settings)
     }
 
+    static func noticeItem(_ notice: HuggingFace.Notice) -> NSMenuItem {
+        let item = NSMenuItem(title: notice.message, action: #selector(openNotice(_:)), keyEquivalent: "")
+        item.target = shared
+        item.representedObject = notice.rawValue
+        item.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Needs attention")?
+            .withSymbolConfiguration(.init(paletteColors: [.systemOrange]))
+        return item
+    }
+
+    @objc func openNotice(_ sender: NSMenuItem) {
+        guard let notice = (sender.representedObject as? String).flatMap(HuggingFace.Notice.init(rawValue:)) else { return }
+        Self.open(notice)
+    }
+
+    static func open(_ notice: HuggingFace.Notice) {
+        if let s = notice.url, let url = URL(string: s) { NSWorkspace.shared.open(url) }
+        else { NSApp.sendAction(#selector(AppDelegate.showSettings(_:)), to: nil, from: nil) }
+    }
+
     func refresh() {
+        hfModels = HuggingFace.models()
+        hfNotice = HuggingFace.notice()
         guard !loading else { return }
         loading = true
         let host = self.host
@@ -92,7 +126,7 @@ final class LocalModelMenu: NSObject, NSMenuDelegate, ObservableObject {
     var placeName: String { place }
 
     func command(for model: String, message: String = "") -> String {
-        if host.isEmpty {
+        if host.isEmpty || HuggingFace.modelID(model) != nil {
             return LocalModels.chatCommand(terminessd: HostService.executable ?? "terminessd", model: model, message: message)
         }
         let run = LocalModels.chatCommand(terminessd: "~/.local/bin/terminessd", model: model, message: message)
@@ -101,8 +135,9 @@ final class LocalModelMenu: NSObject, NSMenuDelegate, ObservableObject {
 
     @objc private func open(_ sender: NSMenuItem) {
         guard let model = sender.representedObject as? String, let app = NSApp.delegate as? AppDelegate else { return }
+        if HuggingFace.modelID(model) != nil, !app.hasHuggingFaceToken() { return }
         let c = app.open(tabbedWith: NSApp.keyWindow, command: command(for: model))
-        c.customTitle = model
+        c.customTitle = HuggingFace.modelID(model) ?? model
     }
 }
 

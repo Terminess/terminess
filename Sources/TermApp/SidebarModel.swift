@@ -14,12 +14,14 @@ struct OpenTab: Identifiable, Equatable {
     var parked = false
     var branch: String?
     var busy = false
+    var dropped = false
     var hostIDs: [String] = []
     var remoteIDs: [String] = []
     var path = ""
     var machineID: String?
     var group: ObjectIdentifier?
     var conversations: [String] = []
+    var terminalTitle = ""
 }
 
 struct PairJob: Identifiable, Equatable {
@@ -74,6 +76,8 @@ struct SessionItem: Identifiable, Equatable, Decodable {
 protocol SidebarActions: AnyObject {
     func focusTab(_ id: ObjectIdentifier)
     func renameTab(_ id: ObjectIdentifier)
+    func tabName(_ id: ObjectIdentifier) -> String
+    func setTabName(_ id: ObjectIdentifier, _ name: String)
     func setTheme(_ name: String?, forTab id: ObjectIdentifier)
     func closeTab(_ id: ObjectIdentifier)
     func worktreeAction(_ id: ObjectIdentifier, _ action: String)
@@ -203,8 +207,22 @@ final class SidebarModel: ObservableObject {
         }
     }
 
+    func refreshAll() {
+        HostService.retry()
+        for mon in monitors.values { mon.reconnect() }
+        NotificationCenter.default.post(name: TerminalSession.reconnectAll, object: nil)
+        repoCache = [:]
+        refreshTabs()
+        refreshBackground()
+        refreshSessions()
+        refreshPair()
+    }
+
     func start() {
         guard fastTimer == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { SidebarModel.shared.refreshAll() }
+        }
         reloadMachines()
         machinesObserver = NotificationCenter.default.addObserver(forName: RemoteMachines.changed, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { SidebarModel.shared.reloadMachines() }
@@ -437,6 +455,7 @@ final class SidebarModel: ObservableObject {
         }
     }
     private var loadingPair = false
+    private var wakeObserver: NSObjectProtocol?
 
     func refreshSessions() {
         guard !loadingSessions else { return }

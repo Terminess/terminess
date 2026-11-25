@@ -1,5 +1,7 @@
 #if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+@preconcurrency import Musl
 #else
 import Darwin
 #endif
@@ -29,6 +31,7 @@ final class HostSession {
     var notifyPhone = false
     var originName: String?
     var notice: String?
+    var noticeNewest: String?
     var onTurnEnd: (() -> Void)?
     var busy = false {
         didSet { if oldValue && !busy { onTurnEnd?() } }
@@ -116,6 +119,7 @@ public final class HostServer: @unchecked Sendable {
     private var uploads: [ObjectIdentifier: (path: String, handle: FileHandle)] = [:]
     private var sessions: [String: HostSession] = [:]
     private var order: [String] = []
+    private var createdFor: [String: String] = [:]
     private var connections: [ObjectIdentifier: Connection] = [:]
     private var bindings: [ObjectIdentifier: String] = [:]
     private var clientKinds: [ObjectIdentifier: String] = [:]
@@ -271,8 +275,22 @@ public final class HostServer: @unchecked Sendable {
         let args = (m.message.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]) ?? [:]
         let task = String(((args["task"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(4000))
         guard !task.isEmpty else { conn.send(Message(op: "agent-result", code: 1, message: "Give a task.")); return }
+        let agent = m.id.flatMap { sessions[$0] }?.command
+        relayToMac(m, from: conn, op: "borrow-request", command: agent, message: task, timeout: Self.borrowTimeout)
+    }
+
+    private func copyFromMac(_ m: Message, from conn: Connection) {
+        let args = (m.message.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]) ?? [:]
+        let path = String(((args["path"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(1024))
+        guard !path.isEmpty else { conn.send(Message(op: "agent-result", code: 1, message: "Give the file's path on the Mac.")); return }
+        relayToMac(m, from: conn, op: "file-request", command: nil, message: path, timeout: Self.fileTimeout)
+    }
+
+    static let fileTimeout: TimeInterval = ProcessInfo.processInfo.environment["TERMINESSD_BORROW_TIMEOUT"].flatMap(Double.init) ?? 5 * 60
+
+    private func relayToMac(_ m: Message, from conn: Connection, op: String, command: String?, message: String, timeout: TimeInterval) {
         guard let key = borrowWatchers.last(where: { connections[$0] != nil }), let mac = connections[key] else {
-            conn.send(Message(op: "agent-result", code: 1, message: "The Terminess app on the Mac isn't connected to this machine right now, so the task can't be handed to it. Ask the person to open Terminess on their Mac."))
+            conn.send(Message(op: "agent-result", code: 1, message: "The Terminess app on the Mac isn't connected to this machine right now, so this can't be handed to it. Ask the person to open Terminess on their Mac."))
             return
         }
         let req = String(UUID().uuidString.prefix(8)).lowercased()
@@ -280,12 +298,12 @@ public final class HostServer: @unchecked Sendable {
         borrowPending[req] = key
         let host = ProcessInfo.processInfo.hostName
         let from = m.id.flatMap { sessions[$0] }.map { "\(host): \($0.info.cwd)" } ?? host
-        let agent = m.id.flatMap { sessions[$0] }?.command
-        mac.send(Message(op: "borrow-request", host: host, id: req, name: from, command: agent, message: task))
-        log("borrow \(req): sent to the Mac")
-        queue.asyncAfter(deadline: .now() + Self.borrowTimeout) { [weak self] in
+        mac.send(Message(op: op, host: host, id: req, name: from, command: command, message: message))
+        log("\(op) \(req): sent to the Mac")
+        queue.asyncAfter(deadline: .now() + timeout) { [weak self] in
             guard let self, let w = self.toolWaiters.removeValue(forKey: req) else { return }
-            w.send(Message(op: "agent-result", code: 1, message: "No answer from the Mac within \(Int(Self.borrowTimeout / 60)) minutes."))
+            let minutes = Int(timeout / 60)
+            w.send(Message(op: "agent-result", code: 1, message: "No answer from the Mac within \(minutes) minute\(minutes == 1 ? "" : "s")."))
             if let mac = self.borrowPending.removeValue(forKey: req), let c = self.connections[mac] {
                 c.send(Message(op: "borrow-cancel", id: req))
             }
@@ -500,7 +518,10 @@ public final class HostServer: @unchecked Sendable {
         case "borrow-reply":
             if let req = m.id { borrowPending[req] = nil }
             if let req = m.id, let w = toolWaiters.removeValue(forKey: req) {
-                w.send(Message(op: "agent-result", code: m.code ?? 0, message: m.message ?? ""))
+                var r = Message(op: "agent-result", code: m.code ?? 0, message: m.message ?? "")
+                r.name = m.name
+                r.data = m.data
+                w.send(r)
             }
         case "set-notify":
             guard let id = m.id, let s = sessions[id] else { conn.send(Message(op: "error", message: "no session \(m.id ?? "")")); return }
@@ -509,8 +530,13 @@ public final class HostServer: @unchecked Sendable {
         case "list":
             conn.send(Message(op: "sessions", sessions: order.compactMap { sessions[$0].map(sessionInfo) }))
         case "create":
+            if let request = m.requestID, let id = createdFor[request], sessions[id] != nil {
+                conn.send(Message(op: "created", id: id, code: 1))
+                return
+            }
             do {
                 let s = try createSession(m)
+                if let request = m.requestID, !request.isEmpty { createdFor[request] = s.id }
                 if let resumed = m.resumeOf { warnIfOlder(s, resuming: resumed) }
                 s.origin = m.host
                 s.originName = Self.cleanDeviceName(m.deviceName)
@@ -538,7 +564,11 @@ public final class HostServer: @unchecked Sendable {
             conn.send(Message(op: "info", id: s.id, foreground: fg))
             if let p = s.permission { conn.send(Message(op: "permission", id: s.id, permission: p)) }
             if let q = s.question { conn.send(Message(op: "question", id: s.id, question: q)) }
-            if let n = s.notice { conn.send(Message(op: "notice", id: s.id, message: n)) }
+            if let n = s.notice {
+                var m = Message(op: "notice", id: s.id, message: n)
+                m.resumeOf = s.noticeNewest
+                conn.send(m)
+            }
             if let c = m.cols, let r = m.rows {
                 clientSizes[key] = (c, r, Date().timeIntervalSince1970)
                 owners[s.id] = key
@@ -658,6 +688,7 @@ public final class HostServer: @unchecked Sendable {
         case "agent-tool":
             func done(_ text: String, failed: Bool = false) { conn.send(Message(op: "agent-result", code: failed ? 1 : 0, message: text)) }
             if m.name == "borrow" { borrow(m, from: conn); return }
+            if m.name == "copy_from_mac" { copyFromMac(m, from: conn); return }
             guard let id = m.id, let s = sessions[id], let tool = m.name else { done("No such Terminess session.", failed: true); return }
             let args = (m.message.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]) ?? [:]
             switch tool {
@@ -706,7 +737,10 @@ public final class HostServer: @unchecked Sendable {
             }
         case "agent-reply":
             if let req = m.id, let w = toolWaiters.removeValue(forKey: req) {
-                w.send(Message(op: "agent-result", code: m.code ?? 0, message: m.message ?? ""))
+                var r = Message(op: "agent-result", code: m.code ?? 0, message: m.message ?? "")
+                r.name = m.name
+                r.data = m.data
+                w.send(r)
             }
         case "answer":
             guard let id = m.id, let s = sessions[id], let q = s.question, q.id == m.name else { conn.send(Message(op: "ok")); return }
@@ -888,6 +922,7 @@ public final class HostServer: @unchecked Sendable {
     private func warnIfOlder(_ s: HostSession, resuming id: String) {
         let items = CommitCounter.markNewest(historyProvider())
         guard let item = items.first(where: { $0.id == id }), item.newest == false else { return }
+        let newest = items.first(where: { $0.cwd == item.cwd && $0.newest == true })?.id
         let counter = commits
         DispatchQueue.global(qos: .utility).async { [weak self, weak s] in
             let n = counter.count(folder: item.cwd, since: item.used)
@@ -895,13 +930,17 @@ public final class HostServer: @unchecked Sendable {
             self?.queue.async {
                 guard let self, let s, self.sessions[s.id] != nil else { return }
                 s.notice = text
+                s.noticeNewest = newest
                 s.onTurnEnd = { [weak self, weak s] in
                     guard let self, let s, s.notice != nil else { return }
                     s.notice = nil
+                    s.noticeNewest = nil
                     s.onTurnEnd = nil
                     for c in s.clients.values { c.send(Message(op: "notice", id: s.id)) }
                 }
-                for c in s.clients.values { c.send(Message(op: "notice", id: s.id, message: text)) }
+                var m = Message(op: "notice", id: s.id, message: text)
+                m.resumeOf = newest
+                for c in s.clients.values { c.send(m) }
             }
         }
     }
@@ -966,8 +1005,12 @@ public final class HostServer: @unchecked Sendable {
     private func hook(_ e: [String: Any], in s: HostSession) {
         let pid = s.process.foregroundPID
         s.hookAgent = "claude"
-        if let path = e["transcript_path"] as? String, Self.trustedTranscript(path) {
-            s.transcript = (LocalChat.usesChatFile(s.command) ? s.command : "claude", path, pid)
+        if let path = e["transcript_path"] as? String {
+            if Self.trustedTranscript(path) {
+                s.transcript = (LocalChat.usesChatFile(s.command) ? s.command : "claude", path, pid)
+            } else if s.transcript?.path != path {
+                s.transcript = nil
+            }
         }
         switch e["hook_event_name"] as? String {
         case "SessionStart":
@@ -991,7 +1034,8 @@ public final class HostServer: @unchecked Sendable {
         case "Notification":
             s.hookPid = pid
             let type = e["notification_type"] as? String ?? ""
-            guard !["idle_prompt", "auth_success", "agent_completed"].contains(type) else { break }
+            guard type.isEmpty || type.contains("permission") || type.contains("needs_input")
+                    || (type.hasPrefix("elicitation") && type.hasSuffix("dialog")) else { break }
             raiseAttention(s, .needsYou)
         case "SessionEnd":
             s.hookPid = nil
@@ -1019,11 +1063,11 @@ public final class HostServer: @unchecked Sendable {
             return (fg.command, path)
         }
         if fg.command == "claude" || fg.command == "codex", !fg.cwd.isEmpty {
-            if s.hooked, let t = s.transcript, t.pid == fg.pid { return (t.agent, t.path) }
             if fg.command == "claude", let path = Transcript.claudeSession(pid: fg.pid) {
                 s.transcript = (fg.command, path, fg.pid)
                 return (fg.command, path)
             }
+            if s.hooked, let t = s.transcript, t.pid == fg.pid { return (t.agent, t.path) }
             if let pinned = s.transcript, pinned.agent == fg.command, pinned.pid == fg.pid { return (pinned.agent, pinned.path) }
             if let path = Transcript.locate(agent: fg.command, directory: fg.cwd,
                                             started: Date(timeIntervalSince1970: fg.started > 0 ? fg.started : s.created),
@@ -1095,6 +1139,7 @@ public final class HostServer: @unchecked Sendable {
     private func ended(_ id: String, code: Int) {
         guard let s = sessions.removeValue(forKey: id) else { return }
         order.removeAll { $0 == id }
+        createdFor = createdFor.filter { $0.value != id }
         for (key, c) in s.clients {
             c.send(Message(op: "exited", id: id, code: code))
             bindings[key] = nil

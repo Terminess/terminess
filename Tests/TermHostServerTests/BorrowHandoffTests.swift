@@ -79,6 +79,33 @@ final class BorrowHandoffTests: XCTestCase {
         XCTAssertEqual(r.message, "It is Tuesday.")
     }
 
+    func testCopyFromMacRelaysThePathAndTheFileComesBack() throws {
+        let socket = try startServer("copy-relay")
+        let mac = try XCTUnwrap(Peer(socket))
+        mac.send(Message(op: "watch-borrow"))
+        XCTAssertNotNil(mac.wait { $0.op == "watching" })
+        let agent = try XCTUnwrap(Peer(socket))
+        agent.send(Message(op: "agent-tool", id: "", name: "copy_from_mac", message: #"{"path":"~/Documents/call.txt"}"#))
+        let req = try XCTUnwrap(mac.wait { $0.op == "file-request" })
+        XCTAssertEqual(req.message, "~/Documents/call.txt")
+        let bytes = Data((0..<200_000).map { UInt8($0 % 251) })
+        var reply = Message(op: "borrow-reply", id: req.id, code: 0, message: "/Users/me/Documents/call.txt")
+        reply.name = "call.txt"
+        reply.data = bytes.base64EncodedString()
+        mac.send(reply)
+        let r = try XCTUnwrap(agent.wait { $0.op == "agent-result" })
+        XCTAssertEqual(r.code, 0)
+        XCTAssertEqual(r.name, "call.txt")
+        XCTAssertEqual(r.data.flatMap { Data(base64Encoded: $0) }, bytes)
+    }
+
+    func testCopyFromMacNeedsAPath() throws {
+        let socket = try startServer("copy-nopath")
+        let agent = try XCTUnwrap(Peer(socket))
+        agent.send(Message(op: "agent-tool", id: "", name: "copy_from_mac", message: "{}"))
+        XCTAssertEqual(agent.wait { $0.op == "agent-result" }?.code, 1)
+    }
+
     func testBorrowGoesToTheMostRecentLiveMac() throws {
         let socket = try startServer("borrow-latest")
         var first: Peer? = try XCTUnwrap(Peer(socket))

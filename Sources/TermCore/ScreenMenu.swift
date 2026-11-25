@@ -27,10 +27,16 @@ public struct ScreenMenu: Equatable, Sendable {
         var last = lines.count - 1
         while last >= 0, blank(last) { last -= 1 }
         guard last >= 0 else { return nil }
+        func rule(_ i: Int) -> Bool {
+            guard i >= 0, i < lines.count else { return false }
+            let t = raw[i].trimmingCharacters(in: .whitespaces)
+            return !t.isEmpty && t.unicodeScalars.allSatisfy { frame.contains($0) }
+        }
         for c in stride(from: last, through: max(0, last - 30), by: -1) {
             let t = lines[c].trimmingCharacters(in: .whitespaces)
-            guard let glyph = t.first, cursors.contains(glyph),
-                  !t.dropFirst().trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+            guard let glyph = t.first, cursors.contains(glyph) else { continue }
+            let rest = t.dropFirst().trimmingCharacters(in: .whitespaces)
+            if rest.isEmpty || (rule(c - 1) && rule(c + 1)) { return nil }
             if let menu = menu(lines: lines, raw: raw, cursor: c, width: width, blank: blank) { return menu }
         }
         return nil

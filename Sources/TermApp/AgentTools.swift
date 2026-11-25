@@ -52,7 +52,7 @@ enum AgentTools {
                 text + (text.isEmpty || text.hasSuffix("\n") ? "" : "\n")
                     + "\n[mcp_servers.\(name)]\ncommand = \"\(exe.replacingOccurrences(of: "\"", with: "\\\""))\"\nargs = [\"mcp\"]\n"
                     + "env_vars = [\"TERMINESS_SESSION\", \"TERMINESSD_SOCKET\"]\ntool_timeout_sec = 960\n"
-                    + ["borrow", "notify", "ask_user", "remind", "open_tab"].map { "\n[mcp_servers.\(name).tools.\($0)]\napproval_mode = \"approve\"\n" }.joined()
+                    + ["borrow", "copy_from_mac", "notify", "ask_user", "remind", "open_tab"].map { "\n[mcp_servers.\(name).tools.\($0)]\napproval_mode = \"approve\"\n" }.joined()
             }
         case (.codex, false):
             try editCodex { $0 }

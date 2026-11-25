@@ -10,6 +10,14 @@ public struct TranscriptItem: Identifiable, Equatable, Codable, Sendable {
     public let id: Int
     public var kind: Kind
     public init(id: Int, kind: Kind) { self.id = id; self.kind = kind }
+
+    public static let doneTool = "Done"
+    public static let compactedTool = "Compacted"
+
+    public var turnDone: (worked: String, ended: String)? {
+        if case .tool(let name, let summary, let detail, _) = kind, name == Self.doneTool { return (summary, detail) }
+        return nil
+    }
 }
 
 public enum Transcript {
@@ -17,10 +25,7 @@ public enum Transcript {
         ?? ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
 
     public static func claudeSession(pid: Int32, home: String = Transcript.home) -> String? {
-        guard pid > 0,
-              let data = FileManager.default.contents(atPath: home + "/.claude/sessions/\(pid).json"),
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let id = obj["sessionId"] as? String, !id.isEmpty, !id.contains("/") else { return nil }
+        guard let (id, obj) = claudeRecord(pid: pid, home: home) else { return nil }
         let projects = home + "/.claude/projects/"
         if let cwd = obj["cwd"] as? String {
             let p = projects + String(cwd.map { $0.isLetter || $0.isNumber ? $0 : "-" }) + "/" + id + ".jsonl"
@@ -33,10 +38,23 @@ public enum Transcript {
         return nil
     }
 
-    public static func locate(agent: String, directory: String, started: Date, arguments: [String], pid: Int32 = 0) -> String? {
-        if agent == "claude", let p = claudeSession(pid: pid) { return p }
+    private static func claudeRecord(pid: Int32, home: String) -> (String, [String: Any])? {
+        guard pid > 0,
+              let data = FileManager.default.contents(atPath: home + "/.claude/sessions/\(pid).json"),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let id = obj["sessionId"] as? String, !id.isEmpty, !id.contains("/") else { return nil }
+        return (id, obj)
+    }
+
+    public static func locate(agent: String, directory: String, started: Date, arguments: [String], pid: Int32 = 0,
+                              home: String = Transcript.home) -> String? {
+        if agent == "claude", claudeRecord(pid: pid, home: home) != nil { return claudeSession(pid: pid, home: home) }
+        if agent == "claude", pid > 0, Date().timeIntervalSince(started) < 10 { return nil }
         let fm = FileManager.default
-        func created(_ p: String) -> Date? { (try? fm.attributesOfItem(atPath: p))?[.creationDate] as? Date }
+        func created(_ p: String) -> Date? {
+            if let d = rolloutStart(p) { return d }
+            return (try? fm.attributesOfItem(atPath: p))?[.creationDate] as? Date
+        }
         var named: String?
         for (i, a) in arguments.enumerated() where i + 1 < arguments.count {
             if a == "--resume" || a == "-r" || (agent == "codex" && a == "resume") { named = arguments[i + 1] }
@@ -67,6 +85,17 @@ public enum Transcript {
             return candidates.max { (mtime($0) ?? .distantPast) < (mtime($1) ?? .distantPast) }
         }
         return nil
+    }
+
+    static func rolloutStart(_ path: String) -> Date? {
+        let name = (path as NSString).lastPathComponent
+        guard name.hasPrefix("rollout-"), name.count >= 27 else { return nil }
+        let stamp = String(name.dropFirst(8).prefix(19))
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd'T'HH-mm-ss"
+        return f.date(from: stamp)
     }
 
     private static func codexFiles(directory: String, days: Int) -> [String] {
@@ -211,6 +240,16 @@ public enum Transcript {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty || t.hasPrefix("<") || t.hasPrefix("Caveat:") || t.hasPrefix("[Request interrupted")
             || t.hasPrefix("# AGENTS.md")
+            || (t.hasPrefix("[Image: original ") && !t.contains("\n"))
+    }
+
+    public static func userMessage(_ s: String) -> String? {
+        var t = s
+        if t.contains("pasted_content") {
+            t = t.replacingOccurrences(of: #"</?pasted_content\b[^>]*>"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return isNoise(t) ? nil : t
     }
 
     private static func toolSummary(_ name: String, _ input: [String: Any]) -> String {
@@ -243,32 +282,43 @@ public enum Transcript {
         }
         guard let type = obj["type"] as? String else { return }
         if !claudeRecords.contains(type) { unknown("record:" + type) }
+        if type == "system", obj["subtype"] as? String == "turn_duration",
+           let ms = (obj["durationMs"] as? NSNumber)?.doubleValue {
+            add(.tool(name: TranscriptItem.doneTool, summary: "Worked for " + workedFor(ms / 1000),
+                      detail: obj["timestamp"] as? String ?? "", result: ""))
+            return
+        }
         if type == "attachment", let a = obj["attachment"] as? [String: Any] {
             let kind = a["type"] as? String ?? "?"
             if !claudeAttachments.contains(kind) { unknown("attachment:" + kind) }
             if kind == "queued_command" || a["humanTurn"] as? Bool == true {
                 let s = text(a["prompt"] ?? a["content"])
-                if !s.isEmpty, !isNoise(s) { add(.user(s)) }
+                if let u = userMessage(s) { add(.user(u)) }
             }
             return
         }
         guard obj["isMeta"] as? Bool != true, let message = obj["message"] as? [String: Any] else { return }
+        if type == "user", obj["isCompactSummary"] as? Bool == true {
+            add(.tool(name: TranscriptItem.compactedTool, summary: "Summarised the conversation so far to make room",
+                      detail: "", result: text(message["content"])))
+            return
+        }
         if type == "user" {
             if let s = message["content"] as? String {
-                if !isNoise(s) { add(.user(s)) }
+                if let u = userMessage(s) { add(.user(u)) }
                 return
             }
             for part in message["content"] as? [[String: Any]] ?? [] {
                 let kind = part["type"] as? String ?? "?"
                 switch kind {
                 case "text":
-                    if let s = part["text"] as? String, !isNoise(s) { add(.user(s)) }
+                    if let s = part["text"] as? String, let u = userMessage(s) { add(.user(u)) }
                 case "tool_result":
                     attachResult(part)
                 default:
                     if !claudeUserParts.contains(kind) {
                         unknown("part:" + kind)
-                        if let s = part["text"] as? String, !isNoise(s) { add(.user(s)) }
+                        if let s = part["text"] as? String, let u = userMessage(s) { add(.user(u)) }
                     }
                 }
             }
@@ -388,6 +438,13 @@ public enum Transcript {
         }
     }
 
+    public static func workedFor(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        if s < 60 { return "\(s)s" }
+        if s < 3600 { return "\(s / 60)m \(String(format: "%02d", s % 60))s" }
+        return "\(s / 3600)h \(String(format: "%02d", (s % 3600) / 60))m"
+    }
+
     public static func shellCommand(_ s: String) -> String {
         guard let m = s.firstMatch(of: #/^\S*/(?:ba|z)?sh -lc (.*)$/#.dotMatchesNewlines()) else { return s }
         var inner = String(m.1)
@@ -407,7 +464,7 @@ public enum Transcript {
         let kind = (type == "event_msg" || type == "response_item") ? type + "/" + (ptype ?? "?") : type
         if !codexRecords.contains(kind) { survey.unknown["record:" + kind, default: 0] += 1 }
         func recent(_ k: TranscriptItem.Kind) -> Bool { items.suffix(4).contains { $0.kind == k } }
-        if type == "event_msg" && ptype == "user_message", let s = p["message"] as? String, !isNoise(s) {
+        if type == "event_msg" && ptype == "user_message", let raw = p["message"] as? String, let s = userMessage(raw) {
             if !recent(.user(s)) { add(.user(s)) }
         } else if type == "event_msg" && ptype == "agent_message", let s = p["message"] as? String, !s.isEmpty {
             if !recent(.assistant(s)) { add(.assistant(s)) }
@@ -416,7 +473,7 @@ public enum Transcript {
             let words = ((it["content"] as? [[String: Any]]) ?? []).compactMap { $0["text"] as? String }.joined()
             switch itemType {
             case "UserMessage":
-                if !isNoise(words), !recent(.user(words)) { add(.user(words)) }
+                if let u = userMessage(words), !recent(.user(u)) { add(.user(u)) }
             case "AgentMessage":
                 let s = words.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !s.isEmpty, !recent(.assistant(s)) { add(.assistant(s)) }

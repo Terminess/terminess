@@ -1,5 +1,7 @@
-#if os(Linux)
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+@preconcurrency import Musl
 #else
 import Darwin
 #endif
@@ -59,6 +61,7 @@ enum AgentTools {
             return expanded.hasPrefix("/") ? expanded : (cwd as NSString).appendingPathComponent(expanded)
         }
         if c.invalid { return err("INVALID_JSON: the tool input was cut off or malformed. Send the call again.") }
+        if c.name != "bash", let p = path(), isSecret(p) { return err("That path holds Terminess's API keys, which agents can't read or change.") }
         switch c.name {
         case "bash":
             guard let cmd = c.input["command"] as? String else { return err("Give a command.") }
@@ -106,6 +109,14 @@ enum AgentTools {
         }
     }
 
+    static func isSecret(_ path: String) -> Bool {
+        let home = (ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()) as NSString
+        let dir = (home.appendingPathComponent(".config/terminess") as NSString).resolvingSymlinksInPath
+        let p = (path as NSString).standardizingPath
+        let real = (p as NSString).resolvingSymlinksInPath
+        return [p, real].contains { $0 == dir || $0.hasPrefix(dir + "/") || (dir.hasPrefix($0 + "/") && $0 != "/") || $0 == "/" }
+    }
+
     static func cap(_ s: String) -> String { s.count > 30_000 ? String(s.prefix(30_000)) + "\n(output cut at 30,000 characters)" : s }
 
     static func shell(_ command: String, cwd: String, timeout: TimeInterval) -> String {
@@ -117,23 +128,69 @@ enum AgentTools {
         #endif
         p.arguments = ["-lc", command]
         p.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        var env = ProcessInfo.processInfo.environment
+        for k in ["ANTHROPIC_API_KEY", "HF_TOKEN"] { env[k] = nil }
+        p.environment = env
         let out = Pipe()
         p.standardOutput = out
         p.standardError = out
         p.standardInput = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in exited.signal() }
         do { try p.run() } catch { return "Couldn't run the shell: \(error.localizedDescription)" }
+        try? out.fileHandleForWriting.close()
+        let fd = out.fileHandleForReading.fileDescriptor
         var data = Data()
-        let reader = DispatchQueue(label: "agent.shell")
-        let done = DispatchSemaphore(value: 0)
-        reader.async { data = out.fileHandleForReading.readDataToEndOfFile(); done.signal() }
-        if done.wait(timeout: .now() + timeout) == .timedOut {
+        var buf = [UInt8](repeating: 0, count: 65536)
+        func drain(until deadline: Date) -> Bool {
+            while Date() < deadline {
+                var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                let ms = Int32(max(1, min(200, deadline.timeIntervalSinceNow * 1000)))
+                guard poll(&pfd, 1, ms) > 0 else { continue }
+                let n = read(fd, &buf, buf.count)
+                if n <= 0 { return true }
+                if data.count < 2_000_000 { data.append(contentsOf: buf[0..<n]) }
+            }
+            return false
+        }
+        var status: Int32?
+        func ended() -> Bool {
+            if exited.wait(timeout: .now()) == .success {
+                status = p.terminationReason == .uncaughtSignal ? 128 + p.terminationStatus : p.terminationStatus
+                return true
+            }
+            #if os(Linux)
+            if let stat = try? String(contentsOfFile: "/proc/\(p.processIdentifier)/stat", encoding: .utf8),
+               let close = stat.lastIndex(of: ")") {
+                let f = stat[stat.index(after: close)...].split(separator: " ")
+                if let state = f.first, state == "Z" || state == "X" {
+                    let raw = f.count > 49 ? Int32(f[49].trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0 : 0
+                    status = raw & 0x7f == 0 ? (raw >> 8) & 0xff : 128 + (raw & 0x7f)
+                    return true
+                }
+            }
+            #endif
+            return false
+        }
+        let end = Date().addingTimeInterval(timeout)
+        var finished = false, closed = false
+        while !finished && Date() < end {
+            if !closed { closed = drain(until: min(end, Date().addingTimeInterval(0.2))) }
+            else { Thread.sleep(forTimeInterval: 0.05) }
+            finished = ended()
+        }
+        if !finished {
             p.terminate()
-            _ = done.wait(timeout: .now() + 2)
+            _ = drain(until: Date().addingTimeInterval(1))
+            try? out.fileHandleForReading.close()
             return String(decoding: data, as: UTF8.self) + "\n(stopped after \(Int(timeout)) seconds)"
         }
-        p.waitUntilExit()
+        let stillOpen = !closed && !drain(until: Date().addingTimeInterval(0.5))
+        try? out.fileHandleForReading.close()
         let text = String(decoding: data, as: UTF8.self)
-        return (text.isEmpty ? "(no output)" : text) + (p.terminationStatus == 0 ? "" : "\n(exit code \(p.terminationStatus))")
+        let code = status ?? 0
+        return (text.isEmpty ? "(no output)" : text) + (code == 0 ? "" : "\n(exit code \(code))")
+            + (stillOpen ? "\n(something it started is still running in the background; its later output isn't shown)" : "")
     }
 
     static func listFiles(_ pattern: String, root: String) -> String {
@@ -165,6 +222,9 @@ protocol AgentProvider: AnyObject {
 final class AnthropicProvider: NSObject, AgentProvider, URLSessionDataDelegate, @unchecked Sendable {
     let model: String, effort: String, key: String
     var label: String { model }
+    var baseURL = "https://api.anthropic.com"
+    var maxOutput = 64000
+    var bearer = false
     private var messages: [[String: Any]] = []
     private var task: URLSessionDataTask?
     private var parser = AnthropicStream()
@@ -172,6 +232,7 @@ final class AnthropicProvider: NSObject, AgentProvider, URLSessionDataDelegate, 
     private var httpError: String?
     private var errorBody = Data()
     private let done = DispatchSemaphore(value: 0)
+    private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
 
     init(model: String, effort: String, key: String) { self.model = model; self.effort = effort; self.key = key }
 
@@ -194,7 +255,7 @@ final class AnthropicProvider: NSObject, AgentProvider, URLSessionDataDelegate, 
         httpError = nil
         errorBody = Data()
         var body: [String: Any] = [
-            "model": model, "max_tokens": 64000, "stream": true,
+            "model": model, "max_tokens": maxOutput, "stream": true,
             "system": [["type": "text", "text": system]],
             "tools": AgentTools.definitions.map { ["name": $0.name, "description": $0.description, "input_schema": $0.schema,
                                                    "eager_input_streaming": true] as [String: Any] },
@@ -204,19 +265,21 @@ final class AnthropicProvider: NSObject, AgentProvider, URLSessionDataDelegate, 
             "cache_control": ["type": "ephemeral"],
         ]
         if takesFallback { body["fallbacks"] = "default" }
-        var req = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
+        guard let endpoint = URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/v1/messages") else {
+            var t = AgentTurn(); t.error = "ANTHROPIC_BASE_URL isn't a URL."; return t
+        }
+        var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
         req.timeoutInterval = 600
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue(key, forHTTPHeaderField: "x-api-key")
+        if bearer { req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+        else { req.setValue(key, forHTTPHeaderField: "x-api-key") }
         req.setValue("2026-10-21", forHTTPHeaderField: "anthropic-version")
         if takesFallback { req.setValue("server-side-fallback-2026-07-01", forHTTPHeaderField: "anthropic-beta") }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         task = session.dataTask(with: req)
         task?.resume()
         done.wait()
-        session.finishTasksAndInvalidate()
         var result = parser.result()
         if let e = httpError { result.error = e }
         if result.error == nil, !parser.content.isEmpty { messages.append(["role": "assistant", "content": parser.content]) }
@@ -258,6 +321,7 @@ final class OllamaAgentProvider: NSObject, AgentProvider, URLSessionDataDelegate
     private var callsRaw: [[String: Any]] = []
     private var onText: ((String, Bool) -> Void)?
     private let done = DispatchSemaphore(value: 0)
+    private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
     private var counter = 0
 
     init(model: String) { self.model = model }
@@ -285,11 +349,9 @@ final class OllamaAgentProvider: NSObject, AgentProvider, URLSessionDataDelegate
         req.timeoutInterval = 900
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         task = session.dataTask(with: req)
         task?.resume()
         done.wait()
-        session.finishTasksAndInvalidate()
         var assistant: [String: Any] = ["role": "assistant", "content": current.text]
         if !callsRaw.isEmpty { assistant["tool_calls"] = callsRaw }
         if current.error == nil { messages.append(assistant) }
@@ -322,6 +384,149 @@ final class OllamaAgentProvider: NSObject, AgentProvider, URLSessionDataDelegate
     }
 }
 
+final class OpenAIChatProvider: NSObject, AgentProvider, URLSessionDataDelegate, @unchecked Sendable {
+    let url: URL, token: String?, model: String, label: String
+    let maxOutput: Int
+    static let defaultMaxOutput = 32768
+    var reasoningEffort: String?
+    private var sendsReasoning: Bool { model.hasPrefix("deepseek-ai/") || model.lowercased().hasPrefix("deepseek") }
+    private var messages: [[String: Any]] = []
+    private var context: AgentContext
+    private var task: URLSessionDataTask?
+    private var parser = OpenAIStream()
+    private var onText: ((String, Bool) -> Void)?
+    private var status = 200
+    private var errorBody = Data()
+    private var failure: String?
+    private let done = DispatchSemaphore(value: 0)
+    private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+    var onCompact: ((String) -> Void)?
+    private(set) var inputTokens = 0, outputTokens = 0
+    var usedTokens: Int { inputTokens + outputTokens }
+
+    init(url: URL, token: String?, model: String, label: String, contextWindow: Int, maxOutput: Int?, compactAt: Int) {
+        self.url = url; self.token = token; self.model = model; self.label = label
+        self.maxOutput = maxOutput ?? Self.defaultMaxOutput
+        context = AgentContext(window: contextWindow, reply: self.maxOutput, compactAt: compactAt)
+    }
+    func addUser(_ text: String) { messages.append(["role": "user", "content": text]) }
+    func addResults(_ results: [AgentToolResult]) {
+        for r in results { messages.append(["role": "tool", "tool_call_id": r.id, "content": r.text]) }
+    }
+    func clear() { messages = [] }
+    func cancel() { task?.cancel() }
+
+    func continueAfterCutoff() {
+        addUser("Your last reply hit the length limit before you did anything, so nothing ran. Don't start the plan over. Take the next concrete step now with a tool (write the file, run the command, try the simplest version and look at the result), and keep your thinking short.")
+    }
+
+    private var tools: [[String: Any]] {
+        AgentTools.definitions.map { ["type": "function", "function": ["name": $0.name, "description": $0.description,
+                                                                       "parameters": $0.schema]] as [String: Any] }
+    }
+
+    private func send(_ body: [String: Any], onText: ((String, Bool) -> Void)?) -> (OpenAIStream, String?) {
+        self.onText = onText
+        parser = OpenAIStream()
+        status = 200
+        errorBody = Data()
+        failure = nil
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 900
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token, !token.isEmpty { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        task = session.dataTask(with: req)
+        task?.resume()
+        done.wait()
+        if parser.promptTokens > 0 { context.learn(bytes: req.httpBody?.count ?? 0, promptTokens: parser.promptTokens) }
+        inputTokens += parser.promptTokens
+        outputTokens += parser.completionTokens
+        return (parser, failure)
+    }
+
+    private func body(system: String, _ msgs: [[String: Any]], tools: Bool) -> [String: Any] {
+        var b: [String: Any] = ["model": model, "stream": true, "stream_options": ["include_usage": true],
+                                "messages": [["role": "system", "content": system]] + msgs]
+        if tools { b["tools"] = self.tools }
+        b[limitField] = maxOutput
+        if tools, let reasoningEffort { b["reasoning_effort"] = reasoningEffort }
+        return b
+    }
+
+    private var limitField: String { url.host == "api.openai.com" ? "max_completion_tokens" : "max_tokens" }
+
+    private func compactIfNeeded(system: String) {
+        func size() -> Int { AgentContext.size(body(system: system, messages, tools: true)) }
+        guard context.needsCompacting(bytes: size()) else { return }
+        defer {
+            let over = size() - context.requestBudget
+            if over > 0 {
+                AgentContext.shrinkToolResults(&messages, by: over)
+                onCompact?("Shortened long tool output to fit the context window.")
+            }
+        }
+        guard let cut = context.cut(messages) else { return }
+        let before = cut.map { AgentContext.size(messages[$0]) }.reduce(0, +)
+        guard before > 2000 else { return }
+        let summaryOut = max(256, min(2048, context.limit / 8))
+        let limit = max(1000, Int(Double(context.limit - summaryOut - 600) * context.bytesPerToken * 0.9))
+        let text = AgentContext.transcript(messages[cut], limit: limit)
+        let ask = "Summarise this part of a coding agent's session so the agent can carry on without it. Keep every fact it will need: files read or changed and how, commands run and what they showed, errors and what fixed them, decisions made, and what is still to do. Be concise and specific; no preamble.\n\n" + text
+        var summaryBody: [String: Any] = ["model": model, "stream": true,
+                                          "messages": [["role": "user", "content": ask]]]
+        summaryBody[limitField] = summaryOut
+        let (stream, error) = send(summaryBody, onText: nil)
+        let ok = error == nil && stream.error == nil && stream.complete && !stream.text.isEmpty
+        let summary = ok
+            ? "Earlier in this session (summarised to fit the context window):\n" + stream.text
+            : "\(cut.count) earlier messages were left out to fit the context window."
+        messages.replaceSubrange(cut, with: [["role": "user", "content": summary]])
+        onCompact?(ok ? "Summarised \(cut.count) earlier messages to fit the context window."
+                                                       : "Left out \(cut.count) earlier messages to fit the context window.")
+    }
+
+    func turn(system: String, onText: @escaping (String, Bool) -> Void) -> AgentTurn {
+        compactIfNeeded(system: system)
+        let (stream, error) = send(body(system: system, messages, tools: true), onText: onText)
+        var result = stream.result()
+        if let error { result.error = error }
+        if result.error == nil {
+            if result.stopReason == "max_tokens" {
+                let trace = result.text.isEmpty ? "(I was still thinking when my reply hit the length limit. Where I'd got to: …"
+                    + String(result.thinking.suffix(1500)) + ")" : result.text
+                messages.append(["role": "assistant", "content": trace])
+            }
+            else { messages.append(stream.assistantMessage(withReasoning: sendsReasoning)) }
+        }
+        return result
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        status = (response as? HTTPURLResponse)?.statusCode ?? 200
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        if status != 200 { errorBody.append(data); return }
+        for (text, thinking) in parser.feed(data) { onText?(text, thinking) }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if url.host == "router.huggingface.co", status != 200 || error == nil { HuggingFace.record(status: status) }
+        if status != 200 {
+            failure = url.host == "router.huggingface.co" ? HuggingFace.errorMessage(status: status, body: errorBody)
+                : "HTTP \(status): " + (((try? JSONSerialization.jsonObject(with: errorBody)) as? [String: Any]).flatMap {
+                    ($0["error"] as? [String: Any])?["message"] as? String ?? $0["error"] as? String
+                } ?? String(decoding: errorBody.prefix(300), as: UTF8.self))
+        }
+        else if let error { failure = (error as NSError).code == NSURLErrorCancelled ? "Stopped." : error.localizedDescription }
+        done.signal()
+    }
+}
+
 
 func anthropicKey() -> String? {
     let env = ProcessInfo.processInfo.environment
@@ -333,15 +538,36 @@ func anthropicKey() -> String? {
 }
 
 func agent(_ args: [String]) -> Never {
-    var model = "claude-opus-5-5", effort = "high", mode = "off", once = false
+    var model = "claude-opus-5-5", effort = "high", mode = "off", once = false, effortChosen = false
     var words: [String] = []
+    let env0 = ProcessInfo.processInfo.environment
+    func positive(_ key: String) -> Int? { Int(env0[key] ?? "").flatMap { $0 > 0 ? $0 : nil } }
+    var maxTurns = positive("TERMINESS_AGENT_MAX_TURNS") ?? 60
+    var contextWindow = positive("TERMINESS_CONTEXT_WINDOW") ?? 0
+    var maxOutput = positive("TERMINESS_MAX_OUTPUT")
+    var compactAt = Int(env0["TERMINESS_COMPACT_AT"] ?? "").flatMap { $0 >= 0 ? $0 : nil } ?? AgentContext.defaultCompactAt
+    var tokenBudget = positive("TERMINESS_TOKEN_BUDGET")
+    var baseURL = env0["OPENAI_BASE_URL"] ?? ""
+    func number(_ flag: String, _ value: String?) -> Int {
+        guard let v = value.flatMap({ Int($0) }), v > 0 else { fail("\(flag) takes a positive number") }
+        return v
+    }
     var i = 0
     while i < args.count {
         switch args[i] {
         case "--model": i += 1; if i < args.count { model = args[i] }
-        case "--effort": i += 1; if i < args.count { effort = args[i] }
+        case "--effort": i += 1; if i < args.count { effort = args[i]; effortChosen = true }
         case "--auto": i += 1; if i < args.count { mode = args[i] }
         case "--once": once = true
+        case "--max-turns": i += 1; maxTurns = number("--max-turns", i < args.count ? args[i] : nil)
+        case "--context-window": i += 1; contextWindow = number("--context-window", i < args.count ? args[i] : nil)
+        case "--max-output": i += 1; maxOutput = number("--max-output", i < args.count ? args[i] : nil)
+        case "--compact-at":
+            i += 1
+            guard i < args.count, let v = Int(args[i]), v >= 0 else { fail("--compact-at takes a number of tokens (0 for the window alone)") }
+            compactAt = v
+        case "--token-budget": i += 1; tokenBudget = number("--token-budget", i < args.count ? args[i] : nil)
+        case "--base-url": i += 1; if i < args.count { baseURL = args[i] }
         default: words.append(args[i])
         }
         i += 1
@@ -354,11 +580,40 @@ func agent(_ args: [String]) -> Never {
 
     func makeProvider(_ m: String) -> AgentProvider? {
         if m.hasPrefix("ollama:") { return OllamaAgentProvider(model: String(m.dropFirst(7))) }
-        guard let key = anthropicKey() else {
-            out("\(red)No Anthropic API key. Add one in Terminess Settings, set ANTHROPIC_API_KEY, or use --model ollama:<model> for a local model.\(reset)\n")
+        if let id = HuggingFace.modelID(m) {
+            guard !id.isEmpty, let token = HuggingFace.token() else {
+                out("\(red)No Hugging Face token. Add one in Terminess Settings, set HF_TOKEN, or save it in ~/.config/terminess/hf_token.\(reset)\n")
+                return nil
+            }
+            return openAI(URL(string: HuggingFace.chatURL)!, token: token, model: id, label: m)
+        }
+        if m.hasPrefix("openai:") {
+            let name = String(m.dropFirst(7))
+            let base = (baseURL.isEmpty ? "https://api.openai.com/v1" : baseURL).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !name.isEmpty, let url = URL(string: base.hasSuffix("/chat/completions") ? base : base + "/chat/completions"),
+                  url.scheme == "http" || url.scheme == "https" else {
+                out("\(red)openai:<model> needs a model name and an http(s) --base-url or OPENAI_BASE_URL.\(reset)\n")
+                return nil
+            }
+            return openAI(url, token: env["OPENAI_API_KEY"], model: name, label: m)
+        }
+        let gatewayToken = env["ANTHROPIC_AUTH_TOKEN"].flatMap { $0.isEmpty ? nil : $0 }
+        guard let key = gatewayToken ?? anthropicKey() else {
+            out("\(red)No Anthropic API key. Add one in Terminess Settings, set ANTHROPIC_API_KEY, or use --model ollama:<model> or hf:<org>/<model>.\(reset)\n")
             return nil
         }
-        return AnthropicProvider(model: m, effort: effort, key: key)
+        let p = AnthropicProvider(model: m, effort: effort, key: key)
+        p.bearer = gatewayToken != nil
+        if let b = env["ANTHROPIC_BASE_URL"], !b.isEmpty { p.baseURL = b }
+        if let maxOutput { p.maxOutput = maxOutput }
+        return p
+    }
+    func openAI(_ url: URL, token: String?, model id: String, label: String) -> AgentProvider {
+        let p = OpenAIChatProvider(url: url, token: token, model: id, label: label, contextWindow: contextWindow, maxOutput: maxOutput,
+                                   compactAt: compactAt)
+        p.onCompact = { note in out("\(dim)\(note)\(reset)\n") }
+        if effortChosen { p.reasoningEffort = effort }
+        return p
     }
     guard var provider = makeProvider(model) else { exit(1) }
 
@@ -385,7 +640,9 @@ func agent(_ args: [String]) -> Never {
     let system = """
         You are a coding agent working in \(cwd) on the person's machine, inside Terminess. Use the tools to read, \
         change and run things; read before you edit, keep changes focused on what was asked, and run the relevant \
-        tests or build when you change code. Commands that change files or the system may need the person's approval. \
+        tests or build when you change code. Work in small steps: try something, run it and look at the result, \
+        rather than planning at length in your head; a quick experiment usually settles a question faster. Before you \
+        say you're done, check the result really works. Commands that change files or the system may need the person's approval. \
         When you finish, say briefly what you did and anything left for the person to decide.
         """
 
@@ -442,13 +699,31 @@ func agent(_ args: [String]) -> Never {
     sigint.setEventHandler { provider.cancel() }
     sigint.resume()
 
-    func run(_ text: String) {
+    @discardableResult func run(_ text: String) -> Bool {
+        var finished = true
         provider.addUser(text)
         record(["type": "user", "text": text])
         report(["hook_event_name": "UserPromptSubmit"])
         out("\u{1B}]0;\u{25D0} Terminess agent\u{07}")
         var reply = ""
-        for _ in 0..<60 {
+        var turns = 0, cutoffs = 0
+        while true {
+            if let budget = tokenBudget, let p = provider as? OpenAIChatProvider, p.usedTokens >= budget {
+                out("\(red)Stopped at the token budget: \(p.usedTokens) of \(budget) tokens used (--token-budget).\(reset)\n")
+                record(["type": "assistant", "text": "(Stopped at the token budget.)"])
+                finished = false
+                break
+            }
+            if turns > 0, turns % 20 == 0, let p = provider as? OpenAIChatProvider {
+                out("\(dim)Tokens so far: \(p.inputTokens) in, \(p.outputTokens) out, after \(turns) requests.\(reset)\n")
+            }
+            if turns >= maxTurns {
+                out("\(red)Stopped after \(maxTurns) model requests (--max-turns).\(reset)\n")
+                record(["type": "assistant", "text": "(Stopped after \(maxTurns) model requests.)"])
+                finished = false
+                break
+            }
+            turns += 1
             var shown = false, thinking = false
             let t = provider.turn(system: system) { piece, isThinking in
                 if isThinking != thinking { out(isThinking ? dim : reset); thinking = isThinking }
@@ -456,11 +731,20 @@ func agent(_ args: [String]) -> Never {
                 out(piece)
             }
             out(reset + (shown ? "\n" : ""))
-            if let e = t.error { out("\(red)\(e)\(reset)\n"); record(["type": "assistant", "text": "(\(e))"]); break }
+            if let e = t.error { out("\(red)\(e)\(reset)\n"); record(["type": "assistant", "text": "(\(e))"]); finished = false; break }
             if !t.text.isEmpty || !t.thinking.isEmpty { record(["type": "assistant", "text": t.text, "thinking": t.thinking]) }
             reply = t.text
-            if t.stopReason == "refusal" { out("\(red)The model declined this request.\(reset)\n"); break }
-            if t.stopReason == "max_tokens" { out("\(red)The reply hit the length limit.\(reset)\n"); break }
+            if t.stopReason == "refusal" { out("\(red)The model declined this request.\(reset)\n"); finished = false; break }
+            if t.stopReason == "max_tokens" {
+                if let p = provider as? OpenAIChatProvider, cutoffs < 3 {
+                    cutoffs += 1
+                    out("\(dim)The reply hit the length limit; asking the model to act (\(cutoffs) of 3).\(reset)\n")
+                    p.continueAfterCutoff()
+                    continue
+                }
+                out("\(red)The reply hit the length limit.\(reset)\n"); finished = false; break
+            }
+            cutoffs = 0
             guard !t.calls.isEmpty else { break }
             var results: [AgentToolResult] = []
             for c in t.calls {
@@ -475,13 +759,17 @@ func agent(_ args: [String]) -> Never {
         }
         report(["hook_event_name": "Stop", "last_assistant_message": reply])
         out("\u{1B}]0;\u{2733} Terminess agent\u{07}")
+        return finished
     }
 
     if once {
         let task = words.joined(separator: " ")
         guard !task.isEmpty else { fail("--once needs a task") }
-        run(task)
-        exit(0)
+        let ok = run(task)
+        if let p = provider as? OpenAIChatProvider, p.inputTokens + p.outputTokens > 0 {
+            out("\(dim)Tokens: \(p.inputTokens) in, \(p.outputTokens) out.\(reset)\n")
+        }
+        exit(ok ? 0 : 1)
     }
 
     out("\(bold)Terminess agent\(reset) \(dim)\(provider.label) in \(cwd). Approvals: \(mode == "off" ? "ask for edits and commands" : mode == "edits" ? "edits allowed, commands ask" : "everything allowed").\n")

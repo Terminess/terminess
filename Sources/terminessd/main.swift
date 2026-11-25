@@ -1,5 +1,7 @@
 #if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+@preconcurrency import Musl
 #else
 import Darwin
 #endif
@@ -25,7 +27,7 @@ func serve() -> Never {
     signal(SIGPIPE, SIG_IGN)
     if UnixSocket.connect(HostPaths.socket) != nil {
         FileHandle.standardError.write(Data("terminessd: already running on \(HostPaths.socket)\n".utf8))
-        exit(0)
+        exit(ProcessInfo.processInfo.environment["INVOCATION_ID"] == nil ? 0 : 1)
     }
     let server = HostServer()
     let verbose = rest.contains("-v")
@@ -34,10 +36,28 @@ func serve() -> Never {
     dispatchMain()
 }
 
+func startViaSystemd() -> Bool {
+    #if os(Linux)
+    let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+    guard FileManager.default.fileExists(atPath: home + "/.config/systemd/user/terminessd.service"),
+          run(["systemctl", "--user", "is-enabled", "--quiet", "terminessd.service"], quiet: true) == 0 else { return false }
+    return run(["systemctl", "--user", "start", "terminessd.service"], quiet: true) == 0
+    #else
+    return false
+    #endif
+}
+
 func connectToService() -> Int32 {
     let path = HostPaths.socket
     guard UnixSocket.fits(path) else { fail("socket path is too long for the system: \(path)") }
     if let fd = UnixSocket.connect(path) { return fd }
+    if startViaSystemd() {
+        for _ in 0..<100 {
+            if let fd = UnixSocket.connect(path) { return fd }
+            usleep(50_000)
+        }
+        fail("terminessd.service did not start; see: journalctl --user -u terminessd")
+    }
     let me = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
     let p = Process()
     p.executableURL = URL(fileURLWithPath: me)
@@ -425,6 +445,8 @@ case "handoff":
 
 case "borrow":
     borrowCommand(rest)
+case "copy-from-mac":
+    copyFromMacCommand(rest)
 
 case "schedule":
     var list = AgentSchedules.load()
@@ -587,6 +609,8 @@ case "-h", "--help", "help":
       terminessd handoff pull HOST SESSION | push SESSION HOST
                                        move a running agent conversation between machines (see handoff help)
       terminessd borrow "task"         hand a task to the Mac (its Chrome, its apps) and print the answer
+      terminessd copy-from-mac PATH [TO]
+                                       copy a file from the Mac to here (TO: a file or folder)
       terminessd mcp                   an MCP server giving agents Terminess tools (tabs, worktrees, notify, ask, remind, borrow)
       terminessd tools install|status  give Claude Code and Codex here the Terminess tools (the Mac app does this for you)
     """)

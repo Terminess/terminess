@@ -77,6 +77,8 @@ enum HostService {
 
     private static var gaveUp = false
 
+    static func retry() { gaveUp = false }
+
     static func ensureRunning() -> Bool {
         guard !gaveUp, UnixSocket.fits(HostPaths.socket) else { return false }
         if let fd = UnixSocket.connect(HostPaths.socket) { close(fd); return true }

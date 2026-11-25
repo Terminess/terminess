@@ -43,6 +43,7 @@ final class Settings: ObservableObject {
     @Published var preferredAgent: String { didSet { save("preferredAgent", preferredAgent) } }
     @Published var borrowAgent: String { didSet { save("borrowAgent", borrowAgent) } }
     @Published var borrowBrowser: String { didSet { save("borrowBrowser", borrowBrowser) } }
+    @Published var borrowTrusted: [String] { didSet { save("borrowTrusted", borrowTrusted) } }
     @Published var guideFolder: String { didSet { save("guideFolder", guideFolder) } }
     @Published var quickTerminalKey: String { didSet { save("quickTerminalKey", quickTerminalKey) } }
     @Published var idleParking: Bool { didSet { save("idleParking", idleParking) } }
@@ -70,6 +71,7 @@ final class Settings: ObservableObject {
         preferredAgent = d.string(forKey: "preferredAgent") ?? "claude"
         borrowAgent = d.string(forKey: "borrowAgent") ?? "match"
         borrowBrowser = d.string(forKey: "borrowBrowser") ?? "separate"
+        borrowTrusted = d.stringArray(forKey: "borrowTrusted") ?? []
         guideFolder = d.string(forKey: "guideFolder") ?? ""
         fontSize = d.object(forKey: "fontSize") as? Double ?? 12
         lineSpacing = d.object(forKey: "lineSpacing") as? Double ?? 1.0

@@ -5,7 +5,16 @@ import SwiftUI
 
 @MainActor
 final class ReaderModel: ObservableObject {
-    @Published var items: [TranscriptItem] = [] { didSet { settlePending() } }
+    @Published var items: [TranscriptItem] = [] {
+        didSet {
+            settlePending()
+            let users = items.reduce(0) { n, i in if case .user = i.kind { return n + 1 }; return n }
+            if users > userTurns, !oldValue.isEmpty { turnStart = Date() }
+            userTurns = users
+        }
+    }
+    private var userTurns = 0
+    @Published var shells: String?
     @Published var pending: [PendingMessage] = []
 
     struct PendingMessage: Identifiable {
@@ -13,6 +22,7 @@ final class ReaderModel: ObservableObject {
         let text: String
         let sent = Date()
         let seenBefore: Int
+        let usersBefore: Int
     }
 
     @Published private(set) var queued: [String] = []
@@ -24,7 +34,8 @@ final class ReaderModel: ObservableObject {
     }
 
     func addPending(_ text: String) {
-        pending.append(PendingMessage(text: text, seenBefore: userCount(text)))
+        turnStart = Date()
+        pending.append(PendingMessage(text: text, seenBefore: userCount(text), usersBefore: userTurns))
         let count = items.count
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
             MainActor.assumeIsolated {
@@ -53,7 +64,10 @@ final class ReaderModel: ObservableObject {
         if unreadable && !items.isEmpty && pending.isEmpty { unreadable = false }
         guard !pending.isEmpty else { return }
         let now = Date()
-        let left = pending.filter { p in userCount(p.text) <= p.seenBefore && now.timeIntervalSince(p.sent) < 600 }
+        let users = items.reduce(0) { n, i in if case .user = i.kind { return n + 1 }; return n }
+        let left = pending.enumerated().filter { i, p in
+            userCount(p.text) <= p.seenBefore && users <= p.usersBefore + i && now.timeIntervalSince(p.sent) < 600
+        }.map(\.element)
         if left.count != pending.count { pending = left }
     }
     @Published var agentName = ""
@@ -61,6 +75,7 @@ final class ReaderModel: ObservableObject {
     @Published var live = false
     var drops: WindowLink?
     @Published var working = false
+    private(set) var turnStart: Date?
     var activity: (() -> Date?)?
     var menuWaiting: (() -> Bool)?
     private var watcher: DispatchSourceFileSystemObject?
@@ -72,7 +87,16 @@ final class ReaderModel: ObservableObject {
     var startHere: ((_ path: String, _ command: String) -> Void)?
     var machineID = ""
     var gate = ViewGate()
-    var onUserMessage: ((String) -> Void)?
+    var onUserMessages: (([String]) -> Void)?
+
+    func reportUserMessages(_ items: [TranscriptItem]) {
+        var first: [String] = []
+        for item in items {
+            if case .user(let text) = item.kind { first.append(text) }
+            if first.count == 3 { break }
+        }
+        if !first.isEmpty { onUserMessages?(first) }
+    }
     var onFound: ((Int32, String, String) -> Void)?
     var visible = false { didSet { visible ? start() : stop() } }
 
@@ -97,6 +121,7 @@ final class ReaderModel: ObservableObject {
 
 
     private var remoteKey: String?
+    private var shownRemote: String?
     private var remoteLink: SSHLink?
     private var remoteConnection: Connection?
 
@@ -118,7 +143,8 @@ final class ReaderModel: ObservableObject {
         closeRemote()
         watcher?.cancel(); watcher = nil
         path = nil; lastMTime = nil
-        if !items.isEmpty { items = [] }
+        if shownRemote != key, !items.isEmpty { items = [] }
+        shownRemote = key
         remoteKey = key
         guard let link = SSHLink.open(machine) else { return }
         remoteLink = link
@@ -135,9 +161,7 @@ final class ReaderModel: ObservableObject {
                     let from = min(max(0, m.code ?? 0), self.items.count)
                     let next = Array((Array(self.items.prefix(from)) + incoming).suffix(400))
                     if next != self.items { self.items = next }
-                    for item in next {
-                        if case .user(let text) = item.kind { self.onUserMessage?(text); break }
-                    }
+                    self.reportUserMessages(next)
                 default: break
                 }
             }
@@ -155,8 +179,13 @@ final class ReaderModel: ObservableObject {
     }
 
     func refresh(force: Bool = false) {
-        let busy = live && !(menuWaiting?() ?? false) && (activity?().map { Date().timeIntervalSince($0) < 2.5 } ?? false)
+        let signedOff = items.last?.turnDone != nil && pending.isEmpty
+        let busy = live && !signedOff && !(menuWaiting?() ?? false) && (activity?().map { Date().timeIntervalSince($0) < 2.5 } ?? false)
         if busy != working { working = busy }
+        if busy, turnStart == nil { turnStart = Date() }
+        if turnStart != nil, items.last?.turnDone != nil || (!busy && { if case .assistant? = items.last?.kind { return true }; return false }()) {
+            turnStart = nil
+        }
         let src = source?() ?? .none
         if case .remote = src {} else if remoteKey != nil { closeRemote() }
         switch src {
@@ -199,6 +228,7 @@ final class ReaderModel: ObservableObject {
     }
 
     private func clear(agent: String? = nil) {
+        shownRemote = nil
         watcher?.cancel()
         watcher = nil
         if !items.isEmpty { items = [] }
@@ -216,6 +246,7 @@ final class ReaderModel: ObservableObject {
         if agentID != agent { agentID = agent }
         if agentName != name { agentName = name }
         if self.live != live { self.live = live }
+        shownRemote = nil
         let mtime = Transcript.mtime(path)
         guard force || path != self.path || mtime != lastMTime else { return }
         if path != self.path { watch(path, agent: agent) }
@@ -227,9 +258,7 @@ final class ReaderModel: ObservableObject {
                 guard let self, self.path == path else { return }
                 let latest = Array(parsed.suffix(400))
                 if latest != self.items { self.items = latest }
-                for item in parsed {
-                    if case .user(let text) = item.kind { self.onUserMessage?(text); break }
-                }
+                self.reportUserMessages(parsed)
             }
         }
     }
@@ -237,31 +266,22 @@ final class ReaderModel: ObservableObject {
 
 struct ReaderView: View {
     @ObservedObject var model: ReaderModel
+    @State private var width: CGFloat = 0
 
     var body: some View {
         let _ = PerfCounters.tick("body.reader")
         content.noTopScrollEdge()
     }
 
+    private var showWorking: Bool {
+        guard model.live, !model.unreadable else { return false }
+        if model.working { return true }
+        if model.items.last?.turnDone == nil, case .tool(_, _, _, nil)? = model.items.last?.kind { return true }
+        return false
+    }
+
     private var content: some View {
         VStack(spacing: 0) {
-            if !model.agentName.isEmpty || !model.items.isEmpty {
-            HStack(spacing: 8) {
-                Image(systemName: "sparkle")
-                    .foregroundStyle(model.agentID == "codex" ? Color(nsColor: Agent.codex.tint) : Color(nsColor: Agent.claude.tint))
-                Text(model.agentName.isEmpty ? "Chat" : model.agentName).font(.headline)
-                Spacer()
-                if model.live {
-                    HStack(spacing: 4) {
-                        Circle().fill(.green).frame(width: 6, height: 6)
-                        Text("Live").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            Divider()
-            }
             if model.unreadable {
                 HStack(spacing: 10) {
                     Image(systemName: "exclamationmark.bubble").foregroundStyle(.orange)
@@ -277,21 +297,32 @@ struct ReaderView: View {
                 NewSessionView(gate: model.gate, tabMachine: model.machineID, startHere: { model.startHere?($0, $1) })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.items.isEmpty && model.pending.isEmpty && model.queued.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "text.bubble").font(.largeTitle).foregroundStyle(.tertiary)
-                    Text(model.agentName.isEmpty ? "No agent in this tab" : "No messages yet").font(.headline).foregroundStyle(.secondary)
-                    Text(model.agentName.isEmpty
-                         ? "Start Claude Code or Codex here and this tab's conversation appears, formatted for reading."
-                         : "Send a message and the conversation appears here.")
-                        .font(.callout).foregroundStyle(.tertiary).multilineTextAlignment(.center).frame(maxWidth: 260)
+                VStack(spacing: 14) {
+                    Text("\u{2726}_")
+                        .font(.system(size: 22, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .padding(.bottom, 4)
+                    Text("Where shall we start?")
+                        .font(.system(size: 20, weight: .regular))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 16) {
-                            ForEach(model.items) { item in
-                                ItemView(item: item, folder: model.folder?()).id(item.id)
+                        LazyVStack(alignment: .leading, spacing: ChatLayout.gap) {
+                            ForEach(ChatRow.rows(model.items)) { row in
+                                switch row {
+                                case .item(let item):
+                                    ItemView(item: item, folder: model.folder?()).id(item.id)
+                                case .steps(let steps):
+                                    StepsGroup(steps: steps, folder: model.folder?()).id(row.id)
+                                case .done(let item):
+                                    DoneLine(item: item,
+                                             extra: item.id == model.items.last(where: { $0.turnDone != nil })?.id
+                                                 ? model.shells.map { "\($0) still running" } : nil)
+                                        .padding(.leading, ChatLayout.textLeading)
+                                        .id(row.id)
+                                }
                             }
                             ForEach(Array(model.queued.enumerated()), id: \.offset) { _, text in
                                 UserBubble(text: text, pending: true)
@@ -299,18 +330,22 @@ struct ReaderView: View {
                             ForEach(model.pending) { p in
                                 UserBubble(text: p.text, pending: true)
                             }
-                            if model.working {
-                                HStack(spacing: 8) {
-                                    ProgressView().controlSize(.small)
-                                    Text("\(model.agentName) is working…").font(.callout).foregroundStyle(.secondary)
-                                }
-                                .padding(.vertical, 4)
-                                .transition(.opacity)
+                            if showWorking {
+                                WorkingLine(activity: ChatRow.activity(model.items, short: { ItemView.short($0, folder: model.folder?()) }),
+                                            started: model.turnStart ?? Date(),
+                                            tint: model.agentID == "codex" ? Color(nsColor: Agent.codex.tint) : Color(nsColor: Agent.claude.tint),
+                                            size: ChatLayout.textSize)
+                                    .padding(.leading, ChatLayout.textLeading)
+                                    .transition(.opacity)
                             }
                             Color.clear.frame(height: 4).id("end")
                         }
-                        .padding(16)
+                        .padding(.horizontal, ChatLayout.margin(width))
+                        .padding(.vertical, 16)
+                        .environment(\.chatTextInsets, EdgeInsets(top: 0, leading: ChatLayout.textLeading, bottom: 0,
+                                                                     trailing: ChatLayout.textTrailing(width)))
                     }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
                     .onChange(of: model.working) { _, _ in
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
                     }
@@ -333,8 +368,11 @@ struct ItemView: View {
     let item: TranscriptItem
     var folder: String? = nil
     @State private var expanded = false
+    @Environment(\.chatTextInsets) private var insets
 
-    private func short(_ s: String) -> String {
+    private func short(_ s: String) -> String { ItemView.short(s, folder: folder) }
+
+    static func short(_ s: String, folder: String?) -> String {
         var out = s
         if let f = folder, !f.isEmpty, f != "/" { out = out.replacingOccurrences(of: f + "/", with: "") }
         for h in Set([Transcript.home, NSHomeDirectory()]) where h.count > 1 {
@@ -350,7 +388,8 @@ struct ItemView: View {
             UserBubble(text: text).modifier(RememberMenu(text: text, folder: folder))
 
         case .assistant(let text):
-            MarkdownView(text: text).padding(.horizontal, 12)
+            MarkdownView(text: text, bodySize: ChatLayout.textSize, lineGap: 5, blockGap: ChatLayout.gap)
+                .padding(.leading, insets.leading).padding(.trailing, insets.trailing)
                 .modifier(RememberMenu(text: text, folder: folder))
 
         case .thinking(let text):
@@ -382,7 +421,7 @@ struct ItemView: View {
                 .padding(.top, 4)
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: symbol(name)).foregroundStyle(.secondary).frame(width: 16)
+                    Image(systemName: ItemView.symbol(name)).foregroundStyle(.secondary).frame(width: 16)
                     Text(name).font(.callout.weight(.medium))
                     Text(short(summary)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
                     if result == nil { ProgressView().controlSize(.mini) }
@@ -420,7 +459,7 @@ struct ItemView: View {
         }
     }
 
-    private func symbol(_ tool: String) -> String {
+    static func symbol(_ tool: String) -> String {
         switch tool.lowercased() {
         case "bash", "exec", "exec_command", "shell": return "terminal"
         case "read", "view": return "doc.text"
@@ -446,7 +485,10 @@ final class ComposerState: ObservableObject {
     @Published var machine = "This Mac"
     @Published var machineSymbol = "laptopcomputer"
     @Published var folderPath: String?
+    @Published var marked = false
     var drops: WindowLink?
+    var contentHeight: CGFloat = 0
+    var onContentHeight: (() -> Void)?
 }
 
 struct ComposerView: View {
@@ -460,9 +502,10 @@ struct ComposerView: View {
         nonmutating set { state.draft = newValue }
     }
     @State private var height: CGFloat = 22
+    @State private var width: CGFloat = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .bottom, spacing: 10) {
                 Button(action: attach) {
                     Image(systemName: "plus").font(.system(size: 15, weight: .regular))
@@ -473,10 +516,10 @@ struct ComposerView: View {
                 .help("Add files or images")
                 ZStack(alignment: .topLeading) {
                     if text.isEmpty {
-                        Text(placeholder).font(.system(size: 14)).foregroundStyle(.tertiary).padding(.leading, 5).padding(.top, 2)
+                        Text(placeholder).font(.system(size: ChatLayout.textSize)).foregroundStyle(.tertiary).padding(.leading, 5).padding(.top, 2)
                     }
                     ComposerTextView(text: $state.draft, height: $height, onSend: send, onEscape: escape)
-                        .frame(height: min(max(height, 24), 160))
+                        .frame(height: min(max(height, 24), 140))
                 }
                 if state.busy && text.isEmpty {
                     Button(action: onStop) {
@@ -485,7 +528,7 @@ struct ComposerView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.primary)
                     .keyboardShortcut(".", modifiers: .command)
-                    .help("Stop the agent (Esc or Cmd-.)")
+                    .help("Stop the agent  \u{238B} or \u{2318}.")
                 } else {
                     Button(action: send) {
                         Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
@@ -493,20 +536,28 @@ struct ComposerView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(text.isEmpty ? Color.secondary.opacity(0.6) : Color.primary)
                     .disabled(text.isEmpty)
-                    .help("Send (Return)")
+                    .help("Send  \u{21A9}")
                 }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 11)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.055))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 0.5)))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.primary.opacity(state.marked ? 0.4 : 0.12), lineWidth: state.marked ? 1 : 0.5)))
 
             controlRow
                 .padding(.horizontal, 6)
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 10)
+        .padding(.horizontal, ChatLayout.margin(width))
+        .padding(.bottom, 14)
         .padding(.top, 6)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+            guard abs(h - state.contentHeight) > 0.5 else { return }
+            state.contentHeight = h
+            state.onContentHeight?()
+        }
+        .frame(maxHeight: .infinity, alignment: .bottom)
         .onDrop(of: Drops.utTypes, isTargeted: nil) { _ in state.drops?.dropFromSwiftUI() ?? false }
     }
 
@@ -627,7 +678,7 @@ private struct ComposerTextView: NSViewRepresentable {
         let tv = KeyTextView()
         tv.isRichText = false
         tv.drawsBackground = false
-        tv.font = .systemFont(ofSize: 13)
+        tv.font = .systemFont(ofSize: ChatLayout.textSize)
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false
         tv.isContinuousSpellCheckingEnabled = true
@@ -639,7 +690,20 @@ private struct ComposerTextView: NSViewRepresentable {
         tv.onEscape = onEscape
         tv.registerForDraggedTypes([.fileURL, .png, .tiff])
         scroll.documentView = tv
+        tv.postsFrameChangedNotifications = true
+        let coordinator = context.coordinator
+        coordinator.frameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: tv, queue: .main) { [weak tv, weak coordinator] _ in
+            MainActor.assumeIsolated {
+                guard let tv, let coordinator, abs(tv.frame.width - coordinator.measuredWidth) > 0.5 else { return }
+                coordinator.measure(tv)
+            }
+        }
         return scroll
+    }
+
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        if let o = coordinator.frameObserver { NotificationCenter.default.removeObserver(o) }
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -659,16 +723,22 @@ private struct ComposerTextView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         let parent: ComposerTextView
+        var frameObserver: NSObjectProtocol?
+        var measuredWidth: CGFloat = 0
         init(_ p: ComposerTextView) { parent = p }
         func textDidChange(_ n: Notification) {
             guard let tv = n.object as? NSTextView else { return }
             parent.text = tv.string
-            if let lm = tv.layoutManager, let tc = tv.textContainer {
-                lm.ensureLayout(for: tc)
-                parent.height = lm.usedRect(for: tc).height + 6
-            }
+            measure(tv)
+        }
+        func measure(_ tv: NSTextView) {
+            guard let lm = tv.layoutManager, let tc = tv.textContainer else { return }
+            lm.ensureLayout(for: tc)
+            measuredWidth = tv.frame.width
+            let h = lm.usedRect(for: tc).height + 6
+            if abs(h - parent.height) > 0.5 { parent.height = h }
         }
     }
 }
@@ -735,9 +805,11 @@ struct UserBubble: View {
             HStack(spacing: 0) {
                 Spacer(minLength: 96)
                 Text(text)
+                    .font(.system(size: ChatLayout.textSize))
+                    .lineSpacing(5)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .padding(.horizontal, 18).padding(.vertical, 12)
                     .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.accentColor.opacity(0.16)))
             }
             if pending {
@@ -745,6 +817,7 @@ struct UserBubble: View {
             }
         }
         .opacity(pending ? 0.75 : 1)
+        .padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }

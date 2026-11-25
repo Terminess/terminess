@@ -430,6 +430,12 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
             }
             y -= 1
         }
+        let cy = t.cursor.y
+        if cy >= 0, cy < t.rows, firstText(rows[cy]).hasPrefix("\u{203A}"),
+           !rows[cy].cells.contains(where: { !$0.attrs.bg.isDefault }),
+           ((cy + 1)..<t.rows).allSatisfy({ firstText(rows[$0]).isEmpty }) {
+            return cy...cy
+        }
         return nil
     }
 

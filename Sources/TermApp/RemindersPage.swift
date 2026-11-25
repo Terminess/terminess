@@ -138,7 +138,7 @@ struct RemindersPage: View {
                     .frame(width: 28, height: 28).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Close Reminders (Esc)")
+            .help("Close Reminders  \u{238B}")
             .keyboardShortcut(.cancelAction)
             .padding(.top, 14).padding(.trailing, 14)
         }

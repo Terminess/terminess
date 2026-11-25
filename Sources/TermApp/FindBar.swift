@@ -56,9 +56,9 @@ final class FindBar: NSVisualEffectView, NSSearchFieldDelegate {
             b.toolTip = tip
             return b
         }
-        let prev = icon("chevron.up", "Previous (Shift-Cmd-G)", #selector(previous))
-        let next = icon("chevron.down", "Next (Cmd-G)", #selector(nextMatch))
-        let close = icon("xmark", "Close (Esc)", #selector(close))
+        let prev = icon("chevron.up", "Previous  \u{21E7}\u{2318}G", #selector(previous))
+        let next = icon("chevron.down", "Next  \u{2318}G", #selector(nextMatch))
+        let close = icon("xmark", "Close  \u{238B}", #selector(close))
 
         let stack = NSStackView(views: [field, count, caseButton, regexButton, prev, next, close])
         stack.spacing = 4

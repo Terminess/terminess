@@ -1,5 +1,7 @@
 #if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+@preconcurrency import Musl
 #else
 import Darwin
 #endif
@@ -149,6 +151,8 @@ public final class Connection: @unchecked Sendable {
 @inline(__always) func Darwin_close(_ fd: Int32) {
     #if canImport(Glibc)
     _ = Glibc.close(fd)
+    #elseif canImport(Musl)
+    _ = Musl.close(fd)
     #else
     _ = Darwin.close(fd)
     #endif
@@ -222,6 +226,8 @@ public enum UnixSocket {
 @inline(__always) private func sysConnect(_ fd: Int32, _ addr: UnsafePointer<sockaddr>, _ len: socklen_t) -> Int32 {
     #if canImport(Glibc)
     return Glibc.connect(fd, addr, len)
+    #elseif canImport(Musl)
+    return Musl.connect(fd, addr, len)
     #else
     return Darwin.connect(fd, addr, len)
     #endif
@@ -230,6 +236,8 @@ public enum UnixSocket {
 @inline(__always) private func sysListen(_ fd: Int32, _ backlog: Int32) -> Int32 {
     #if canImport(Glibc)
     return Glibc.listen(fd, backlog)
+    #elseif canImport(Musl)
+    return Musl.listen(fd, backlog)
     #else
     return Darwin.listen(fd, backlog)
     #endif

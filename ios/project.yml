@@ -8,8 +8,8 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    MARKETING_VERSION: "1.0.3"
-    CURRENT_PROJECT_VERSION: "10"
+    MARKETING_VERSION: "1.0.5"
+    CURRENT_PROJECT_VERSION: "12"
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
     SWIFT_VERSION: "5.0"
@@ -27,6 +27,8 @@ targets:
       - path: Terminess
       # The chat's Markdown renderer, shared with the Mac app.
       - path: ../Sources/TermApp/MarkdownView.swift
+      # Folded tool steps and the working line, shared with the Mac app.
+      - path: ../Sources/TermApp/ChatShared.swift
     dependencies:
       - package: Terminal
         product: TermCore

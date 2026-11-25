@@ -70,7 +70,11 @@ final class AppState: ObservableObject {
     }
 
     func resume() {
-        for h in hosts { Task { await connection(h.id).connect() } }
+        for h in hosts {
+            let c = connection(h.id)
+            c.suspect = true
+            Task { await c.connect() }
+        }
     }
 
     func loadHistory() async {
@@ -86,6 +90,12 @@ final class AppState: ObservableObject {
     func end(_ session: SessionInfo, on host: SavedHost) {
         if current?.session == session.id { current = nil }
         Task { await connection(host.id).kill(session.id) }
+    }
+
+    func adopt(session: String, for target: UUID) {
+        guard current?.id == target, current?.session == nil else { return }
+        current?.session = session
+        current?.input = nil
     }
 
     func newChat() {

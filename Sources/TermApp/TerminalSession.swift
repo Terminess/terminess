@@ -80,6 +80,60 @@ final class TerminalSession {
         startHost(attach.map { .attach(id: $0) } ?? create, cwd: cwd ?? "", cellWidth: 0, cellHeight: 0, remote: m)
     }
 
+
+    static let reconnectAll = Notification.Name("TerminalSession.reconnectAll")
+    private var droppedID: String?
+    private var droppedCwd = ""
+    private var reconnectWork: DispatchWorkItem?
+    private var reconnectDelay: TimeInterval = 1
+    private var reconnectObserver: NSObjectProtocol?
+    private var reattaching = false
+    var isDropped: Bool { droppedID != nil }
+
+    private func dropped(sessionID: String, cwd: String, message: String) {
+        let first = droppedID == nil
+        droppedID = sessionID
+        droppedCwd = cwd
+        if first {
+            reconnectDelay = 1
+            let place = machine.map { " to \($0.name)" } ?? ""
+            terminal.feed("\r\n\u{1B}[2m[\(message); reconnecting\(place)\u{2026}]\u{1B}[0m\r\n")
+            onUpdate?()
+        }
+        if reconnectObserver == nil {
+            reconnectObserver = NotificationCenter.default.addObserver(forName: Self.reconnectAll, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.reconnectNow() }
+            }
+        }
+        scheduleReconnect()
+    }
+
+    private func scheduleReconnect() {
+        reconnectWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.reconnectNow() } }
+        reconnectWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + reconnectDelay, execute: work)
+        reconnectDelay = min(reconnectDelay * 2, 30)
+    }
+
+    func reconnectNow() {
+        guard let id = droppedID, !reattaching else { return }
+        reconnectWork?.cancel()
+        reconnectWork = nil
+        if machine == nil && !HostService.ensureRunning() { scheduleReconnect(); return }
+        reattaching = true
+        startHost(.attach(id: id), cwd: droppedCwd, cellWidth: terminal.cellPixelWidth, cellHeight: terminal.cellPixelHeight,
+                  remote: machine)
+    }
+
+    private func reconnected() {
+        droppedID = nil
+        reconnectWork?.cancel()
+        reconnectWork = nil
+        if let o = reconnectObserver { NotificationCenter.default.removeObserver(o) }
+        reconnectObserver = nil
+    }
+
     private func startHost(_ target: HostAttachment.Target, cwd: String, cellWidth: Int, cellHeight: Int,
                            remote: RemoteMachine? = nil) {
         var link: SSHLink?
@@ -91,6 +145,11 @@ final class TerminalSession {
             made = HostAttachment(target: target, cols: terminal.columns, rows: terminal.rows)
         }
         guard let a = made else {
+            if reattaching {
+                reattaching = false
+                scheduleReconnect()
+                return
+            }
             if let remote {
                 terminal.feed("\r\n\u{1B}[2m[Could not run ssh for \(remote.host)]\u{1B}[0m\r\n")
                 onUpdate?()
@@ -111,7 +170,13 @@ final class TerminalSession {
             MainActor.assumeIsolated {
                 attached = true
                 ref.value?.resumeIfGone = nil
-                guard let session = ref.value, cols > 0, rows > 0 else { return }
+                guard let session = ref.value else { return }
+                if session.reattaching {
+                    session.reattaching = false
+                    session.reconnected()
+                    session.terminal.fullReset()
+                }
+                guard cols > 0, rows > 0 else { return }
                 let t = session.terminal
                 if cols != t.columns || rows != t.rows {
                     session.sizeAfterReplay = (t.columns, t.rows)
@@ -159,12 +224,28 @@ final class TerminalSession {
             }
         }
         a.onExit = { code in MainActor.assumeIsolated { ref.value?.onExit?(Int32(code)) } }
-        a.onDisconnect = { message in
+        a.onDisconnect = { [weak a] message in
             MainActor.assumeIsolated {
                 guard let session = ref.value else { return }
                 if attached {
+                    if let id = a?.sessionID, !TerminalSession.appIsQuitting {
+                        session.dropped(sessionID: id, cwd: cwd, message: message)
+                        return
+                    }
                     session.terminal.feed("\r\n\u{1B}[2m[\(message)]\u{1B}[0m\r\n")
                     session.onUpdate?()
+                    return
+                }
+                if session.reattaching {
+                    session.reattaching = false
+                    let why = link?.lastError ?? ""
+                    if why.isEmpty, message.hasPrefix("no session") {
+                        session.reconnected()
+                        session.terminal.feed("\r\n\u{1B}[2m[The session ended while disconnected. Its conversation is in the sidebar to resume.]\u{1B}[0m\r\n")
+                        session.onUpdate?()
+                        return
+                    }
+                    session.scheduleReconnect()
                     return
                 }
                 if let remote {
@@ -238,6 +319,13 @@ final class TerminalSession {
     }
 
     func close() {
+        if let id = droppedID {
+            reconnected()
+            reattaching = false
+            process?.detach()
+            if machine == nil && !TerminalSession.appIsQuitting { HostAttachment.send(Message(op: "kill", id: id)) }
+            return
+        }
         if TerminalSession.appIsQuitting { process?.detach() } else { process?.hangUp() }
     }
 
@@ -255,6 +343,7 @@ final class TerminalSession {
     private(set) var notice: String?
     var noticeDismissed = false
     var onNotice: ((String?) -> Void)?
+    var noticeNewest: String? { (process as? HostBackend)?.attachment.noticeNewest }
     fileprivate func noticeChanged(_ text: String?) {
         if text != notice { noticeDismissed = false }
         notice = text

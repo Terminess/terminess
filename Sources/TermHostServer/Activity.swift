@@ -84,7 +84,7 @@ enum Projects {
             let full = claude + "/" + dir
             let files = ((try? fm.contentsOfDirectory(atPath: full)) ?? []).filter { $0.hasSuffix(".jsonl") }.map { full + "/" + $0 }
             guard let newest = files.max(by: { (Transcript.mtime($0) ?? .distantPast) < (Transcript.mtime($1) ?? .distantPast) }),
-                  let cwd = recordedCwd(newest) else { continue }
+                  let cwd = recordedCwd(newest), !History.scratch(cwd) else { continue }
             note(cwd, Transcript.mtime(newest)?.timeIntervalSince1970 ?? 0)
         }
         let cal = Calendar.current
@@ -136,9 +136,12 @@ enum Projects {
 }
 
 enum History {
-    static func recent(limit: Int = 60) -> [HistoryItem] {
+    static func scratch(_ cwd: String, home: String = Transcript.home) -> Bool {
+        cwd.hasPrefix(home + "/.local/state/terminess/")
+    }
+
+    static func recent(limit: Int = 60, home: String = Transcript.home) -> [HistoryItem] {
         let fm = FileManager.default
-        let home = Transcript.home
         var files: [(path: String, agent: String, mtime: Double)] = []
         let claude = home + "/.claude/projects"
         for dir in (try? fm.contentsOfDirectory(atPath: claude)) ?? [] {
@@ -160,13 +163,13 @@ enum History {
         }
         var out: [HistoryItem] = []
         for file in files.sorted(by: { $0.mtime > $1.mtime }) {
-            guard out.count < limit, let item = describe(file.path, agent: file.agent, used: file.mtime) else { continue }
+            guard out.count < limit, let item = describe(file.path, agent: file.agent, used: file.mtime, home: home) else { continue }
             out.append(item)
         }
         return out
     }
 
-    private static func describe(_ path: String, agent: String, used: Double) -> HistoryItem? {
+    private static func describe(_ path: String, agent: String, used: Double, home: String) -> HistoryItem? {
         guard let h = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? h.close() }
         let data = h.readData(ofLength: 256 * 1024)
@@ -176,6 +179,7 @@ enum History {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
             if agent == "claude" {
                 if cwd.isEmpty, let c = obj["cwd"] as? String { cwd = c }
+                if obj["entrypoint"] as? String == "sdk-cli" { return nil }
                 if obj["type"] as? String == "summary", let s = obj["summary"] as? String { summary = s }
                 if first.isEmpty, obj["type"] as? String == "user", obj["isMeta"] as? Bool != true,
                    let m = obj["message"] as? [String: Any] {
@@ -200,7 +204,7 @@ enum History {
         let raw = summary.isEmpty ? first : summary
         let title = raw.split(separator: "\n").first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
         var isDir: ObjCBool = false
-        guard !title.isEmpty, !cwd.isEmpty, FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else { return nil }
+        guard !title.isEmpty, !cwd.isEmpty, !scratch(cwd, home: home), FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else { return nil }
         return HistoryItem(id: id, agent: agent, cwd: cwd, title: title.count > 80 ? String(title.prefix(79)) + "…" : title, used: used)
     }
 }

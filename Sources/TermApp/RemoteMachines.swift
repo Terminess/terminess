@@ -167,6 +167,22 @@ final class RemoteMonitor {
         if connected { connection?.send(Message(op: "list")) } else if connection == nil && !stopped { retry?.cancel(); connect() }
     }
 
+    func reconnect() {
+        guard !stopped else { return }
+        retry?.cancel()
+        timer?.invalidate()
+        timer = nil
+        let old = connection
+        connection = nil
+        connected = false
+        old?.onClose = nil
+        old?.close()
+        link?.terminate()
+        link = nil
+        backoff = 2
+        connect()
+    }
+
     func send(_ m: Message) { connection?.send(m) }
 
     private func connect() {
@@ -253,6 +269,13 @@ final class RemoteMonitor {
                     SidebarModel.shared.monitor(machine.id)?.send(Message(op: "borrow-reply", id: id, code: code, message: text))
                 }
             }
+        case "file-request":
+            guard let id = m.id, let path = m.message else { break }
+            let machine = self.machine
+            BorrowCenter.shared.fileRequest(id: id, machine: machine, from: m.name ?? machine.name, path: path) { reply in
+                nonisolated(unsafe) let reply = reply
+                HandoffCoordinator.onMain { SidebarModel.shared.monitor(machine.id)?.send(reply) }
+            }
         case "agent-setup":
             UserDefaults.standard.set(true, forKey: "agentSetup." + machine.id)
             if let out = m.message, !out.isEmpty { print("agent setup on \(machine.name):\n\(out)"); fflush(stdout) }
@@ -323,6 +346,12 @@ func remoteTilde(_ p: String) -> String {
     return p
 }
 
+func folderName(_ path: String) -> String {
+    let p = remoteTilde(path)
+    if p.isEmpty { return "shell" }
+    return p == "~" ? p : p.split(separator: "/").last.map(String.init) ?? p
+}
+
 enum SessionNames {
     static func given(_ s: SessionInfo) -> String? {
         let n = s.name.trimmingCharacters(in: .whitespaces)
@@ -335,7 +364,7 @@ enum SessionNames {
         if let agent, let t = s.title, let topic = Agent.topic(fromTitle: t, agentName: agent.name),
            topic.contains(where: \.isLetter) { return topic }
         if let agent { return agent.name }
-        if let n = given(s) { return n }
+        if Agent.shells.contains(s.command) || s.command.isEmpty { return folderName(s.cwd) }
         return s.command
     }
 }

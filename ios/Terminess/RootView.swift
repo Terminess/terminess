@@ -116,14 +116,17 @@ struct DrawerView: View {
                                           detail: mac.viewing.count == 1 ? "viewing \(mac.viewing[0])" : "\(mac.viewing.count) sessions open")
                         }
                     }
-                    ForEach(grouped.groups, id: \.key) { group in
+                    if !running.isEmpty {
+                        header("Open")
+                        ForEach(running, id: \.session.id) { entry in liveRow(entry, showFolder: true) }
+                    }
+                    ForEach(grouped.groups.filter { !$0.visible.isEmpty }, id: \.key) { group in
                         GroupHeader(title: group.title, open: isOpen(group.key)) {
                             withAnimation(.easeOut(duration: 0.15)) {
                                 if collapsed.contains(group.key) { collapsed.remove(group.key) } else { collapsed.insert(group.key) }
                             }
                         }
                         if isOpen(group.key) {
-                            ForEach(group.live, id: \.session.id) { entry in liveRow(entry, showFolder: false) }
                             ForEach(group.visible, id: \.item.id) { entry in
                                 Button { resume(entry.item, on: entry.host) } label: {
                                     HistoryRow(item: entry.item, machine: multipleMachines ? entry.host.name : nil)
@@ -140,10 +143,6 @@ struct DrawerView: View {
                                 .padding(.leading, 48).padding(.vertical, 6)
                             }
                         }
-                    }
-                    if !grouped.loose.isEmpty {
-                        header("Other")
-                        ForEach(grouped.loose, id: \.session.id) { entry in liveRow(entry, showFolder: true) }
                     }
                     ForEach(store.hosts) { h in
                         if case .failed(let message) = app.connection(h.id).state {

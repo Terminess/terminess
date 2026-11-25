@@ -78,8 +78,8 @@ final class StalenessTests: XCTestCase {
         a.resumeOf = "old"
         var sessionID: String?
         a.onAttached = { id, _, _ in sessionID = id }
-        a.onNotice = { text in
-            if text?.contains("4 commits have landed since") == true { gotFirst.fulfill() }
+        a.onNotice = { [weak a] text in
+            if text?.contains("4 commits have landed since") == true, a?.noticeNewest == "new" { gotFirst.fulfill() }
         }
         a.start()
         wait(for: [gotFirst], timeout: 10)
@@ -87,7 +87,9 @@ final class StalenessTests: XCTestCase {
         let gotSecond = expectation(description: "a later client gets it on attach")
         guard let id = queue.sync(execute: { sessionID }), let fd2 = UnixSocket.connect(socket) else { return XCTFail("no session") }
         let b = HostAttachment(readFD: fd2, writeFD: fd2, target: .attach(id: id), cols: 80, rows: 24, queue: queue)
-        b.onNotice = { text in if text?.hasPrefix("Older conversation") == true { gotSecond.fulfill() } }
+        b.onNotice = { [weak b] text in
+            if text?.hasPrefix("Older conversation") == true, b?.noticeNewest == "new" { gotSecond.fulfill() }
+        }
         b.start()
         wait(for: [gotSecond], timeout: 10)
         a.kill()

@@ -42,8 +42,11 @@ enum SettingsCatalog {
         ("pairSkill", Entry(page: "agents", title: "Pair skill", detail: "Lets Claude Code and Codex hand work to each other and ask for reviews.")),
         ("agentTools", Entry(page: "agents", title: "Terminess tools", detail: "Gives the agents Terminess's own tools, such as reminders.")),
         ("apiKey", Entry(page: "agents", title: "Anthropic API key", detail: "For Terminess agent tabs, billed to your own Anthropic account.")),
+        ("hfToken", Entry(page: "agents", title: "Hugging Face token", detail: "For hosted open models through Hugging Face (Shell, Local Model and New Agent Tab), billed to your own HF account.")),
+        ("hfModels", Entry(page: "agents", title: "Hugging Face models", detail: "The hosted models Terminess lists, one per line as org/model. Add :fastest, :cheapest or a provider name to choose where it runs. Browse them at huggingface.co/inference/models.")),
         ("localModels", Entry(page: "agents", title: "Local models on", detail: "Where the start page and Shell, Local Model find Ollama models for this Mac: here, or an SSH host. A remote machine's own models are listed when you start there.")),
         ("borrowAgent", Entry(page: "agents", title: "Borrowed tasks run with", detail: "When an agent on another machine borrows this Mac, the same agent does the task here with its own browser tools (Claude Code with Claude in Chrome, Codex, Gemini CLI). If that agent isn't installed here, another one does it, and the answer says which.")),
+        ("borrowTrusted", Entry(page: "agents", title: "Borrow without asking", detail: "Agents on these machines can borrow this Mac without the Allow card. Files sent with copy_from_mac still ask.")),
         ("borrowBrowser", Entry(page: "agents", title: "Borrowed Codex tasks use", detail: "A separate browser has none of your logins. Your Chrome needs remote debugging switched on once in Chrome, and Chrome asks you to allow each task. Claude Code always uses your Chrome, through Claude in Chrome.")),
         ("preferredAgent", Entry(page: "agents", title: "Agent for Terminess jobs", detail: "Which agent runs the jobs Terminess starts for you.")),
         ("opsGuide", Entry(page: "agents", title: "Operations guide", detail: "OPERATIONS.md and ORCHESTRATE.md tell every agent how your setup is built and how to work here.")),
@@ -166,7 +169,7 @@ struct SettingsPane: View {
                         .frame(width: 28, height: 28).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Close Settings (Esc)")
+                .help("Close Settings  \u{238B}")
                 .keyboardShortcut(.cancelAction)
                 .padding(.top, 14).padding(.trailing, 14)
             }
@@ -476,6 +479,8 @@ struct SettingsPageContent: View {
         }
         Section {
             AgentKeyField()
+            SettingRow("hfToken") { HFTokenField() }
+            SettingRow("hfModels") { HFModelsField() }
             SettingRow("localModels") {
                 TextField("Local models on", text: $settings.localModelsHost, prompt: Text("This Mac, or an SSH host"))
                     .frame(width: 200)
@@ -488,6 +493,18 @@ struct SettingsPageContent: View {
                     Text("Gemini CLI").tag("gemini")
                 }
                 .fixedSize()
+            }
+            if !settings.borrowTrusted.isEmpty {
+                SettingRow("borrowTrusted") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(settings.borrowTrusted, id: \.self) { name in
+                            HStack {
+                                Text(name)
+                                Button("Ask Again") { settings.borrowTrusted.removeAll { $0 == name } }
+                            }
+                        }
+                    }
+                }
             }
             SettingRow("borrowBrowser") {
                 HStack {

@@ -142,4 +142,16 @@ final class ScreenMenuShapeTests: XCTestCase {
         ubuntu@vps:~$
         """), width: 100))
     }
+    func testWrappedMessageOnPhoneIsNotAMenu() {
+        XCTAssertNil(ScreenMenu.find(lines: split("""
+        ❯ I want to see the latest version of aai.example.com
+          that you mocked up yesterday
+
+        ✻ Thinking…
+
+        ──────────────────────────────────────────────────
+        ❯ 
+        ──────────────────────────────────────────────────
+        """), width: 50))
+    }
 }

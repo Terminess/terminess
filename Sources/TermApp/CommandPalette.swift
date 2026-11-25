@@ -175,7 +175,7 @@ struct CommandPalette: View {
                             .frame(width: 24, height: 24).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Close (Esc)")
+                    .help("Close  \u{238B}")
                 }
                 .padding(.horizontal, 16).padding(.vertical, 12)
                 HStack(spacing: 4) {

@@ -1,4 +1,5 @@
 import TermHost
+import TermTranscript
 import SwiftUI
 
 enum SidebarID: Hashable {
@@ -26,16 +27,18 @@ struct SidebarView: View {
     @AppStorage("sidebar.sessionsExpanded") private var sessionsExpanded = true
     @AppStorage("sidebar.machinesExpanded") private var machinesExpanded = true
     @AppStorage("sidebar.otherExpanded") private var otherExpanded = true
+    @AppStorage("sidebar.recentView") private var recentView = false
+    @State private var recentShowAll = false
 
     var body: some View {
         let _ = PerfCounters.tick("body.sidebar")
         VStack(spacing: 0) {
             VStack(spacing: 1) {
-                SidebarAction(title: "New session", symbol: "plus", emphasised: true,
-                              help: "A new tab in this window (Cmd-T)") {
+                SidebarAction(title: "New session", symbol: "plus",
+                              help: "A new tab in this window", shortcut: "\u{2318}T") {
                     NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
                 }
-                SidebarAction(title: "Search", symbol: "magnifyingglass", help: "Sessions, projects, machines, reminders and actions (Cmd-K)",
+                SidebarAction(title: "Search", symbol: "magnifyingglass", help: "Sessions, projects, machines, reminders and actions",
                               shortcut: "\u{2318}K") {
                     NSApp.sendAction(#selector(AppDelegate.showSearch(_:)), to: nil, from: nil)
                 }
@@ -53,17 +56,20 @@ struct SidebarView: View {
                     + model.background.filter { $0.busy == true || $0.attention == true }.count
                 SidebarAction(title: "Agents", symbol: "sparkles",
                               help: "Every agent at work: in tabs, in the background, parallel jobs and pair runs.",
-                              detail: working > 0 ? "\(working) working" : nil) {
+                              detail: working > 0 ? "\(working) working" : nil, shortcut: "\u{2325}\u{2318}A") {
                     AgentsDashboardWindow.show()
                 }
-                SidebarAction(title: "Library", symbol: "books.vertical",
-                              help: "The skills, slash commands, subagents and MCP servers Claude Code and Codex load, in one place.") {
-                    NSApp.sendAction(#selector(AppDelegate.showLibrary(_:)), to: nil, from: nil)
-                }
-                SidebarAction(title: "Models", symbol: "cpu",
-                              help: "Which model each agent uses for orchestration, building, reviews and handed-off work.") {
-                    NSApp.sendAction(#selector(AppDelegate.showModels(_:)), to: nil, from: nil)
-                }
+                SidebarMore(items: [
+                    .init(title: "Library", symbol: "books.vertical",
+                          help: "The skills, slash commands, subagents and MCP servers Claude Code and Codex load, in one place.",
+                          shortcut: "\u{21E7}\u{2318}L") {
+                        NSApp.sendAction(#selector(AppDelegate.showLibrary(_:)), to: nil, from: nil)
+                    },
+                    .init(title: "Models", symbol: "cpu",
+                          help: "Which model each agent uses for orchestration, building, reviews and handed-off work.") {
+                        NSApp.sendAction(#selector(AppDelegate.showModels(_:)), to: nil, from: nil)
+                    },
+                ])
                 if !model.hasPairedPhone {
                     SidebarAction(title: "Pair iPhone", symbol: "iphone",
                                   help: "Follow and steer what's running here from Terminess for iPhone.") {
@@ -73,7 +79,7 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 10)
             .padding(.top, 8)
-            .padding(.bottom, 4)
+            .padding(.bottom, 8)
 
             List(selection: $selection) {
                 let layout = projectLayout
@@ -83,7 +89,21 @@ struct SidebarView: View {
                     pairSection
                     if model.issuesRepo != nil { issuesSection }
                 }
-                sessionSections(layout)
+                if model.search.isEmpty {
+                    Section {} header: {
+                        HStack(alignment: .bottom) {
+                            Text("Sessions").padding(.top, SidebarMetrics.sectionGap)
+                            Spacer()
+                            SessionsViewMenu(recent: $recentView)
+                        }
+                        .padding(.trailing, SidebarMetrics.headerTrailing)
+                    }
+                }
+                if recentView && model.search.isEmpty {
+                    recentSections
+                } else {
+                    sessionSections(layout)
+                }
                 if !model.search.isEmpty && listedSessions.isEmpty {
                     Text("No matches for \u{201C}\(model.search)\u{201D}")
                         .font(.callout).foregroundStyle(.tertiary)
@@ -111,9 +131,13 @@ struct SidebarView: View {
                 if let id = ids.first { open(id) }
             }
             .onChange(of: selection) { _, new in
-                if case .tab(let tab)? = new { model.actions?.focusTab(tab) }
-                if case .reminder(let key)? = new { openReminder = key }
-                if case .projectTab(let tab)? = new { model.actions?.focusTab(tab) }
+                switch new {
+                case .tab(let tab)?, .projectTab(let tab)?:
+                    if tab != keyTab { model.actions?.focusTab(tab) }
+                    selection = nil
+                case .reminder(let key)?: openReminder = key
+                default: break
+                }
             }
             bottomBar
         }
@@ -121,6 +145,8 @@ struct SidebarView: View {
         .noTopScrollEdge()
         .onDrop(of: Drops.utTypes, isTargeted: nil) { _ in drops?.dropFromSwiftUI() ?? false }
     }
+
+    private var keyTab: ObjectIdentifier? { model.tabs.first(where: \.isKey)?.id }
 
     private var bottomBar: some View {
         let connected = model.remote.filter { $0.note == nil }.count
@@ -139,9 +165,9 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
             .hoverIcon()
-            .help("Settings (Cmd-,)")
+            .help("Settings  \u{2318},")
         }
-        .font(.system(size: 12))
+        .font(.system(size: 13, weight: .light))
         .foregroundStyle(.secondary)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -165,31 +191,48 @@ struct SidebarView: View {
         Section {
             if openExpanded {
             ForEach(tabs) { tab in
-                let agent = Agent.detect(tab.command)
+                let agent = Agent.detect(tab.command, title: tab.terminalTitle)
                 let remoteMachine = tab.machineID.flatMap { id in model.remote.first { $0.id == id } }
-                Row(symbol: tab.attention ? "circle.fill" : (tab.parked ? "moon.zzz" : (agent != nil ? "sparkle" : "terminal")),
-                    tint: tab.attention ? .orange : (agent.map { Color(nsColor: $0.tint) } ?? .secondary),
+                Row(symbol: tab.dropped ? "wifi.exclamationmark" : (tab.attention ? "circle.fill" : (tab.parked ? "moon.zzz" : (agent != nil ? "sparkle" : "terminal"))),
+                    tint: tab.dropped ? .secondary : (tab.attention ? .orange : (agent.map { Color(nsColor: $0.tint) } ?? .secondary)),
                     title: tab.title,
-                    subtitle: [tab.busy ? "working" : nil, tab.branch.map { "⎇ \($0)" }, tab.directory,
+                    subtitle: [tab.dropped ? "reconnecting" : nil, tab.busy ? "working" : nil, tab.branch.map { "⎇ \($0)" }, tab.directory,
                                tab.panes > 1 ? "\(tab.panes) panes" : nil,
                                tab.parked ? "parked" : nil].compactMap { $0 }.joined(separator: " · "),
                     busy: tab.busy && !tab.attention,
                     current: tab.id == drops?.owner,
                     machine: remoteMachine.map { DeviceBadge.machine($0) } ?? .thisMac,
                     badge: DeviceBadge.connected(model.tabDevices(tab)),
+                    shortcut: tabShortcut(tab),
                     actions: [
                         RowAction(symbol: model.notifies(tab) ? "bell.fill" : "bell",
                                   help: model.notifies(tab) ? "Notifying your phone when this needs you or finishes. Click to stop."
                                                             : "Notify your phone when this needs you or finishes",
-                                  lit: model.notifies(tab)) { model.setNotify(tab, !model.notifies(tab)) },
+                                  lit: model.notifies(tab),
+                                  title: model.notifies(tab) ? "Stop Notifying My Phone" : "Notify My Phone") {
+                            model.setNotify(tab, !model.notifies(tab))
+                        },
                         RowAction(symbol: "pencil", help: "Rename") { model.actions?.renameTab(tab.id) },
                         RowAction(symbol: "xmark", help: "Close tab") { model.actions?.closeTab(tab.id) },
                     ])
                     .tag(SidebarID.tab(tab.id))
             }
             }
-        } header: { FoldHeader(title: "Open", expanded: $openExpanded) }
+        } header: {
+            HStack(alignment: .bottom) {
+                FoldHeader(title: "Open", expanded: $openExpanded)
+                Spacer()
+                RefreshButton { model.refreshAll() }
+            }
+            .padding(.trailing, SidebarMetrics.headerTrailing)
         }
+        }
+    }
+
+    private func tabShortcut(_ tab: OpenTab) -> String? {
+        let mine = model.tabs.filter { $0.group == tab.group }
+        guard let i = mine.firstIndex(where: { $0.id == tab.id }), i < 9 else { return nil }
+        return "\u{2318}\(i + 1)"
     }
 
     private func machinesSection(_ layout: Layout) -> some View {
@@ -304,11 +347,12 @@ struct SidebarView: View {
             }
             }
         } header: {
-            HStack {
+            HStack(alignment: .bottom) {
                 FoldHeader(title: "Pair", expanded: $pairExpanded)
                 Spacer()
                 PairMenu(model: model)
             }
+            .padding(.trailing, SidebarMetrics.headerTrailing)
         }
     }
 
@@ -345,37 +389,116 @@ struct SidebarView: View {
                     ForEach(pinnedSessions) { s in sessionRow(s, showRepo: true, stale: nil) }
                 }
             }
-            ForEach(layout.groups, id: \.key) { group in
+            projectSections(layout.groups.filter { !$0.live.isEmpty })
+            if !layout.other.isEmpty || !layout.noFolder.isEmpty {
                 Section {
-                    if expandedBinding(group.key).wrappedValue {
-                    ForEach(group.live) { liveRow($0) }
-                    ForEach(group.past) { pastRow($0, newest: group.newest) }
-                    if group.more > 0 {
-                        Button(showAll.contains(group.key) ? "Show less" : "Show \(group.more) more") {
-                            if showAll.contains(group.key) { showAll.remove(group.key) } else { showAll.insert(group.key) }
+                    if otherExpanded {
+                        ForEach(layout.other) { liveRow($0) }
+                        ForEach(layout.noFolder) { pastRow($0, newest: nil, showProject: false) }
+                        if layout.noFolderMore > 0 {
+                            Button(showAll.contains(Self.noFolderKey) ? "Show less" : "Show \(layout.noFolderMore) more") {
+                                if showAll.contains(Self.noFolderKey) { showAll.remove(Self.noFolderKey) } else { showAll.insert(Self.noFolderKey) }
+                            }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
+                    }
+                } header: { FoldHeader(title: "No folder", expanded: $otherExpanded) }
+            }
+            projectSections(layout.groups.filter { $0.live.isEmpty })
+        }
+    }
+
+    private func projectSections(_ groups: [ProjectGroup]) -> some View {
+        ForEach(groups, id: \.key) { group in
+            Section {
+                if expandedBinding(group.key).wrappedValue {
+                ForEach(group.live) { liveRow($0) }
+                ForEach(group.past) { pastRow($0, newest: group.newest) }
+                if group.more > 0 {
+                    Button(showAll.contains(group.key) ? "Show less" : "Show \(group.more) more") {
+                        if showAll.contains(group.key) { showAll.remove(group.key) } else { showAll.insert(group.key) }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                }
+            } header: {
+                ProjectHeader(title: group.title, expanded: expandedBinding(group.key), targets: startTargets(group))
+            }
+        }
+    }
+
+    private var recentSections: some View {
+        let recent = Self.recent(model, expanded: recentShowAll)
+        return Group {
+            if !pinnedSessions.isEmpty {
+                Section("Pinned") {
+                    ForEach(pinnedSessions) { s in sessionRow(s, showRepo: true, stale: nil) }
+                }
+            }
+            if !recent.live.isEmpty {
+                Section("Running") { ForEach(recent.live) { liveRow($0) } }
+            }
+            Section("Recent") {
+                ForEach(recent.past) { p in pastRow(p, newest: recent.newest.contains(p.id) ? p.id : nil, showProject: true) }
+                if recent.more > 0 || recentShowAll {
+                    Button(recentShowAll ? "Show less" : "Show \(recent.more) more") { recentShowAll.toggle() }
                         .buttonStyle(.plain)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    }
-                    }
-                } header: {
-                    FoldHeader(title: group.title, expanded: expandedBinding(group.key))
                 }
             }
-            if !layout.other.isEmpty {
-                Section {
-                    if otherExpanded { ForEach(layout.other) { liveRow($0) } }
-                } header: { FoldHeader(title: "Other", expanded: $otherExpanded) }
-            }
         }
+    }
+
+    struct RecentLayout {
+        var live: [Live] = []
+        var past: [Past] = []
+        var more = 0
+        var newest: Set<String> = []
+    }
+
+    static let recentLimit = 25
+
+    static func recent(_ model: SidebarModel, expanded: Bool) -> RecentLayout {
+        var out = RecentLayout()
+        var live: [(Double, Live)] = model.background.map { ($0.created, .background($0)) }
+        for r in model.remote where r.note == nil {
+            live += model.remoteFree(r).map { ($0.created, .remote(r, $0)) }
+        }
+        out.live = live.sorted { $0.0 > $1.0 }.map(\.1)
+
+        let open = model.tabs.flatMap(\.conversations)
+        var past: [Past] = model.filteredSessions.filter { s in
+            s.pair == nil && s.title != "(no messages)" && !model.pinned.contains(s.id) && !open.contains { $0.contains(s.id) }
+        }.map { .local($0) }
+        for r in model.remote {
+            past += r.history.filter { $0.title != "(no messages)" }.map { .remote(r, $0) }
+        }
+        past.sort { $0.time > $1.time }
+        var seen: Set<String> = []
+        for p in past {
+            let project: String
+            switch p {
+            case .local(let s): project = s.cwd
+            case .remote(let r, let h): project = r.id + ":" + h.cwd
+            }
+            if seen.insert(project).inserted { out.newest.insert(p.id) }
+        }
+        let shown = ProjectGrouping.limited(past, expanded: expanded, limit: recentLimit)
+        out.past = shown.visible
+        out.more = shown.more
+        return out
     }
 
     @ViewBuilder
     private func liveRow(_ live: Live) -> some View {
         switch live {
         case .tab(let tab):
-            let agent = Agent.detect(tab.command)
+            let agent = Agent.detect(tab.command, title: tab.terminalTitle)
             let remoteMachine = tab.machineID.flatMap { id in model.remote.first { $0.id == id } }
             Row(symbol: tab.attention ? "circle.fill" : (tab.parked ? "moon.zzz" : (agent != nil ? "sparkle" : "terminal")),
                 tint: tab.attention ? .orange : (agent.map { Color(nsColor: $0.tint) } ?? .secondary),
@@ -422,13 +545,13 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func pastRow(_ past: Past, newest: String?) -> some View {
+    private func pastRow(_ past: Past, newest: String?, showProject: Bool = false) -> some View {
         switch past {
         case .local(let s):
-            sessionRow(s, showRepo: false, stale: s.id == newest ? nil : commitsSince(s))
+            sessionRow(s, showRepo: showProject, stale: s.id == newest ? nil : commitsSince(s))
         case .remote(let r, let h):
-            Row(symbol: "bubble.left", tint: toolTint(h.agent), title: h.title,
-                subtitle: [r.machine.name, relative(h.used)].joined(separator: " · "),
+            Row(symbol: "", tint: .secondary, title: h.title,
+                subtitle: [showProject ? remoteTilde(h.cwd) : nil, r.machine.name, relative(h.used)].compactMap { $0 }.joined(separator: " · "),
                 dimmed: true,
                 detail: h.commitsSince.flatMap { $0 > 0 ? "\($0) commit\($0 == 1 ? "" : "s") since" : nil },
                 actions: [RowAction(symbol: "arrow.uturn.forward", help: "Resume on \(r.machine.name)") {
@@ -441,7 +564,7 @@ struct SidebarView: View {
     private func sessionRow(_ s: SessionItem, showRepo: Bool, stale: Int?) -> some View {
         let pinned = model.pinned.contains(s.id)
         let when = showRepo ? "\(s.repo) · \(relative(s.mtime))" : relative(s.mtime)
-        return Row(symbol: "bubble.left", tint: toolTint(s.tool), title: s.title,
+        return Row(symbol: "", tint: .secondary, title: s.title,
                    subtitle: when,
                    dimmed: !pinned,
                    detail: stale.map { "\($0) commit\($0 == 1 ? "" : "s") since" },
@@ -519,6 +642,18 @@ struct SidebarView: View {
         var placedRemote: Set<String> = []
         var placedTabs: Set<ObjectIdentifier> = []
         var other: [Live] = []
+        var noFolder: [Past] = []
+        var noFolderMore = 0
+    }
+
+    static let noFolderKey = "\u{0}nofolder"
+
+    static func isNoFolder(_ path: String) -> Bool {
+        let p = path.hasSuffix("/") && path.count > 1 ? String(path.dropLast()) : path
+        if p.isEmpty || p == "/" || p == "~" || p == Transcript.home || p == NSHomeDirectory()
+            || p.firstMatch(of: #/^/(Users|home)/[^/]+$/#) != nil || p == "/root" { return true }
+        return p.contains("/.local/state/") || p.hasPrefix("/tmp") || p.hasPrefix("/private/")
+            || p.hasPrefix("/var/folders/")
     }
 
     private var projectLayout: Layout { Self.layout(model, showAll: showAll) }
@@ -539,7 +674,9 @@ struct SidebarView: View {
         let listed = model.filteredSessions.filter { s in
             s.pair == nil && s.title != "(no messages)" && !open.contains { $0.contains(s.id) }
         }
+        var loose: [Past] = []
         for s in listed where searching || !model.pinned.contains(s.id) {
+            if isNoFolder(s.cwd) { loose.append(.local(s)); continue }
             add(s.cwd, s.repo)
             past[s.cwd, default: []].append(.local(s))
         }
@@ -572,7 +709,11 @@ struct SidebarView: View {
             }
             for h in r.history where h.title != "(no messages)" {
                 let hay = "\(h.title) \(name(h.cwd)) \(h.agent)".lowercased()
-                guard words.allSatisfy({ hay.contains($0) }), let k = key(h.cwd) else { continue }
+                guard words.allSatisfy({ hay.contains($0) }) else { continue }
+                guard let k = key(h.cwd) else {
+                    if isNoFolder(h.cwd) { loose.append(.remote(r, h)) }
+                    continue
+                }
                 past[k, default: []].append(.remote(r, h))
             }
         }
@@ -585,6 +726,10 @@ struct SidebarView: View {
                                 more: searching ? 0 : shown.more, newest: all.first?.id)
         }
         layout.groups = groups.filter { !$0.live.isEmpty } + groups.filter { $0.live.isEmpty }
+        let shownLoose = ProjectGrouping.limited(loose.sorted { $0.time > $1.time },
+                                                 expanded: searching || showAll.contains(noFolderKey))
+        layout.noFolder = shownLoose.visible
+        layout.noFolderMore = searching ? 0 : shownLoose.more
         if !searching {
             layout.other = model.background.filter { !layout.placedHosts.contains($0.id) }.map { .background($0) }
             for r in model.remote where r.note == nil {
@@ -592,6 +737,24 @@ struct SidebarView: View {
             }
         }
         return layout
+    }
+
+    private func startTargets(_ group: ProjectGroup) -> [StartTarget] {
+        var out: [StartTarget] = []
+        if !group.key.hasPrefix("remote:"), FileManager.default.fileExists(atPath: group.key) {
+            let dir = group.key
+            out.append(StartTarget(name: "This Mac", symbol: "laptopcomputer") { agent in
+                _ = (NSApp.delegate as? AppDelegate)?.open(tabbedWith: NSApp.keyWindow, directory: dir,
+                                                           command: agent.map { StartAgent.command($0, remote: false) })
+            })
+        }
+        for r in model.remote where r.note == nil {
+            guard let p = r.projects.first(where: { ($0.path as NSString).lastPathComponent == group.title }) else { continue }
+            out.append(StartTarget(name: r.displayName, symbol: r.symbol) { [weak model] agent in
+                model?.actions?.newRemote(r.machine, agent: agent, directory: p.path)
+            })
+        }
+        return out
     }
 
 
@@ -770,7 +933,10 @@ struct RowAction {
     let symbol: String
     let help: String
     var lit = false
+    var title: String? = nil
     let perform: () -> Void
+
+    var menuTitle: String { title ?? help }
 }
 
 struct DeviceBadge: Equatable {
@@ -831,7 +997,7 @@ struct MachineRow<MenuContent: View>: View {
                 .font(.system(size: 12.5, weight: .regular))
                 .foregroundStyle(connected ? Color.connected : Color.secondary)
                 .frame(width: 16)
-            Text(title).font(.system(size: 13)).lineLimit(1).truncationMode(.tail).layoutPriority(2)
+            Text(title).font(.system(size: SidebarMetrics.text, weight: .light)).lineLimit(1).truncationMode(.tail).layoutPriority(2)
             if let role {
                 Text(role)
                     .font(.system(size: 10))
@@ -851,14 +1017,15 @@ struct MachineRow<MenuContent: View>: View {
                 .fixedSize()
                 .help("New session on \(title)")
             }
-            if connected {
-                Circle().fill(Color.connected).frame(width: 6, height: 6)
-            } else if state != nil {
+            if !connected && state != nil {
                 Circle().strokeBorder(Color.secondary.opacity(0.7), lineWidth: 1).frame(width: 7, height: 7)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .frame(minHeight: SidebarMetrics.rowHeight)
         .contentShape(Rectangle())
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.primary.opacity(hovering ? 0.05 : 0)))
+        .listRowInsets(EdgeInsets(top: 0.5, leading: 2, bottom: 0.5, trailing: 2))
         .onHover { hovering = $0 }
         .help([title, detail, state, role, help].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n"))
     }
@@ -890,27 +1057,31 @@ private struct Row: View {
     var badge: DeviceBadge? = nil
     var showSubtitle = false
     var detail: String? = nil
+    var shortcut: String? = nil
     var actions: [RowAction] = []
     @State private var hovering = false
 
     private var tooltip: String {
         [title, machine.map { $0.connected && $0.label != "This Mac" ? "\($0.label), connected" : $0.label },
-         badge.map { $0.help ?? $0.label }, subtitle.isEmpty ? nil : subtitle, detail]
+         badge.map { $0.help ?? $0.label }, subtitle.isEmpty ? nil : subtitle, detail, shortcut]
             .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    private var hasDevices: Bool {
+        badge != nil || (machine.map { $0.label != "This Mac" } ?? false)
     }
 
     private var devices: some View {
         HStack(spacing: 5) {
             if let badge {
                 Image(systemName: badge.symbol)
-                    .foregroundStyle(badge.connected ? Color.connected : Color.secondary)
             }
             if let machine, machine.label != "This Mac" || badge != nil {
                 Image(systemName: machine.symbol)
-                    .foregroundStyle(machine.connected ? Color.connected : Color.secondary)
             }
         }
-        .font(.system(size: 10.5))
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
         .fixedSize()
     }
 
@@ -919,7 +1090,7 @@ private struct Row: View {
             Group {
                 if busy {
                     WorkingMark(tint: tint)
-                } else {
+                } else if !symbol.isEmpty {
                     Image(systemName: symbol)
                         .font(.system(size: 12.5, weight: .regular))
                         .foregroundStyle(tint)
@@ -928,44 +1099,76 @@ private struct Row: View {
             .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
+                    if hasDevices { devices }
                     Text(title)
-                        .font(.system(size: 13))
-                        .fontWeight(current ? .medium : .regular)
+                        .font(.system(size: SidebarMetrics.text, weight: .light))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    if !(hovering && !actions.isEmpty) { devices }
                 }
                 if let second = showSubtitle && !subtitle.isEmpty ? subtitle : detail {
                     Text(second)
-                        .font(.system(size: 11))
+                        .font(.system(size: SidebarMetrics.small, weight: .light))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
             }
             Spacer(minLength: 4)
-            let shown = hovering ? Array(actions.indices) : actions.indices.filter { actions[$0].lit }
-            if !shown.isEmpty {
-                HStack(spacing: 2) {
-                    ForEach(shown, id: \.self) { i in
-                        Button(action: actions[i].perform) {
-                            Image(systemName: actions[i].symbol)
-                                .font(.system(size: 11, weight: .medium))
-                                .frame(width: 20, height: 20)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(actions[i].lit ? Color.orange : Color.secondary)
-                        .help(actions[i].help)
+            let lit = actions.filter(\.lit)
+            if !lit.isEmpty && !hovering {
+                HStack(spacing: 4) {
+                    ForEach(lit.indices, id: \.self) { i in
+                        Image(systemName: lit[i].symbol).help(lit[i].help)
                     }
                 }
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(Color.orange)
+                .fixedSize()
+            }
+            if hovering, actions.count == 1, let only = actions.first {
+                Button(action: only.perform) {
+                    Image(systemName: only.symbol)
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(width: 22, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.secondary)
+                .help(only.help)
+                .transition(.opacity)
+            } else if hovering, actions.count > 1 {
+                Menu {
+                    if let shortcut {
+                        Text("Shortcut: \(shortcut)")
+                        Divider()
+                    }
+                    ForEach(actions.indices, id: \.self) { i in
+                        Button(action: actions[i].perform) {
+                            Label(actions[i].menuTitle, systemImage: actions[i].symbol)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .foregroundStyle(Color.secondary)
+                .help("More")
                 .transition(.opacity)
             }
         }
-        .padding(.vertical, 4)
-        .listRowBackground(current
-            ? RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.08)).padding(.horizontal, 8)
-            : nil)
+        .padding(.horizontal, 8)
+        .frame(minHeight: SidebarMetrics.rowHeight)
+        .contentShape(Rectangle())
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(Color.primary.opacity(current ? 0.08 : hovering ? 0.05 : 0)))
+        .listRowInsets(EdgeInsets(top: 0.5, leading: 2, bottom: 0.5, trailing: 2))
+        .listRowBackground(Color.clear)
         .opacity(dimmed && !hovering ? 0.58 : 1)
         .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
         .help(tooltip)
@@ -1017,8 +1220,8 @@ private struct SidebarAction: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 9) {
-                Image(systemName: symbol).font(.system(size: 13.5)).frame(width: 18)
-                Text(title).font(.system(size: 13.5))
+                Image(systemName: symbol).font(.system(size: 14, weight: .light)).frame(width: 18)
+                Text(title).font(.system(size: SidebarMetrics.text, weight: .light))
                 if let detail {
                     Text(detail).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                 }
@@ -1033,7 +1236,7 @@ private struct SidebarAction: View {
                 }
             }
             .padding(.horizontal, 8)
-            .frame(height: 30)
+            .frame(height: SidebarMetrics.rowHeight)
             .contentShape(Rectangle())
             .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(Color.primary.opacity(emphasised ? (hovering ? 0.11 : 0.075) : (hovering ? 0.05 : 0))))
@@ -1041,6 +1244,177 @@ private struct SidebarAction: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(help)
+    }
+}
+
+struct StartTarget: Identifiable {
+    var id: String { name }
+    let name: String
+    let symbol: String
+    let start: (String?) -> Void
+}
+
+private struct ProjectHeader: View {
+    let title: String
+    @Binding var expanded: Bool
+    let targets: [StartTarget]
+    @State private var hovering = false
+    @State private var open = false
+    @State private var overPlus = false
+    @State private var overMenu = false
+
+    var body: some View {
+        HStack(alignment: .bottom) {
+            FoldHeader(title: title, expanded: $expanded)
+            Spacer()
+            if !targets.isEmpty && (hovering || open) {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+                    .foregroundStyle(.secondary)
+                    .onTapGesture { open.toggle() }
+                    .onHover { h in
+                        overPlus = h
+                        if h { open = true } else { closeSoon() }
+                    }
+                    .popover(isPresented: $open, arrowEdge: .trailing) { menu }
+                    .help("New session in \(title)")
+            }
+        }
+        .padding(.trailing, SidebarMetrics.headerTrailing)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+    }
+
+    private var menu: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(targets) { t in
+                Label(t.name, systemImage: t.symbol)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.top, t.id == targets.first?.id ? 2 : 8).padding(.bottom, 2)
+                StartChoice(title: "Claude Code", symbol: "sparkle", tint: ChatTint.claude) { open = false; t.start("claude") }
+                StartChoice(title: "Codex", symbol: "sparkle", tint: ChatTint.codex) { open = false; t.start("codex") }
+                StartChoice(title: "Shell", symbol: "terminal", tint: .secondary) { open = false; t.start(nil) }
+            }
+        }
+        .padding(6)
+        .frame(minWidth: 190)
+        .onHover { h in
+            overMenu = h
+            if !h { closeSoon() }
+        }
+    }
+
+    private func closeSoon() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            if !overPlus && !overMenu { open = false }
+        }
+    }
+}
+
+private struct StartChoice: View {
+    let title: String
+    let symbol: String
+    let tint: Color
+    let perform: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: perform) {
+            HStack(spacing: 9) {
+                Image(systemName: symbol).font(.system(size: 13)).foregroundStyle(tint).frame(width: 18)
+                Text(title).font(.system(size: SidebarMetrics.text, weight: .light))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .contentShape(Rectangle())
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(hovering ? 0.08 : 0)))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+private struct SidebarMore: View {
+    struct Item: Identifiable {
+        var id: String { title }
+        let title: String
+        let symbol: String
+        let help: String
+        var shortcut: String? = nil
+        let action: () -> Void
+    }
+    let items: [Item]
+    @State private var open = false
+    @State private var overRow = false
+    @State private var overMenu = false
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "ellipsis").font(.system(size: 14, weight: .light)).frame(width: 18)
+                Text("More").font(.system(size: SidebarMetrics.text, weight: .light))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: SidebarMetrics.rowHeight)
+            .contentShape(Rectangle())
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.primary.opacity(overRow || open ? 0.05 : 0)))
+        }
+        .buttonStyle(.plain)
+        .onHover { h in
+            overRow = h
+            if h { open = true } else { closeSoon() }
+        }
+        .popover(isPresented: $open, arrowEdge: .trailing) {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(items) { item in
+                    MoreItem(item: item) { open = false; item.action() }
+                }
+            }
+            .padding(6)
+            .frame(minWidth: 170)
+            .onHover { h in
+                overMenu = h
+                if !h { closeSoon() }
+            }
+        }
+    }
+
+    private func closeSoon() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            if !overRow && !overMenu { open = false }
+        }
+    }
+}
+
+private struct MoreItem: View {
+    let item: SidebarMore.Item
+    let perform: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: perform) {
+            HStack(spacing: 9) {
+                Image(systemName: item.symbol).font(.system(size: 14, weight: .light)).frame(width: 18)
+                Text(item.title).font(.system(size: SidebarMetrics.text, weight: .light))
+                Spacer(minLength: 12)
+                if let shortcut = item.shortcut, hovering {
+                    Text(shortcut).font(.system(size: 12)).foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: SidebarMetrics.rowHeight)
+            .contentShape(Rectangle())
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(hovering ? 0.08 : 0)))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(item.help)
     }
 }
 
@@ -1076,6 +1450,61 @@ private func relative(_ t: Double) -> String {
     return f.localizedString(for: Date(timeIntervalSince1970: t), relativeTo: Date())
 }
 
+enum SidebarMetrics {
+    static let rowHeight: CGFloat = 32
+    static let text: CGFloat = 14
+    static let small: CGFloat = 12
+    static let headerTrailing: CGFloat = 8
+    static let sectionGap: CGFloat = 14
+}
+
+struct SessionsViewMenu: View {
+    @Binding var recent: Bool
+    var body: some View {
+        Menu {
+            Picker("View", selection: $recent) {
+                Label("Projects", systemImage: "folder").tag(false)
+                Label("Recent", systemImage: "clock").tag(true)
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            Image(systemName: "line.3.horizontal.decrease")
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .foregroundStyle(.secondary)
+        .hoverIcon()
+        .help(recent ? "Showing every session, newest first" : "Showing sessions by project")
+    }
+}
+
+struct RefreshButton: View {
+    let action: () -> Void
+    @State private var turns = 0.0
+    var body: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.6)) { turns += 360 }
+            action()
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 10.5, weight: .semibold))
+                .rotationEffect(.degrees(turns))
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .hoverIcon()
+        .help("Refresh: reconnect to your machines and any tab that lost its connection, and reload sessions")
+    }
+}
+
 struct FoldHeader: View {
     let title: String
     @Binding var expanded: Bool
@@ -1088,6 +1517,7 @@ struct FoldHeader: View {
                     .rotationEffect(.degrees(expanded ? 0 : -90))
                     .foregroundStyle(.tertiary)
             }
+            .padding(.top, SidebarMetrics.sectionGap)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

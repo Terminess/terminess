@@ -1,5 +1,7 @@
-#if os(Linux)
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+@preconcurrency import Musl
 #else
 import Darwin
 #endif
@@ -16,8 +18,29 @@ final class ChatReply: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private var buffer = Data()
     let finished = DispatchSemaphore(value: 0)
     var onText: ((String, Bool) -> Void)?
+    let openAI: Bool
+    private var stream = OpenAIStream()
+    private var status = 200
+    private var errorBody = Data()
+
+    init(openAI: Bool = false) { self.openAI = openAI }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if openAI { status = (response as? HTTPURLResponse)?.statusCode ?? 200 }
+        completionHandler(.allow)
+    }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        if openAI {
+            if status != 200 { errorBody.append(data); return }
+            for (t, isThinking) in stream.feed(data) {
+                if isThinking { thinking += t } else { content += t }
+                onText?(t, isThinking)
+            }
+            if let e = stream.error { error = e }
+            return
+        }
         buffer.append(data)
         while let nl = buffer.firstIndex(of: 0x0A) {
             let line = buffer.subdata(in: buffer.startIndex..<nl)
@@ -31,15 +54,42 @@ final class ChatReply: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if openAI, status != 200 || error == nil { HuggingFace.record(status: status) }
+        if openAI && status != 200 { self.error = HuggingFace.errorMessage(status: status, body: errorBody) }
         if let error, (error as NSError).code != NSURLErrorCancelled { self.error = self.error ?? error.localizedDescription }
         finished.signal()
     }
 }
 
+final class ReplyRouter: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    var reply: ChatReply?
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if let reply { reply.urlSession(session, dataTask: dataTask, didReceive: response, completionHandler: completionHandler) }
+        else { completionHandler(.allow) }
+    }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        reply?.urlSession(session, dataTask: dataTask, didReceive: data)
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        reply?.urlSession(session, task: task, didCompleteWithError: error)
+    }
+}
+
 func chat(_ args: [String]) -> Never {
+    let router = ReplyRouter()
+    let session = URLSession(configuration: .default, delegate: router, delegateQueue: nil)
     guard let model = args.first, !model.hasPrefix("-") else { fail("usage: terminessd chat MODEL [first message]") }
     let env = ProcessInfo.processInfo.environment
     let context = Int(env["TERMINESS_CHAT_CONTEXT"] ?? "") ?? 16384
+    let hfModel = HuggingFace.modelID(model)
+    let hfToken = HuggingFace.token()
+    if let id = hfModel {
+        guard !id.isEmpty else { fail("usage: terminessd chat hf:<org>/<model>") }
+        guard hfToken != nil else {
+            fail("no Hugging Face token: add one in Terminess Settings, set HF_TOKEN, or save it in ~/.config/terminess/hf_token (make one at \(HuggingFace.tokenPage))")
+        }
+    }
     var think = false
     var messages: [[String: String]] = []
     var pending = args.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -94,7 +144,11 @@ func chat(_ args: [String]) -> Never {
     interrupt.resume()
 
     let host = ProcessInfo.processInfo.hostName.split(separator: ".").first.map(String.init) ?? "this machine"
-    out("\(dim)\(model) on \(host), remembering about \(context / 1000)k tokens. /think shows its reasoning, /clear starts afresh, /bye ends.\(reset)\n")
+    if let id = hfModel {
+        out("\(dim)\(id) through Hugging Face, billed to your HF account. /think shows its reasoning, /clear starts afresh, /bye ends.\(reset)\n")
+    } else {
+        out("\(dim)\(model) on \(host), remembering about \(context / 1000)k tokens. /think shows its reasoning, /clear starts afresh, /bye ends.\(reset)\n")
+    }
 
     func readMessage() -> String? {
         out("\n\(bold)›\(reset) ")
@@ -137,40 +191,44 @@ func chat(_ args: [String]) -> Never {
 
         var body: [String: Any] = ["model": model, "messages": messages, "stream": true, "think": think,
                                    "options": ["num_ctx": context]]
-        var reply = ChatReply()
+        if let id = hfModel { body = ["model": id, "messages": messages, "stream": true] }
+        var reply = ChatReply(openAI: hfModel != nil)
         var thinkingShown = false
         func send() {
-            reply = ChatReply()
+            reply = ChatReply(openAI: hfModel != nil)
             var lastSaved = Date()
             reply.onText = { [weak reply] t, isThinking in
                 if let reply, Date().timeIntervalSince(lastSaved) > 1 {
                     lastSaved = Date()
                     record(["type": "partial", "text": reply.content, "thinking": reply.thinking])
                 }
-                if isThinking { out(dim + t + reset) ; thinkingShown = true }
+                if isThinking { if hfModel == nil || think { out(dim + t + reset); thinkingShown = true } }
                 else {
                     if thinkingShown { out("\n\n"); thinkingShown = false }
                     out(t)
                 }
             }
-            guard let url = URL(string: LocalModels.base + "/api/chat"),
+            guard let url = URL(string: hfModel != nil ? HuggingFace.chatURL : LocalModels.base + "/api/chat"),
                   let data = try? JSONSerialization.data(withJSONObject: body) else { return }
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
+            if hfModel != nil, let hfToken {
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.setValue("Bearer \(hfToken)", forHTTPHeaderField: "Authorization")
+            }
             req.httpBody = data
             req.timeoutInterval = 600
-            let session = URLSession(configuration: .default, delegate: reply, delegateQueue: nil)
+            router.reply = reply
             let task = session.dataTask(with: req)
             current = task
             task.resume()
             reply.finished.wait()
             current = nil
-            session.finishTasksAndInvalidate()
         }
         out("\n")
         title(working: true)
         send()
-        if let e = reply.error, e.lowercased().contains("think"), reply.content.isEmpty {
+        if hfModel == nil, let e = reply.error, e.lowercased().contains("think"), reply.content.isEmpty {
             body["think"] = nil
             send()
         }

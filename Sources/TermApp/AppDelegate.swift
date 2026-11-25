@@ -94,14 +94,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc func showAgentsDashboard(_ sender: Any?) { AgentsDashboardWindow.show() }
 
+    func hasHuggingFaceToken() -> Bool {
+        if HuggingFace.token() != nil { return true }
+        alert("Add your Hugging Face token", "Hosted models through Hugging Face use your own access token, billed to your HF account. Make one at huggingface.co/settings/tokens with \"Make calls to Inference Providers\" ticked, add it in Settings, Agents, then try again.")
+        return false
+    }
+
     @objc func newAgentTab(_ sender: NSMenuItem) {
         guard let model = sender.representedObject as? String, let exe = HostService.executable else { return }
-        if AgentKey.read() == nil {
+        if HuggingFace.modelID(model) != nil {
+            guard hasHuggingFaceToken() else { return }
+        } else if AgentKey.read() == nil {
             alert("Add your Anthropic API key", "Terminess agent tabs use your own API key, billed to your Anthropic account. Add it in Settings, Agents, then try again.")
             return
         }
         let c = open(tabbedWith: keyController?.window, directory: keyController?.currentDirectory,
-                     command: "\(shellQuote(exe)) agent --model \(model)")
+                     command: "\(shellQuote(exe)) agent --model \(shellQuote(model))")
         c.customTitle = "Terminess Agent"
     }
 
@@ -354,6 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                            attention: AttentionCenter.shared.needsAttention(c),
                            panes: c.panes.count, parked: c.hasParkedPane, branch: c.worktree?.branch,
                            busy: c.busy,
+                           dropped: c.panes.contains { $0.session.isDropped },
                            hostIDs: c.panes.filter { $0.session.machine == nil }.compactMap { $0.session.process?.hostSessionID },
                            remoteIDs: c.panes.compactMap { p in
                                guard let m = p.session.machine, let id = p.session.process?.hostSessionID else { return nil }
@@ -361,7 +370,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                            },
                            path: dir, machineID: c.session.machine?.id,
                            group: c.window?.tabGroup.map { ObjectIdentifier($0) },
-                           conversations: c.panes.compactMap { $0.transcript?.path })
+                           conversations: c.panes.compactMap { $0.transcript?.path },
+                           terminalTitle: c.session.process?.foregroundCommand == "ollama" ? c.session.terminal.title : "")
         }
     }
 
@@ -397,11 +407,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-        field.stringValue = c.customTitle ?? c.displayTitle
+        field.stringValue = c.editableName
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        setName(c, field.stringValue)
+    }
+
+    func tabName(_ id: ObjectIdentifier) -> String {
+        controllers.first { ObjectIdentifier($0) == id }?.editableName ?? ""
+    }
+
+    func setTabName(_ id: ObjectIdentifier, _ name: String) {
+        if let c = controllers.first(where: { ObjectIdentifier($0) == id }) { setName(c, name) }
+    }
+
+    private func setName(_ c: TerminalWindowController, _ name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         c.customTitle = name.isEmpty ? nil : name
         SidebarModel.shared.refreshTabs()
     }
@@ -704,6 +726,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         agentMenu.addItem(.separator())
         agentMenu.addItem(withTitle: "Uses your Anthropic API key (Settings). Type /model ollama:NAME for a local model.", action: nil, keyEquivalent: "")
+        agentMenu.addItem(.separator())
+        let hfAgent = NSMenuItem(title: "Hugging Face", action: nil, keyEquivalent: "")
+        hfAgent.submenu = HFAgentMenu.shared.menu
+        agentMenu.addItem(hfAgent)
         agentItem.submenu = agentMenu
         shell.addItem(agentItem)
         let localModel = NSMenuItem(title: "Local Model", action: nil, keyEquivalent: "")

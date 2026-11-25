@@ -7,12 +7,26 @@ struct ChatView: View {
     let working: Bool
     var folder: String? = nil
     var notice: String? = nil
+    var pending: String? = nil
+    @State private var turnStart: Date?
+
+    private var waitingFor: String? {
+        guard let pending, !pending.isEmpty else { return nil }
+        let arrived = chat.items.contains { if case .user = $0.kind { return true } else { return false } }
+        return arrived ? nil : pending
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if chat.loaded && chat.items.isEmpty {
+                    if let text = waitingFor {
+                        ChatItemView(item: TranscriptItem(id: -1, kind: .user(text)), folder: folder)
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Starting \(agentName.isEmpty ? "the agent" : agentName)…").font(.callout).foregroundStyle(.secondary)
+                        }
+                    } else if chat.loaded && chat.items.isEmpty {
                         VStack(spacing: 8) {
                             Image(systemName: "text.bubble").font(.largeTitle).foregroundStyle(.tertiary)
                             Text(agentName.isEmpty ? "No agent in this session" : "No messages yet").font(.headline).foregroundStyle(.secondary)
@@ -32,14 +46,20 @@ struct ChatView: View {
                         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.surface))
                         .frame(maxWidth: .infinity)
                     }
-                    ForEach(chat.items) { item in
-                        ChatItemView(item: item, folder: folder).id(item.id)
-                    }
-                    if working {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text("\(agentName.isEmpty ? "The agent" : agentName) is working…").font(.callout).foregroundStyle(.secondary)
+                    ForEach(ChatRow.rows(chat.items)) { row in
+                        switch row {
+                        case .item(let item):
+                            ChatItemView(item: item, folder: folder).id(item.id)
+                        case .steps(let steps):
+                            PhoneStepsGroup(steps: steps, folder: folder).id(row.id)
+                        case .done(let item):
+                            DoneLine(item: item).padding(.horizontal, 10).id(row.id)
                         }
+                    }
+                    if working && waitingFor == nil {
+                        WorkingLine(activity: ChatRow.activity(chat.items, short: { ChatItemView.short($0, folder: folder) }),
+                                    started: turnStart ?? Date(), tint: ChatTint.of(agentName), size: 15)
+                            .padding(.horizontal, 10)
                     }
                     Color.clear.frame(height: 1).id("end")
                 }
@@ -47,8 +67,40 @@ struct ChatView: View {
             }
             .defaultScrollAnchor(.bottom)
             .onChange(of: chat.items.count) { _, _ in withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) } }
-            .onChange(of: working) { _, _ in withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) } }
+            .onChange(of: working) { _, now in
+                if now && turnStart == nil { turnStart = Date() }
+                if !now { turnStart = nil }
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
+            }
+            .onAppear { if working && turnStart == nil { turnStart = Date() } }
         }
+    }
+}
+
+private struct PhoneStepsGroup: View {
+    let steps: [TranscriptItem]
+    var folder: String?
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { withAnimation(.easeOut(duration: 0.15)) { open.toggle() } } label: {
+                HStack(spacing: 5) {
+                    Text(ChatRow.summary(steps)).lineLimit(1)
+                    Image(systemName: open ? "chevron.down" : "chevron.right").font(.caption.weight(.semibold))
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if open {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(steps) { ChatItemView(item: $0, folder: folder) }
+                }
+            }
+        }
+        .padding(.horizontal, 10)
     }
 }
 
@@ -57,7 +109,9 @@ private struct ChatItemView: View {
     var folder: String?
     @State private var open = false
 
-    private func short(_ s: String) -> String {
+    private func short(_ s: String) -> String { Self.short(s, folder: folder) }
+
+    static func short(_ s: String, folder: String?) -> String {
         var out = s
         if let f = folder, f.count > 1 { out = out.replacingOccurrences(of: f + "/", with: "") }
         return out.replacingOccurrences(of: #"/(Users|home)/[^/\s'"]+"#, with: "~", options: .regularExpression)
@@ -69,11 +123,15 @@ private struct ChatItemView: View {
             HStack {
                 Spacer(minLength: 40)
                 Text(text)
+                    .font(.body)
+                    .lineSpacing(3)
                     .textSelection(.enabled)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 15).padding(.vertical, 11)
                     .background(RoundedRectangle(cornerRadius: 16).fill(Theme.userBubble))
                     .foregroundStyle(Theme.ink)
             }
+            .padding(.vertical, 8)
         case .assistant(let text):
             MarkdownView(text: text, codeSize: 13)
                 .padding(.horizontal, 10)

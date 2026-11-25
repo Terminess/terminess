@@ -178,6 +178,7 @@ public struct Message: Codable, Equatable {
     public var agentModels: [AgentModel]?
     public var roles: ModelRoles?
     public var resumeOf: String?
+    public var requestID: String?
     public var reminder: ReminderInfo?
     public var reminders: [ReminderInfo]?
 
